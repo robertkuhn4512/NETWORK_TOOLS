@@ -240,7 +240,7 @@ This creates two files on the developer machine:
 
 #### 1.5.2 Install the SSH Key for the Administrative User
 
-First, configure key-based access for your existing administrative user (e.g., `rob`). 
+First, configure key-based access for your existing administrative user (e.g., `your_name`). 
 This ensures you always have a way to log in with `sudo` privileges.
 
 On your **developer machine**:
@@ -386,7 +386,7 @@ From your **developer machine**, verify:
 1. You can still log in as the admin user:
 
    ```bash
-   ssh rob@<SERVER_HOSTNAME_OR_IP>
+   ssh <USER>@<SERVER_HOSTNAME_OR_IP>
    ```
 
 2. You can still log in as the development user:
