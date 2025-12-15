@@ -1,0 +1,46 @@
+name: network_tools
+
+services:
+  vault_production_node:
+    image: hashicorp/vault:1.21.1
+    hostname: vault_production_node
+    container_name: vault_production_node
+    # Rootless: publish ports instead of host networking
+    ports:
+      - "8200:8200"
+      - "8201:8201"
+      # Only keep these if your Vault config actually listens on them
+      # - "8084:8084"
+      # - "8085:8085"
+    build:
+      context: backend/app/security/configuration_files/vault
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./backend/app/security/configuration_files/vault/vault_configuration_primary_node.hcl:/vault/config/config.hcl:ro
+      #- ./backend/app/security/configuration_files/vault/vault-policy-app-secrets-read-only.hcl:/vault/config/vault-policy-app-secrets-read-only.hcl:ro
+      #- ./backend/app/security/configuration_files/vault/vault-policy-core-read-only.hcl:/vault/config/vault-policy-core-read-only.hcl:ro
+      #- ./backend/app/security/configuration_files/vault/vault-policy-fast-api-read-write.hcl:/vault/config/vault-policy-fast-api-read-write.hcl:ro
+      #- ./backend/app/security/configuration_files/vault/vault-policy-fast-api-secrets-read-only.hcl:/vault/config/vault-policy-fast-api-secrets-read-only.hcl:ro
+      #- ./backend/app/security/configuration_files/vault/vault-policy-frontend-api-read-only.hcl:/vault/config/vault-policy-frontend-api-read-only.hcl:ro
+      #- ./backend/app/security/configuration_files/vault/vault-policy-token-rotation.hcl:/vault/config/vault-policy-token-rotation.hcl:ro
+      #- ./backend/app/security/configuration_files/vault/approle-issuer-fastapi-prod.hcl:/vault/config/approle-issuer-fastapi-prod.hcl:ro
+      #- ./backend/app/security/configuration_files/vault/fastapi-prod-role.hcl:/vault/config/fastapi-prod-role.hcl:ro
+
+      # TLS material (read-only)
+      - ./backend/app/security/configuration_files/vault/certs/cert.crt:/vault/certs/cert.crt:ro
+      - ./backend/app/security/configuration_files/vault/certs/cert.key:/vault/certs/cert.key:ro
+
+      # Data/logs (must be writable by the container user)
+      - ./container_data/vault/data:/vault/data
+      - ./container_data/vault/data/logs:/vault/logs
+    environment:
+      VAULT_DISABLE_MLOCK: "true"
+      VAULT_UI: "true"
+      VAULT_CACERT: "/vault/certs/cert.crt"
+      VAULT_ADDR: "https://vault_production_node:8200"
+      VAULT_API_ADDR: "https://vault_production_node:8200"
+      VAULT_CLUSTER_ADDR: "https://vault_production_node:8201"
+      VAULT_LOG_LEVEL: "debug"
+      VAULT_RAFT_NODE_ID: "Node1"
+    entrypoint: ["/bin/sh","-lc","exec vault server -config=/vault/config/config.hcl"]
