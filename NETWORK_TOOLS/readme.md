@@ -65,34 +65,46 @@ Use this section to document the repository layout on the server. The easiest wa
 > Suggested command: `tree -a -L 8`
 
 ```text
-# Paste output of: tree
+developer_network_tools@networktoolsvm:~$ tree --charset ascii
 .
-└── NETWORK_TOOLS
-    ├── backend
-    │   ├── app
-    │   │   ├── mariadb_queries
-    │   │   ├── postgres
-    │   │   ├── routers
-    │   │   └── security
-    │   │       └── configuration_files
-    │   │           └── vault
-    │   │               ├── certificates
-    │   │               ├── certs
-    │   │               │   ├── ca.crt
-    │   │               │   ├── ca.key
-    │   │               │   ├── ca.srl
-    │   │               │   ├── cert.crt
-    │   │               │   ├── cert.key
-    │   │               │   └── cert.leaf.only.crt
-    │   │               ├── config
-    │   │               │   └── vault_configuration_primary_node.hcl
-    │   │               └── Dockerfile
-    │   ├── build_scripts
-    │   │   └── generate_local_vault_certs.sh
-    │   └── nginx
-    ├── docker-compose.prod.yml
-    ├── frontend
-    └── readme.md
+`-- NETWORK_TOOLS
+    |-- backend
+    |   |-- app
+    |   |   |-- mariadb_queries
+    |   |   |-- postgres
+    |   |   |-- routers
+    |   |   `-- security
+    |   |       `-- configuration_files
+    |   |           `-- vault
+    |   |               |-- bootstrap
+    |   |               |   |-- root_token
+    |   |               |   |-- root_token.json
+    |   |               |   `-- unseal_keys.json
+    |   |               |-- certs
+    |   |               |   |-- ca.crt
+    |   |               |   |-- ca.key
+    |   |               |   |-- ca.srl
+    |   |               |   |-- cert.crt
+    |   |               |   `-- cert.key
+    |   |               |-- config
+    |   |               |   `-- vault_configuration_primary_node.hcl
+    |   |               |-- Dockerfile
+    |   |               `-- vault_configuration_primary_node.hcl
+    |   |-- build_scripts
+    |   |   |-- generate_local_vault_certs.sh
+    |   |   `-- vault_first_time_init_only_rootless.sh
+    |   `-- nginx
+    |-- container_data
+    |   `-- vault
+    |       `-- data
+    |           |-- logs
+    |           |-- raft
+    |           |   |-- raft.db
+    |           |   `-- snapshots
+    |           `-- vault.db
+    |-- docker-compose.prod.yml
+    |-- frontend
+    `-- readme.md
 ```
 
 ---
@@ -833,3 +845,154 @@ curl --cacert "$CA" -v https://vault_production_node:8200/v1/sys/health
 - If still failing, consider adding `user: "0:0"` to the Compose service for Vault (still rootless on the host).
 
 ---
+
+
+### 3.6 Initialize and Unseal Vault (First Run)
+
+This step is required **one time** for a brand-new Vault instance. It will:
+
+- Start the Vault container with Docker Compose (rootless; no sudo)
+- Initialize Vault (generates unseal keys + root token)
+- Unseal Vault
+
+> **Security note:** The init artifacts (unseal keys + root token) are highly sensitive. This script will save them to disk and (by default) print some contents to the terminal. Treat the output like production secrets.
+
+#### 3.6.1 Run the Init + Unseal Script
+
+> Run these commands as **developer_network_tools** (no sudo).
+
+1. Ensure Vault is running (the script can run compose for you, but it’s still useful to know the manual command):
+
+   ```bash
+   cd ~/NETWORK_TOOLS
+   docker compose -p network_tools -f docker-compose.prod.yml up -d vault_production_node
+   ```
+
+2. Ensure the init/unseal script is executable:
+
+   ```bash
+   cd ~/NETWORK_TOOLS
+   chmod +x ./backend/build_scripts/vault_init_unseal_rootless_pretty_v6.sh
+   ```
+
+3. Run it with your local CA (recommended):
+
+   ```bash
+   bash ./backend/build_scripts/vault_init_unseal_rootless_pretty_v6.sh \
+     --vault-addr https://vault_production_node:8200 \
+     --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+   ```
+
+4. If you do **not** pass `--ca-cert`, the script will:
+   - Try the system trust store first (no `-k`)
+   - If that fails, it will retry with `-k` and print a warning with the TLS verification error
+
+   ```bash
+   bash ./backend/build_scripts/vault_init_unseal_rootless_pretty_v6.sh \
+     --vault-addr https://vault_production_node:8200
+   ```
+
+#### 3.6.2 Bootstrap Artifacts (Download Then Remove)
+
+By default, the init/unseal script writes the bootstrap artifacts here:
+
+```text
+$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/
+  - unseal_keys.json
+  - root_token
+  - root_token.json
+```
+
+**Best practice (local/dev and production alike):**
+
+- Download the artifacts to a secure location immediately (password manager / offline vault / secure storage).
+- Do **not** commit these files to Git.
+- After you have secured them, remove them from the server.
+
+Example download (from your workstation):
+
+```bash
+scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" .
+scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token" .
+scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json" .
+```
+
+Example removal (run on the server after download):
+
+```bash
+rm -f \
+  "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" \
+  "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token" \
+  "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json"
+```
+
+If you do **not** want the script to print sensitive JSON contents to your terminal, use:
+
+```bash
+bash ./backend/build_scripts/vault_init_unseal_rootless_pretty_v6.sh \
+  --vault-addr https://vault_production_node:8200 \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --no-print-artifact-contents
+```
+
+---
+
+### 3.7 TLS Certificate Trust and Best Practices
+
+This repository currently uses a **locally generated CA** and a **locally issued Vault server certificate** for development.
+That is appropriate for local/dev, but the “right” trust model differs in production.
+
+#### 3.7.1 Local Development (Self-Signed CA)
+
+In local/dev, it is normal for `curl` or client libraries to fail verification unless you explicitly trust the CA.
+
+- Strict verification (recommended even in dev):
+
+  ```bash
+  CA="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+  curl --cacert "$CA" https://vault_production_node:8200/v1/sys/health
+  ```
+
+- Temporary bypass (avoid when possible; never use in production):
+
+  ```bash
+  curl -k https://vault_production_node:8200/v1/sys/health
+  ```
+
+**Developer machine trust:** In most cases, you do **not** need to install the dev CA into your workstation’s system trust store.
+Instead, point tooling at the CA file (`--cacert` or `VAULT_CACERT`) as needed.
+
+Example (host CLI use):
+
+```bash
+export VAULT_ADDR="https://vault_production_node:8200"
+export VAULT_CACERT="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+# vault status   # if the vault CLI is installed on the host
+```
+
+#### 3.7.2 Production Environments (Recommended)
+
+For production, avoid shipping a “dev CA” and avoid `-k` entirely. Typical patterns:
+
+- Use an enterprise PKI / internal CA trusted by servers and automation clients
+- Or use publicly trusted certificates (e.g., ACME/Let’s Encrypt) when appropriate and permitted
+
+**Key principles:**
+
+- The Vault server certificate must include the correct DNS names in **Subject Alternative Name (SAN)** for the production URL(s).
+- Clients should validate:
+  - Certificate chain (issuer trust)
+  - Hostname (SAN match)
+  - Validity dates / rotation
+- The **CA private key** should not be widely distributed (and should not live in the repo). In production, certificate issuance and private key handling should follow your organization’s security controls.
+
+#### 3.7.3 Practical Guidance for This Repo
+
+- Local/dev scripts support both:
+  - Proper verification with `--ca-cert <path-to-ca.crt>`
+  - A fallback path that can use `-k` when the local CA is not installed in the trust store (with a warning)
+- When moving to production, expect to:
+  - Replace the dev CA/cert material with your production certificate chain
+  - Update your Vault listener config (`tls_cert_file`, `tls_key_file`) and Compose mounts accordingly
+  - Remove any “insecure fallback” behavior from operational runbooks
+
