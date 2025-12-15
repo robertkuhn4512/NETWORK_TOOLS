@@ -37,7 +37,16 @@ Later, this server will host:
     - [1.5.3 Install the SSH Key for `developer_network_tools`](#153-install-the-ssh-key-for-developer_network_tools)  
     - [1.5.4 Harden the SSH Server Configuration](#154-harden-the-ssh-server-configuration)  
     - [1.5.5 Verify Access and Fallback Plan](#155-verify-access-and-fallback-plan)  
-
+- [2. Rootless Docker Install](#2-rootless-docker-install)  
+  - [2.1 Install Docker Engine Packages](#21-install-docker-engine-packages)  
+  - [2.2 Install Rootless Prerequisites](#22-install-rootless-prerequisites)  
+  - [2.3 Configure Subordinate UID/GID Ranges](#23-configure-subordinate-uidgid-ranges)  
+  - [2.4 Disable Rootful Docker Daemon (Recommended)](#24-disable-rootful-docker-daemon-recommended)  
+  - [2.5 Install and Start Rootless Docker](#25-install-and-start-rootless-docker)  
+  - [2.6 Enable Rootless Docker at Boot](#26-enable-rootless-docker-at-boot)  
+  - [2.7 Configure Shell Environment](#27-configure-shell-environment)  
+  - [2.8 Validate Rootless Docker](#28-validate-rootless-docker)  
+  - [2.9 Rootless Notes and Troubleshooting](#29-rootless-notes-and-troubleshooting)  
 ---
 
 ## 1. System Preparation
@@ -280,11 +289,13 @@ Test login from the developer machine:
 ssh <USER>>@<SERVER_HOSTNAME_OR_IP>
 ```
 
-You should be prompted for the **key passphrase** (if you set one), but not for the server account password.
+You should be prompted for the **key passphrase** (if you set one), 
+but not for the server account password.
 
 #### 1.5.3 Install the SSH Key for `developer_network_tools`
 
-Repeat the process for the `developer_network_tools` account so you can log in directly as the development user.
+Repeat the process for the `developer_network_tools` 
+account so you can log in directly as the development user.
 
 From the **developer machine**:
 
@@ -407,5 +418,221 @@ Once verified, SSH is now:
 - Key-only (no password logins).
 - Root logins disabled.
 - Ready for you to continue with additional hardening and service deployment (Docker, databases, Vault, and Keycloak configuration in subsequent sections).
+
+---
+
+
+
+
+## 2. Rootless Docker Install
+
+This section installs **Docker Engine** and configures it in **rootless mode** so containers run under the dedicated
+`developer_network_tools` account (recommended for development and for running services without granting root-level Docker access).
+
+### 2.1 Install Docker Engine Packages
+
+> Run these commands as your **admin (sudo-capable) user**.
+
+1. (Optional) Remove conflicting packages that may be present from older installs:
+
+   ```bash
+   sudo apt remove -y docker.io docker-doc docker-compose podman-docker containerd runc || true
+   ```
+
+2. Install prerequisites and add Docker’s official APT repository:
+
+   ```bash
+   sudo apt update
+   sudo apt install -y ca-certificates curl
+
+   sudo install -m 0755 -d /etc/apt/keyrings
+   sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+   sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+   sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<'EOF'
+   Types: deb
+   URIs: https://download.docker.com/linux/ubuntu
+   Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+   Components: stable
+   Signed-By: /etc/apt/keyrings/docker.asc
+   EOF
+
+   sudo apt update
+   ```
+
+3. Install Docker Engine + CLI + container runtime + Buildx + Compose plugin:
+
+   ```bash
+   sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+   ```
+
+### 2.2 Install Rootless Prerequisites
+
+> Run these commands as your **admin (sudo-capable) user**.
+
+Install the packages required for rootless Docker:
+
+```bash
+sudo apt install -y uidmap docker-ce-rootless-extras
+```
+
+Recommended (rootless networking + storage helpers):
+
+```bash
+sudo apt install -y slirp4netns fuse-overlayfs
+```
+
+### 2.3 Configure Subordinate UID/GID Ranges
+
+Rootless Docker relies on subordinate UID/GID ranges. Your user should have at least **65,536** IDs allocated in both files.
+
+> Run these commands as your **admin (sudo-capable) user**.
+
+1. Check current allocations:
+
+   ```bash
+   sudo grep '^developer_network_tools:' /etc/subuid || true
+   sudo grep '^developer_network_tools:' /etc/subgid || true
+   ```
+
+2. If you do not see a line for `developer_network_tools`, add one (choose a range that does not overlap existing entries):
+
+   ```bash
+   echo 'developer_network_tools:100000:65536' | sudo tee -a /etc/subuid
+   echo 'developer_network_tools:100000:65536' | sudo tee -a /etc/subgid
+   ```
+
+3. Re-check:
+
+   ```bash
+   sudo grep '^developer_network_tools:' /etc/subuid
+   sudo grep '^developer_network_tools:' /etc/subgid
+   ```
+
+### 2.4 Disable Rootful Docker Daemon (Recommended)
+
+If you intend to use **rootless Docker only**, disable the system-wide daemon and socket to avoid confusion over which daemon your CLI is talking to.
+
+> Run these commands as your **admin (sudo-capable) user**.
+
+```bash
+sudo systemctl disable --now docker.service docker.socket || true
+sudo rm -f /var/run/docker.sock || true
+```
+
+### 2.5 Install and Start Rootless Docker
+
+> Run these commands as the **developer user**.
+
+1. Switch into the development account:
+
+   ```bash
+   sudo -iu developer_network_tools
+   ```
+
+2. Install the rootless Docker user-service:
+
+   ```bash
+   dockerd-rootless-setuptool.sh install
+   ```
+
+3. Start the daemon (user-level systemd service):
+
+   ```bash
+   systemctl --user start docker
+   systemctl --user status docker --no-pager
+   ```
+
+4. Confirm the Docker CLI is using the rootless context:
+
+   ```bash
+   docker context ls
+   docker context use rootless || true
+   docker info | sed -n '1,80p'
+   ```
+
+### 2.6 Enable Rootless Docker at Boot
+
+Rootless Docker runs as a **user service**, so to have it start on boot (without an interactive login), enable “linger” for the user.
+
+> Run this command as your **admin (sudo-capable) user**.
+
+```bash
+sudo loginctl enable-linger developer_network_tools
+```
+
+You can confirm linger status with:
+
+```bash
+loginctl show-user developer_network_tools -p Linger
+```
+
+### 2.7 Configure Shell Environment
+
+In most cases, the setup tool configures a Docker context so the CLI finds the rootless socket automatically.
+If you prefer to pin it explicitly, add `DOCKER_HOST` to the developer user’s shell profile.
+
+> Run these commands as **developer_network_tools**.
+
+```bash
+echo 'export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### 2.8 Validate Rootless Docker
+
+> Run these commands as **developer_network_tools**.
+
+1. Verify versions:
+
+   ```bash
+   docker version
+   docker compose version
+   ```
+
+2. Run a test container:
+
+   ```bash
+   docker run --rm hello-world
+   ```
+
+3. Confirm rootless is in effect:
+
+   ```bash
+   docker info | grep -i rootless || true
+   ```
+
+### 2.9 Rootless Notes and Troubleshooting
+
+**1) Ports below 1024**
+- Rootless containers cannot bind privileged ports (e.g., 80/443) by default.
+- Use high ports during development (e.g., `8080:80`, `8443:443`).
+
+**2) User namespace restrictions on Ubuntu 24.04+**
+- If rootless setup fails with `permission denied` / `operation not permitted` around `unshare` or user namespaces, check:
+
+  ```bash
+  cat /proc/sys/user/max_user_namespaces
+  cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || true
+  sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true
+  ```
+
+  If your environment restricts unprivileged user namespaces (often via AppArmor policy), rootless Docker will not start until that policy is adjusted.
+  Prefer a targeted policy change over disabling protections globally.
+
+**3) Networking expectations**
+- Rootless uses user-space networking. Services should be accessed via published ports (`-p` / `ports:` in Compose), not via container IPs.
+
+**4) “Which Docker am I talking to?”**
+- If you see `/var/run/docker.sock`, you are talking to **rootful** Docker.
+- Rootless uses: `unix:///run/user/<UID>/docker.sock`.
+
+To confirm which socket is active:
+
+```bash
+echo "${DOCKER_HOST-<unset>}"
+docker context show
+docker info | sed -n '1,35p'
+```
 
 ---
