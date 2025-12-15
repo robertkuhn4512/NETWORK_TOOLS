@@ -23,6 +23,7 @@ Later, this server will host:
 
 ## Table of Contents
 
+- [0. Repository File Structure](#0-repository-file-structure)  
 - [1. System Preparation](#1-system-preparation)  
   - [1.1 Assumptions](#11-assumptions)  
   - [1.2 Update the Operating System](#12-update-the-operating-system)  
@@ -46,7 +47,54 @@ Later, this server will host:
   - [2.6 Enable Rootless Docker at Boot](#26-enable-rootless-docker-at-boot)  
   - [2.7 Configure Shell Environment](#27-configure-shell-environment)  
   - [2.8 Validate Rootless Docker](#28-validate-rootless-docker)  
-  - [2.9 Rootless Notes and Troubleshooting](#29-rootless-notes-and-troubleshooting)  
+  - [2.9 Rootless Notes and Troubleshooting](#29-rootless-notes-and-troubleshooting)
+- [3. Vault Bring-up](#3-vault-bring-up)  
+  - [3.1 Generate TLS Certificates](#31-generate-tls-certificates)  
+  - [3.2 Validate Certificates](#32-validate-certificates)  
+  - [3.3 Start Vault with Docker Compose](#33-start-vault-with-docker-compose)  
+  - [3.4 Confirm Vault is Reachable](#34-confirm-vault-is-reachable)  
+  - [3.5 Vault Bring-up Troubleshooting](#35-vault-bring-up-troubleshooting)  
+
+---
+
+## 0. Repository File Structure
+
+Use this section to document the repository layout on the server. The easiest way to keep it current is to run
+`tree` at the project root and paste the output into the fenced block below.
+
+> Suggested command: `tree -a -L 8`
+
+```text
+# Paste output of: tree
+.
+└── NETWORK_TOOLS
+    ├── backend
+    │   ├── app
+    │   │   ├── mariadb_queries
+    │   │   ├── postgres
+    │   │   ├── routers
+    │   │   └── security
+    │   │       └── configuration_files
+    │   │           └── vault
+    │   │               ├── certificates
+    │   │               ├── certs
+    │   │               │   ├── ca.crt
+    │   │               │   ├── ca.key
+    │   │               │   ├── ca.srl
+    │   │               │   ├── cert.crt
+    │   │               │   ├── cert.key
+    │   │               │   └── cert.leaf.only.crt
+    │   │               ├── config
+    │   │               │   └── vault_configuration_primary_node.hcl
+    │   │               └── Dockerfile
+    │   ├── build_scripts
+    │   │   └── generate_local_vault_certs.sh
+    │   └── nginx
+    ├── docker-compose.prod.yml
+    ├── frontend
+    └── readme.md
+```
+
 ---
 
 ## 1. System Preparation
@@ -73,6 +121,7 @@ Update package metadata and upgrade all installed packages:
 
 ```bash
 sudo apt update
+sudo apt install -y openssl
 sudo apt full-upgrade -y
 ```
 
@@ -634,5 +683,153 @@ echo "${DOCKER_HOST-<unset>}"
 docker context show
 docker info | sed -n '1,35p'
 ```
+
+---
+## 3. Vault Bring-up
+
+This section documents how to generate local TLS material and start the **Vault** container using
+`docker-compose.prod.yml` under **rootless Docker**.
+
+Current target URL (may change later in production):
+
+- `https://vault_production_node:8200`
+
+> Note: For this URL to work from the *host* (browser/curl), the hostname `vault_production_node` must resolve to the host
+running Docker (see Section 3.4).
+
+### 3.1 Generate TLS Certificates
+
+> Run the generator as **developer_network_tools** (no sudo).  
+> Ensure OpenSSL is installed first (admin user).
+
+1. Install OpenSSL (admin / sudo-capable user):
+
+   ```bash
+   sudo apt update
+   sudo apt install -y openssl
+   ```
+
+2. Run the certificate generator (developer user):
+
+   ```bash
+   cd ~/NETWORK_TOOLS
+   chmod +x ./backend/build_scripts/generate_local_vault_certs.sh
+   ./backend/build_scripts/generate_local_vault_certs.sh --force
+   ```
+
+3. Confirm expected outputs exist:
+
+   ```bash
+   ls -lh ./backend/app/security/configuration_files/vault/certs/
+   ```
+
+### 3.2 Validate Certificates
+
+Run these checks on the server:
+
+```bash
+CERT_DIR="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs"
+CERT="$CERT_DIR/cert.crt"
+KEY="$CERT_DIR/cert.key"
+CA="$CERT_DIR/ca.crt"
+
+# Key parses cleanly
+openssl pkey -in "$KEY" -check -noout
+
+# Cert metadata
+openssl x509 -in "$CERT" -noout -subject -issuer -dates
+
+# Cert matches key (hashes must match)
+openssl x509 -noout -modulus -in "$CERT" | openssl sha256
+openssl rsa  -noout -modulus -in "$KEY"  | openssl sha256
+
+# SANs include vault_production_node
+openssl x509 -in "$CERT" -noout -text | sed -n '/Subject Alternative Name/,+2p'
+
+# Verify leaf chains to CA
+LEAF_ONLY="$CERT_DIR/cert.leaf.only.crt"
+if [[ -f "$LEAF_ONLY" ]]; then
+  openssl verify -CAfile "$CA" "$LEAF_ONLY"
+else
+  # Best-effort fallback (may fail if CERT is a fullchain)
+  openssl verify -CAfile "$CA" "$CERT" || true
+fi
+```
+
+### 3.3 Start Vault with Docker Compose
+
+> Run these commands as **developer_network_tools**.
+
+1. Confirm your CLI is talking to the **rootless** Docker daemon:
+
+   ```bash
+   docker context ls
+   docker context use rootless || true
+   docker context show
+   ```
+
+2. Ensure the local Vault data directories exist (bind mounts):
+
+   ```bash
+   cd ~/NETWORK_TOOLS
+   mkdir -p ./container_data/vault/data ./container_data/vault/data/logs
+   ```
+
+3. Validate the Compose file renders:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml config > /tmp/network_tools.compose.rendered.yml
+   ```
+
+4. Start Vault:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d vault_production_node
+   ```
+
+5. Follow logs:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml logs -f vault_production_node
+   ```
+
+### 3.4 Confirm Vault is Reachable
+
+If you are testing from the **same server** running Docker, add a hosts entry so `vault_production_node` resolves locally:
+
+```bash
+echo "127.0.0.1 vault_production_node" | sudo tee -a /etc/hosts
+```
+
+Then validate TLS from the host:
+
+```bash
+CA="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+openssl s_client -connect vault_production_node:8200 -servername vault_production_node -CAfile "$CA" </dev/null
+```
+
+And validate HTTP response (Vault may return 503 until initialized/unsealed):
+
+```bash
+curl --cacert "$CA" -v https://vault_production_node:8200/v1/sys/health
+```
+
+### 3.5 Vault Bring-up Troubleshooting
+
+**1) TLS errors (x509 hostname mismatch)**
+- Ensure `vault_production_node` appears under *Subject Alternative Name* (Section 3.2).
+- Ensure you are connecting using the same hostname that is present in the SAN list.
+
+**2) “Connection refused” or cannot reach port 8200**
+- Confirm the service is running and ports are published:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml ps
+  ss -lntp | egrep ':8200|:8201' || true
+  ```
+
+**3) Permission denied writing under `/vault/data`**
+- Confirm `./container_data/vault/data` exists and is writable by your rootless user.
+- If still failing, consider adding `user: "0:0"` to the Compose service for Vault (still rootless on the host).
 
 ---
