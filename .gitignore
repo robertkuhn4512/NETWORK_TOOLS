@@ -18,3 +18,7 @@ logs/
 # Local override files
 .env
 .env.*
+
+
+# JetBrains IDE
+.idea/
