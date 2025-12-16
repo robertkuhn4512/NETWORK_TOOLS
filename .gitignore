@@ -1,0 +1,20 @@
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# Logs
+logs/
+*.log
+
+# Local override files
+.env
+.env.*

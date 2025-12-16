@@ -1,0 +1,49 @@
+name: network_tools
+
+services:
+  # From the project root (~/NETWORK_TOOLS) to start all containers
+  # docker compose -f docker-compose.prod.yml up -d
+  #
+  # If you only want to start the Vault service (named vault_production_node)
+  # docker compose -f docker-compose.prod.yml up -d vault_production_node
+  #
+  # Monitor the log file while the container is running (It must be brought up and running in order to populate the log file)
+  # docker compose -p network_tools -f docker-compose.prod.yml logs --tail 200 -f --timestamps vault_production_node
+  #
+  #
+  vault_production_node:
+    image: hashicorp/vault:1.21.1
+    hostname: vault_production_node
+    container_name: vault_production_node
+    # Rootless: publish ports instead of host networking
+    ports:
+      - "8200:8200"
+      - "8201:8201"
+      # Only keep these if your Vault config actually listens on them
+      # - "8084:8084"
+      # - "8085:8085"
+    build:
+      context: backend/app/security/configuration_files/vault
+      dockerfile: Dockerfile
+    user: "0:0"
+    restart: unless-stopped
+    volumes:
+      - ./backend/app/security/configuration_files/vault/config/vault_configuration_primary_node.hcl:/vault/config/config.hcl:ro
+
+      # TLS material (read-only)
+      - ./backend/app/security/configuration_files/vault/certs/cert.crt:/vault/certs/cert.crt:ro
+      - ./backend/app/security/configuration_files/vault/certs/cert.key:/vault/certs/cert.key:ro
+
+      # Data/logs (must be writable by the container user)
+      - ./container_data/vault/data:/vault/data
+      - ./container_data/vault/data/logs:/vault/logs
+    environment:
+      VAULT_DISABLE_MLOCK: "true"
+      VAULT_UI: "true"
+      VAULT_CACERT: "/vault/certs/cert.crt"
+      VAULT_ADDR: "https://vault_production_node:8200"
+      VAULT_API_ADDR: "https://vault_production_node:8200"
+      VAULT_CLUSTER_ADDR: "https://vault_production_node:8201"
+      VAULT_LOG_LEVEL: "debug"
+      VAULT_RAFT_NODE_ID: "Node1"
+    entrypoint: ["/bin/sh","-lc","exec vault server -config=/vault/config/config.hcl"]
