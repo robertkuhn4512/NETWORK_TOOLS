@@ -54,6 +54,15 @@ Later, this server will host:
   - [3.3 Start Vault with Docker Compose](#33-start-vault-with-docker-compose)  
   - [3.4 Confirm Vault is Reachable](#34-confirm-vault-is-reachable)  
   - [3.5 Vault Bring-up Troubleshooting](#35-vault-bring-up-troubleshooting)  
+  - [3.6 Initialize and Unseal Vault (First Run)](#36-initialize-and-unseal-vault-first-run)  
+    - [3.6.1 Run the Init + Unseal Script](#361-run-the-init--unseal-script)  
+    - [3.6.2 Bootstrap Artifacts (Download Then Remove)](#362-bootstrap-artifacts-download-then-remove)  
+  - [3.7 TLS Certificate Trust and Best Practices](#37-tls-certificate-trust-and-best-practices)  
+    - [3.7.1 Local Development (Self-Signed CA)](#371-local-development-self-signed-ca)  
+    - [3.7.2 Production Environments (Recommended)](#372-production-environments-recommended)  
+    - [3.7.3 Practical Guidance for This Repo](#373-practical-guidance-for-this-repo)  
+- [Appendix A – Certificate Management](#appendix-a--certificate-management)  
+  - [A.1 Vault TLS Certificates – What to Keep and Where](#a1-vault-tls-certificates--what-to-keep-and-where)  
 
 ---
 
@@ -81,15 +90,15 @@ developer_network_tools@networktoolsvm:~$ tree --charset ascii
     |   |               |   |-- root_token.json
     |   |               |   `-- unseal_keys.json
     |   |               |-- certs
-    |   |               |   |-- ca.crt
-    |   |               |   |-- ca.key
-    |   |               |   |-- ca.srl
-    |   |               |   |-- cert.crt
-    |   |               |   `-- cert.key
+    |   |               |   |-- ca.crt      # Created with generate_local_vault_certs.sh
+    |   |               |   |-- ca.key      # Same - Remove and store somewhere off the servers and NOT in git
+    |   |               |   |-- ca.srl      # Same
+    |   |               |   |-- cert.crt    # Same
+    |   |               |   `-- cert.key    # Same
     |   |               |-- config
     |   |               |   `-- vault_configuration_primary_node.hcl
-    |   |               |-- Dockerfile
-    |   |               `-- vault_configuration_primary_node.hcl
+    |   |               `-- Dockerfile
+    |   |               
     |   |-- build_scripts
     |   |   |-- generate_local_vault_certs.sh
     |   |   `-- vault_first_time_init_only_rootless.sh
@@ -996,3 +1005,117 @@ For production, avoid shipping a “dev CA” and avoid `-k` entirely. Typical p
   - Update your Vault listener config (`tls_cert_file`, `tls_key_file`) and Compose mounts accordingly
   - Remove any “insecure fallback” behavior from operational runbooks
 
+
+
+
+
+
+---
+
+## Appendix A – Certificate Management
+
+### A.1 Vault TLS Certificates – What to Keep and Where
+
+The local Vault TLS setup uses a small script to generate a private CA and a server certificate for the Vault container. The script typically produces the following key files:
+
+- `ca.crt`   – CA certificate (public)
+- `ca.key`   – CA private key (**sensitive**)
+- `cert.crt` – Vault server certificate (full chain; public)
+- `cert.key` – Vault server private key (**sensitive**)
+
+Any intermediate files (CSRs, temporary leaf certs, extfiles, etc.) are treated as ephemeral and can be discarded after a successful run.
+
+#### 1. Files That Must Be Treated as Secrets
+
+These files **must never** be committed to git or shared outside secure channels:
+
+- **`ca.key` (CA private key)**  
+  - This is the root of trust for this local CA.  
+  - Anyone who obtains this can mint certificates that will be trusted wherever `ca.crt` is trusted.  
+  - Keep it only:
+    - On your admin machine, or
+    - In a designated secure location on the server with restricted permissions.
+  - Back it up to encrypted/offline storage (e.g., password manager attachment, encrypted archive, secure USB).
+  - If/when you rotate the CA, this is the file you intentionally retire or destroy.
+
+- **`cert.key` (Vault server private key)**  
+  - Needed by Vault at runtime but must remain private.  
+  - Should only live on the Vault host, under tight permissions (e.g., `chmod 600`).  
+  - Never commit this to git. If backed up, treat it as any other secret (encrypted backup, not stored in the repo).
+
+#### 2. Files That Can Be Safely Distributed
+
+These files are public by design and can be shared with clients/services that need to trust Vault:
+
+- **`ca.crt` (CA certificate)**  
+  - Public certificate corresponding to `ca.key`.  
+  - Clients and tools that need to trust Vault’s TLS certificate import this CA.  
+  - It is acceptable to distribute this to any system that should trust Vault.  
+  - Even though it is public, it is still recommended to keep it out of the application source tree and treat it as generated data rather than source code.
+
+- **`cert.crt` (Vault server certificate / full chain)**  
+  - Contains the Vault server certificate (and usually the CA chain).  
+  - No private key material is present.  
+  - Safe to inspect, copy, and distribute as needed.  
+  - Can be regenerated as long as `ca.key` is available.
+
+#### 3. Recommended Project Layout and Git Hygiene
+
+By default, the script writes certs to a path similar to:
+
+```text
+backend/app/security/configuration_files/vault/certs/
+```
+
+Recommended practices:
+
+1. **Ignore the cert directory in git**
+
+   Add the following to `.gitignore` (from the project root):
+
+   ```gitignore
+   backend/app/security/configuration_files/vault/certs/
+   ```
+
+   This prevents accidental commits of `ca.key`, `cert.key`, `ca.crt`, or `cert.crt`.
+
+2. **Use the cert directory as the runtime mount for Vault**
+
+   - Keep all cert-related files under `backend/app/security/configuration_files/vault/certs/`.
+   - Mount that directory into the Vault container (e.g., `/vault/certs`) via `docker-compose`.
+   - Recommended permissions on the host:
+
+     ```bash
+     chmod 700 backend/app/security/configuration_files/vault/certs
+     chmod 600 backend/app/security/configuration_files/vault/certs/ca.key
+     chmod 600 backend/app/security/configuration_files/vault/certs/cert.key
+     chmod 644 backend/app/security/configuration_files/vault/certs/ca.crt
+     chmod 644 backend/app/security/configuration_files/vault/certs/cert.crt
+     ```
+
+3. **Perform a one-time secure backup of critical keys**
+
+   After the script runs and Vault is confirmed working, back up at least:
+
+   - `ca.key` (mandatory)
+   - `cert.key` (optional, but convenient if you don’t want to reissue)
+
+   Store these backups in encrypted/offline storage (not in the repo, not on shared drives).
+
+#### 4. Minimal “Must-Keep” List
+
+If you are comfortable re-running the script and re-issuing certificates when needed:
+
+- **Absolutely must keep and protect securely:**
+  - `ca.key`
+
+- **Should be kept with Vault for runtime and may be backed up:**
+  - `cert.key`
+  - `ca.crt`
+  - `cert.crt`
+
+In short:
+
+- `ca.key` and `cert.key` are **secrets**. Protect them and never commit them.  
+- `ca.crt` and `cert.crt` are **public certs**. Safe to distribute, but best kept in a non-versioned `certs/` directory rather than in the source tree.  
+- The entire `vault/certs` directory should be treated as generated runtime data and excluded from git.
