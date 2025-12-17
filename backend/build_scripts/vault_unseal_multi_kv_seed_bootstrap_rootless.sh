@@ -706,7 +706,7 @@ Default expected token files:
 MOUNTS_JSON="$(fetch_mounts_json "$TOKEN_VALUE")"
 
 # Validate spec shape
-jq -e '.mounts|type=="array" and (.mounts|length>0)' "$SPEC_JSON" >/dev/null 2>&1 || die "Spec must include .mounts as a non-empty array."
+jq -e '(.mounts|type=="array") and (.mounts|length>0)' "$SPEC_JSON" >/dev/null 2>&1 || die "Spec must include .mounts as a non-empty array."
 
 mount_count="$(get_mount_count)"
 log "INFO: Spec mounts: $mount_count"

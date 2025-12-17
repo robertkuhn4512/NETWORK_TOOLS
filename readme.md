@@ -1191,29 +1191,39 @@ The multi-mount seeder uses a single JSON file (a “spec”) that defines:
 A typical pattern is:
 
 ```json
+
 {
   "mounts": [
     {
-      "mount": "app_secrets",
-      "type": "kv",
+      "mount": "frontend_app_secrets",
       "version": 2,
-      "description": "Network Tools app secrets (dev)",
-      "max_versions": 20,
-      "cas_required": true,
-      "delete_version_after": "0s"
-    }
-  ],
-  "writes": [
-    {
-      "mount": "app_secrets",
-      "path": "bootstrap/creds",
-      "data": {
-        "un": "something",
-        "pw": "password"
-      }
+      "description": "Frontend Secrets!",
+      "v2_config": {
+        "max_versions": 20,
+        "cas_required": true,
+        "delete_version_after": "0s"
+      },
+      "prefix": "my_favorite_creds",
+      "secrets": [
+        {
+          "path": "creds",
+          "data": {
+            "un": "something",
+            "pw": "password"
+          }
+        },
+        {
+          "path": "creds_two",
+          "data": {
+            "un": "something",
+            "pw": "password"
+          }
+        }
+      ]
     }
   ]
 }
+
 ```
 
 Notes:
