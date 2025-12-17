@@ -19,6 +19,32 @@ logs/
 .env
 .env.*
 
+# Cert Directory
+backend/app/security/configuration_files/vault/certs/
 
 # JetBrains IDE
 .idea/
+
+# --- TLS private keys (never commit) ---
+*.key
+*.key.pem
+*.p12
+*.pfx
+
+# --- Certificates (optional: ignore if you generate locally) ---
+*.crt
+*.cer
+*.pem
+*.der
+
+# --- Vault bootstrap artifacts (never commit) ---
+**/bootstrap/**
+**/unseal_keys*.json
+**/root_token*
+**/seeded_secrets*.json
+
+# --- CA serial files ---
+*.srl
+
+#Ignore local how to videos
+how_to_videos/*

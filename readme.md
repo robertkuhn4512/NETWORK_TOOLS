@@ -61,9 +61,19 @@ Later, this server will host:
     - [3.7.1 Local Development (Self-Signed CA)](#371-local-development-self-signed-ca)  
     - [3.7.2 Production Environments (Recommended)](#372-production-environments-recommended)  
     - [3.7.3 Practical Guidance for This Repo](#373-practical-guidance-for-this-repo)  
+  - [3.8 Vault Unseal and KV Seeding Bootstrap Scripts](#38-vault-unseal-and-kv-seeding-bootstrap-scripts)  
+    - [3.8.1 Overview (Which Script to Use)](#381-overview-which-script-to-use)  
+    - [3.8.2 Unseal-Only Usage](#382-unseal-only-usage)  
+    - [3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh)](#383-single-mount-seeder-vault_unseal_kv_seed_bootstrap_rootlesssh)  
+    - [3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh)](#384-multi-mount-seeder-vault_unseal_multi_kv_seed_bootstrap_rootlesssh)  
+    - [3.8.5 Seed Input Formats](#385-seed-input-formats)  
+    - [3.8.6 Multi Spec JSON Schema](#386-multi-spec-json-schema)  
+    - [3.8.7 Example Seed Files](#387-example-seed-files)  
+    - [3.8.8 Output, Artifact Storage, and Security Notes](#388-output-artifact-storage-and-security-notes)  
+    - [3.8.9 Troubleshooting](#389-troubleshooting)  
 - [Appendix A – Certificate Management](#appendix-a--certificate-management)  
   - [A.1 Vault TLS Certificates – What to Keep and Where](#a1-vault-tls-certificates--what-to-keep-and-where)  
-
+  - [A.2 Rootless Docker and Subordinate UID/GID Ranges (subuid/subgid)](#a2-rootless-docker-and-subordinate-uidgid-ranges-subuidsubgid)
 ---
 
 ## 0. Repository File Structure
@@ -85,9 +95,12 @@ developer_network_tools@networktoolsvm:~$ tree --charset ascii
     |   |   `-- security
     |   |       `-- configuration_files
     |   |           `-- vault
-    |   |               |-- bootstrap
+    |   |               |-- bootstrap # After init and setup, These files should be removed and stored securely Offline and somewhere online securely
     |   |               |   |-- root_token
     |   |               |   |-- root_token.json
+    |   |               |   |-- seeded_secrets_app_secrets.json
+    |   |               |   |-- seeded_secrets_fast_api.json
+    |   |               |   |-- seed_secrets.template.json
     |   |               |   `-- unseal_keys.json
     |   |               |-- certs
     |   |               |   |-- ca.crt      # Created with generate_local_vault_certs.sh
@@ -101,7 +114,8 @@ developer_network_tools@networktoolsvm:~$ tree --charset ascii
     |   |               
     |   |-- build_scripts
     |   |   |-- generate_local_vault_certs.sh
-    |   |   `-- vault_first_time_init_only_rootless.sh
+    |   |   |-- vault_first_time_init_only_rootless.sh
+    |   |   `-- vault_unseal_kv_seed_bootstrap_rootless.sh
     |   `-- nginx
     |-- container_data
     |   `-- vault
@@ -112,6 +126,7 @@ developer_network_tools@networktoolsvm:~$ tree --charset ascii
     |           |   `-- snapshots
     |           `-- vault.db
     |-- docker-compose.prod.yml
+    |-- environment_variable_guide.md
     |-- frontend
     `-- readme.md
 ```
@@ -1012,6 +1027,270 @@ For production, avoid shipping a “dev CA” and avoid `-k` entirely. Typical p
 
 ---
 
+
+### 3.8 Vault Unseal and KV Seeding Bootstrap Scripts
+
+This repo intentionally keeps **two** seeding approaches so you have more than one option:
+
+- **Single-mount seeder**: `./backend/build_scripts/vault_unseal_kv_seed_bootstrap_rootless.sh`  
+  Best for the common case: unseal Vault (if needed), optionally create **one** KV mount, then seed **one JSON input** into that mount.
+- **Multi-mount seeder**: `./backend/build_scripts/vault_unseal_multi_kv_seed_bootstrap_rootless.sh`  
+  Best when you want to create/seed **multiple** KV mounts and paths in a single run (one “spec” file that defines the whole bootstrap).
+
+Both scripts are designed for **rootless Docker** workflows and default to using artifact files produced by the first-time init/unseal script under:
+
+- Bootstrap artifacts directory (default):  
+  `$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap`
+
+> Security note: these scripts can optionally print secrets to the terminal. Assume terminal output may be logged or captured. Prefer storing resolved secrets in the artifact file and moving them off-host immediately.
+
+#### 3.8.1 Overview (Which Script to Use)
+
+Use the **single-mount seeder** when you:
+- only need one KV engine mount (example: `app_secrets`)
+- want a simple JSON “template” checked into git (optionally using generators/env injection), and a resolved artifact JSON saved under the bootstrap dir
+
+Use the **multi-mount seeder** when you:
+- want to stand up multiple KV mounts (example: `app_secrets`, `frontend_environment_variables`, `fastapi_environment_variables`, etc.)
+- want a single input file that declares *all* mounts + *all* secret writes in order
+
+#### 3.8.2 Unseal-Only Usage
+
+If you only need to **unseal** Vault and do not want to create mounts or seed secrets, run the single-mount script without any `--create-kv` / `--secrets-json` options:
+
+```bash
+cd ~/NETWORK_TOOLS
+
+bash ./backend/build_scripts/vault_unseal_kv_seed_bootstrap_rootless.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+```
+
+Notes:
+- If Vault is already unsealed, the script should detect that and exit cleanly.
+- If you previously downloaded and removed `unseal_keys.json` (recommended), pass it back in for that run via `--unseal-keys /path/to/unseal_keys.json`.
+
+#### 3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh)
+
+**Primary goal**: unseal Vault (if sealed), optionally create a KV mount, then seed secrets from JSON, and write a “resolved secrets” artifact file next to the root token so you can download/store it securely.
+
+Typical usage:
+
+```bash
+bash ./backend/build_scripts/vault_unseal_kv_seed_bootstrap_rootless.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --unseal-keys "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" \
+  --unseal-required 3 \
+  --create-kv "app_secrets" \
+  --kv-version 2 \
+  --kv-description "Network Tools app secrets (dev)" \
+  --kv-max-versions 20 \
+  --kv-cas-required true \
+  --kv-delete-version-after 0s \
+  --prompt-token \
+  --secrets-json "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seed_secrets.template.json" \
+  --secrets-prefix "bootstrap" \
+  --print-secrets
+```
+
+Key options (common):
+- `--vault-addr`  
+  Defaults to `https://vault_production_node:8200`
+- `--ca-cert`  
+  Strongly recommended for HTTPS in dev (your local CA). If omitted, the script will try system trust and may fall back to insecure `-k` behavior with a warning.
+- `--unseal-keys`  
+  Defaults to: `$BOOTSTRAP_DIR/unseal_keys.json`
+- `--unseal-required <N>`  
+  Optional, but recommended. If set, the script validates you have at least **N** keys and only attempts **N** unseal operations.
+- `--prompt-token` / `--token` / `--token-file`  
+  Provide a Vault token. If not provided, the script attempts the default bootstrap token files.
+- `--create-kv <mount>`  
+  Enables the KV engine at `<mount>/` (for example `app_secrets/`)
+- `--secrets-json <file>`  
+  Your template JSON file describing what to write.
+- `--secrets-prefix <prefix>`  
+  Optional prefix under the mount (example: `bootstrap/app/config` instead of `app/config`).
+
+Output artifacts (defaults):
+- Resolved secrets JSON artifact:  
+  `$BOOTSTRAP_DIR/seeded_secrets_<mount>.json`
+
+The script will also echo “recommended next steps” that include `scp` commands to download artifacts and a `rm -f` example to remove sensitive files from the server after verifying the download.
+
+#### 3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh)
+
+**Primary goal**: perform the same unseal/token handling, but allow a single “spec” file that:
+- creates multiple KV mounts (optional per mount)
+- writes multiple secret objects across multiple paths/mounts
+- stores a resolved “what was written” artifact under the same bootstrap directory
+
+This is intended for “bootstrap the whole cluster in one run” operations.
+
+Typical usage (example):
+
+```bash
+bash ./backend/build_scripts/vault_unseal_multi_kv_seed_bootstrap_rootless.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --unseal-required 3 \
+  --prompt-token \
+  --spec-json "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seed_kv_spec.json" \
+  --print-secrets
+```
+
+#### 3.8.5 Seed Input Formats
+
+The **single-mount seeder** supports two JSON formats for `--secrets-json`.
+
+**A) Map format (recommended): “path -> data object”**
+
+```json
+{
+  "app/config": {
+    "db_username": "example_user",
+    "db_password": { "generate": { "type": "url_safe", "bytes": 32 } }
+  },
+  "jwt": {
+    "secret": { "generate": { "type": "hex", "bytes": 32 } }
+  }
+}
+```
+
+**B) List format: “explicit path + data (+ optional CAS per secret)”**
+
+```json
+[
+  {
+    "path": "app/config",
+    "data": {
+      "db_username": "example_user",
+      "db_password": { "generate": { "type": "base64", "bytes": 32 } }
+    },
+    "cas": 0
+  }
+]
+```
+
+Supported generators:
+- `hex` (requires `bytes`)
+- `base64` (requires `bytes`)
+- `url_safe` (requires `bytes`)
+- `uuid`
+
+Optional “ENV injection” values (useful when you *must* avoid putting secrets into a file):
+- Required env var: `{ "env": "ENV_VAR_NAME" }`
+- Optional env var: `{ "env": "ENV_VAR_NAME", "optional": true }`
+
+#### 3.8.6 Multi Spec JSON Schema
+
+The multi-mount seeder uses a single JSON file (a “spec”) that defines:
+- mounts to ensure exist (optional per item)
+- writes to perform (mount + path + data)
+
+A typical pattern is:
+
+```json
+{
+  "mounts": [
+    {
+      "mount": "app_secrets",
+      "type": "kv",
+      "version": 2,
+      "description": "Network Tools app secrets (dev)",
+      "max_versions": 20,
+      "cas_required": true,
+      "delete_version_after": "0s"
+    }
+  ],
+  "writes": [
+    {
+      "mount": "app_secrets",
+      "path": "bootstrap/creds",
+      "data": {
+        "un": "something",
+        "pw": "password"
+      }
+    }
+  ]
+}
+```
+
+Notes:
+- Keep the spec **template-safe** (use `generate` directives and/or env injection) whenever possible.
+- The “resolved” output (actual generated values) should be written as an artifact file under the bootstrap directory for secure download.
+
+#### 3.8.7 Example Seed Files
+
+**Single-mount template example** (map format):
+
+```json
+{
+  "bootstrap/creds": {
+    "un": "example_user",
+    "pw": { "generate": { "type": "url_safe", "bytes": 24 } }
+  },
+  "bootstrap/crypto": {
+    "jwt_secret": { "generate": { "type": "hex", "bytes": 32 } },
+    "fernet_key": { "generate": { "type": "base64", "bytes": 32 } }
+  }
+}
+```
+
+**Multi spec example** (mount + multiple writes):
+
+```json
+{
+  "mounts": [
+    { "mount": "app_secrets", "type": "kv", "version": 2, "description": "Network Tools app secrets (dev)" }
+  ],
+  "writes": [
+    { "mount": "app_secrets", "path": "bootstrap/creds", "data": { "un": "example_user", "pw": { "generate": { "type": "url_safe", "bytes": 24 } } } },
+    { "mount": "app_secrets", "path": "bootstrap/jwt", "data": { "secret": { "generate": { "type": "hex", "bytes": 32 } } } }
+  ]
+}
+```
+
+#### 3.8.8 Output, Artifact Storage, and Security Notes
+
+When you run init/unseal and seed operations, you should treat these as sensitive artifacts:
+
+- `unseal_keys.json`
+- `root_token` / `root_token.json`
+- any `seeded_secrets_*.json` output artifacts
+
+Recommended flow:
+1. Run the script(s) on the server.
+2. `scp -p` the required artifacts to a secure workstation or secrets storage location.
+3. Verify the downloads.
+4. Remove sensitive artifacts from the server (or move into an encrypted/controlled location).
+
+Example (download from server):
+
+```bash
+scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" .
+scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token" .
+scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json" .
+# Optional: resolved seed artifact(s)
+scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_app_secrets.json" .
+```
+
+#### 3.8.9 Troubleshooting
+
+
+- **Secrets file is not valid JSON**  
+  Ensure your `--secrets-json` file is strict JSON (double quotes, `:` between keys/values, no trailing commas). For example, this is **invalid**: `{'un':'x', 'pw','y'}`. This is valid:
+
+  ```json
+  { "un": "x", "pw": "y" }
+  ```
+- **Vault health response parsing errors (missing `.sealed`)**  
+  Some endpoints differ (`/v1/sys/health` vs `/v1/sys/seal-status`). Use `--verbose` and ensure TLS is configured correctly. If you can `curl --cacert "$CA" https://.../v1/sys/health` successfully, then fix the script inputs accordingly.
+
+- **TLS errors (`unknown CA`, `self-signed certificate in chain`)**  
+  Provide `--ca-cert` pointing at your local CA file, or install the CA into the host trust store (preferred for dev). Avoid relying on `-k` except temporarily for diagnostics.
+
+
 ## Appendix A – Certificate Management
 
 ### A.1 Vault TLS Certificates – What to Keep and Where
@@ -1069,15 +1348,62 @@ backend/app/security/configuration_files/vault/certs/
 
 Recommended practices:
 
-1. **Ignore the cert directory in git**
+1. **Ignore the cert directory / Other important files in git**
 
    Add the following to `.gitignore` (from the project root):
 
    ```gitignore
-   backend/app/security/configuration_files/vault/certs/
+   # OS-specific junk
+    .DS_Store
+    Thumbs.db
+    
+    # Python artifacts
+    __pycache__/
+    *.py[cod]
+    *.pyo
+    
+    # Virtual environments
+    .venv/
+    venv/
+    
+    # Logs
+    logs/
+    *.log
+    
+    # Local override files
+    .env
+    .env.*
+    
+    # Cert Directory
+    backend/app/security/configuration_files/vault/certs/
+    
+    # JetBrains IDE
+    .idea/
+    
+    # --- TLS private keys (never commit) ---
+    *.key
+    *.key.pem
+    *.p12
+    *.pfx
+    
+    # --- Certificates (optional: ignore if you generate locally) ---
+    *.crt
+    *.cer
+    *.pem
+    *.der
+    
+    # --- Vault bootstrap artifacts (never commit) ---
+    **/bootstrap/**
+    **/unseal_keys*.json
+    **/root_token*
+    **/seeded_secrets*.json
+    
+    # --- CA serial files ---
+    *.srl
    ```
 
-   This prevents accidental commits of `ca.key`, `cert.key`, `ca.crt`, or `cert.crt`.
+   This prevents accidental commits of `ca.key`, `cert.key`, `ca.crt`, or `cert.crt` and any other important files.
+
 
 2. **Use the cert directory as the runtime mount for Vault**
 
@@ -1119,3 +1445,76 @@ In short:
 - `ca.key` and `cert.key` are **secrets**. Protect them and never commit them.  
 - `ca.crt` and `cert.crt` are **public certs**. Safe to distribute, but best kept in a non-versioned `certs/` directory rather than in the source tree.  
 - The entire `vault/certs` directory should be treated as generated runtime data and excluded from git.
+
+
+
+## A.2 Rootless Docker and Subordinate UID/GID Ranges (subuid/subgid)
+
+Rootless Docker runs containers **without using real root** on the host. Inside a container, processes may think they are running as `root` (UID `0`), but on the host we **must not** grant real root privileges.
+
+Linux solves this using **user namespaces**: container user IDs (UIDs) and group IDs (GIDs) are **mapped** to a block of normal, unprivileged IDs on the host. That block is called your **subordinate UID/GID ranges**.
+
+## What are UID/GID ranges?
+
+- **UID** = user ID (who owns files / runs processes)
+- **GID** = group ID (group ownership/permissions)
+- **Subordinate range** = a block of IDs your user is allowed to use inside a user namespace
+
+These are configured in:
+
+- `/etc/subuid` (UID ranges)
+- `/etc/subgid` (GID ranges)
+
+A typical entry looks like:
+
+```text
+developer_network_tools:100000:65536
+```
+
+Meaning:
+
+- `developer_network_tools` = the username
+- `100000` = starting ID
+- `65536` = how many IDs are allocated
+
+This grants a host-side range of:
+
+- `100000` through `165535` (65,536 IDs total)
+
+## Why “at least 65,536”?
+
+Many container images and tooling expect a reasonably large ID space for creating users/groups inside containers. The common default is **65,536** (`2^16`). Smaller ranges can cause unexpected permission errors or failures when containers try to create additional users/groups.
+
+## How to check your current ranges
+
+```bash
+whoami
+grep "^$(whoami):" /etc/subuid
+grep "^$(whoami):" /etc/subgid
+```
+
+You should see **one line in each file** for your user, and the last number should be **65536** (or higher).
+
+## How to set the ranges (Ubuntu)
+
+Run as an admin user (or via sudo):
+
+```bash
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $(whoami)
+```
+
+Re-check:
+
+```bash
+grep "^$(whoami):" /etc/subuid /etc/subgid
+```
+
+Then **log out and log back in** (or reboot) so the session picks up the changes.
+
+## Common symptoms when this is missing or wrong
+
+- Rootless Docker daemon fails to start
+- Containers fail to run, or fail on file permission operations
+- Bind mounts/volumes create files owned by “weird” numeric IDs (because mappings are broken)
+
+This is expected behavior when user namespace ID mapping is not configured correctly.
