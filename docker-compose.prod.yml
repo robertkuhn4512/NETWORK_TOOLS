@@ -15,6 +15,9 @@ services:
     image: hashicorp/vault:1.21.1
     hostname: vault_production_node
     container_name: vault_production_node
+    env_file:
+      - .env.prod # Populate any important production environment variables here.
+                  # See the file environment_variable_guide.md for information on what variables to populate
     # Rootless: publish ports instead of host networking
     ports:
       - "8200:8200"
@@ -41,7 +44,9 @@ services:
       VAULT_DISABLE_MLOCK: "true"
       VAULT_UI: "true"
       VAULT_CACERT: "/vault/certs/cert.crt"
-      VAULT_ADDR: "https://vault_production_node:8200"
+      #VAULT_ADDR: "https://vault_production_node:8200"             # For dev container use
+      VAULT_ADDR: "https://${PRIMARY_VAULT_SERVER_FQDN_FULL}:8200"  # For production use with a valid FQDN (Hash the above, unhash this and rebuild)
+                                                                    # This should be populated in the environment file SERVER_1_FQDN_FULL="Your domain name here"
       VAULT_API_ADDR: "https://vault_production_node:8200"
       VAULT_CLUSTER_ADDR: "https://vault_production_node:8201"
       VAULT_LOG_LEVEL: "debug"

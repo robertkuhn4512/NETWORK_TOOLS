@@ -14,6 +14,4 @@ storage "raft" {
   node_id = "Node1"
 }
 
-api_addr     = "https://vault_production_node:8200"
-cluster_addr = "https://vault_production_node:8201"
 ui = true

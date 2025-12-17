@@ -96,8 +96,8 @@ developer_network_tools@networktoolsvm:~$ tree --charset ascii
     |   |               |   |-- cert.crt    # Same
     |   |               |   `-- cert.key    # Same
     |   |               |-- config
-    |   |               |   `-- vault_configuration_primary_node.hcl
-    |   |               `-- Dockerfile
+    |   |               |   `-- vault_configuration_primary_node.hcl        # This is the configuration file for the primary node
+    |   |               `-- Dockerfile      # This is the Dockerfile associated with the vault instance
     |   |               
     |   |-- build_scripts
     |   |   |-- generate_local_vault_certs.sh
@@ -881,13 +881,13 @@ This step is required **one time** for a brand-new Vault instance. It will:
 
    ```bash
    cd ~/NETWORK_TOOLS
-   chmod +x ./backend/build_scripts/vault_init_unseal_rootless_pretty_v6.sh
+   chmod +x ./backend/build_scripts/vault_first_time_init_only_rootless.sh
    ```
 
 3. Run it with your local CA (recommended):
 
    ```bash
-   bash ./backend/build_scripts/vault_init_unseal_rootless_pretty_v6.sh \
+   bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
      --vault-addr https://vault_production_node:8200 \
      --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
    ```
