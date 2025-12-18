@@ -17,7 +17,7 @@ logs/
 
 # Local override files
 .env
-.env.*
+.env
 
 # Cert Directory
 backend/app/security/configuration_files/vault/certs/

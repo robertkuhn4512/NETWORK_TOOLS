@@ -925,6 +925,63 @@ $HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/
   - unseal_keys.json
   - root_token
   - root_token.json
+  
+  Example data below with a default setting of shares=5, threshold=3
+  Meaning, it will create a password shard 5 long, but require only 3 to unseal the vault instance. 
+  By default the init script will do the initial unseal process for you. But everytime the server
+  is shutdown and restarted it will go back to being sealed.
+  
+    ----- /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json -----
+    {
+      "keys": [
+        "0fc7e06a4b4f428ec6703af5144752e95dc5e813b8ec5f4731f7f703ff885e14ad",
+        "fcc27fcf8b26b15cefc6ddfdab2323efe90ce302c70899ee75889fcdc2c6664ac0",
+        "4bf02b6140139e9c302765ca7ec53fbc5f332e8f31e87b48127aeee055a3e1141b",
+        "e242d0d470a123c7d132a377be1a04d670fd1d2c806fe3f5f6339749782483e0c4",
+        "64d0c9dee98e759b4fe9f91f263fca866c790b65087200cd522bac3d0548c85dbd"
+      ],
+      "keys_base64": [
+        "D8fgaktPQo7GcDr1FEdS6V3F6BO47F9HMff3A/+IXhSt",
+        "/MJ/z4smsVzvxt39qyMj7+kM4wLHCJnudYifzcLGZkrA",
+        "S/ArYUATnpwwJ2XKfsU/vF8zLo8x6HtIEnru4FWj4RQb",
+        "4kLQ1HChI8fRMqN3vhoE1nD9HSyAb+P19jOXSXgkg+DE",
+        "ZNDJ3umOdZtP6fkfJj/Khmx5C2UIcgDNUiusPQVIyF29"
+      ],
+      "root_token": "hvs.qMX2xsnXzINWiTAByu3fy6SR"
+    }
+    
+    ----- /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json -----
+    {
+      "root_token": "hvs.qMX2xsnXzINWiTAByu3fy6SR" <--- REMOVE THIS FROM THE SERVER AND REVOKE FROM VAULT WHEN YOU ARE DONE WITH IT !!!
+                                                        BEST PRACTICE IS TO SET EVERYTHING UP THE WAY YOU NEED IT 
+                                                        AND REMOVE THE ROOT TOKEN COMPLETELY. A NEW ONE CAN BE REGENERATED LATER IF NEEDED
+                                                        [HashiCorp Vault – Generate root token docs](https://developer.hashicorp.com/vault/docs/troubleshoot/generate-root-token)
+                                                        
+                                                        ONLY REVOKE WHEN EVERYTHING IS SETUP
+                                                        vault token revoke <your-root-token-string>
+    }
+    
+    {
+      "vault_addr": "https://vault_production_node:8200",
+      "compose": {
+        "project": "network_tools",
+        "file": "/home/developer_network_tools/NETWORK_TOOLS/docker-compose.prod.yml",
+        "service": "vault_production_node"
+      },
+      "bootstrap_dir": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap",
+      "files": {
+        "unseal_keys_json": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json",
+        "root_token": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token",
+        "root_token_json": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json"
+      },
+      "pretty_output": true,
+      "print_artifact_contents": true,
+      "initialized": true,
+      "unsealed": true
+    }
+
+
+  
 ```
 
 **Best practice (local/dev and production alike):**

@@ -4,6 +4,9 @@ services:
   # From the project root (~/NETWORK_TOOLS) to start all containers
   # docker compose -f docker-compose.prod.yml up -d
   #
+  # Rebuild command if needed
+  # docker compose -f docker-compose.prod.yml up -d --build
+  #
   # If you only want to start the Vault service (named vault_production_node)
   # docker compose -f docker-compose.prod.yml up -d vault_production_node
   #
@@ -12,23 +15,19 @@ services:
   #
   #
   vault_production_node:
+    build:
+      context: backend/app/security/configuration_files/vault
+      dockerfile: Dockerfile
     image: hashicorp/vault:1.21.1
     hostname: vault_production_node
     container_name: vault_production_node
     env_file:
-      - .env.prod # Populate any important production environment variables here.
+      - .env      # Populate any important production environment variables here.
                   # See the file environment_variable_guide.md for information on what variables to populate
     # Rootless: publish ports instead of host networking
     ports:
       - "8200:8200"
       - "8201:8201"
-      # Only keep these if your Vault config actually listens on them
-      # - "8084:8084"
-      # - "8085:8085"
-    build:
-      context: backend/app/security/configuration_files/vault
-      dockerfile: Dockerfile
-    user: "0:0"
     restart: unless-stopped
     volumes:
       - ./backend/app/security/configuration_files/vault/config/vault_configuration_primary_node.hcl:/vault/config/config.hcl:ro
@@ -44,11 +43,17 @@ services:
       VAULT_DISABLE_MLOCK: "true"
       VAULT_UI: "true"
       VAULT_CACERT: "/vault/certs/cert.crt"
-      #VAULT_ADDR: "https://vault_production_node:8200"             # For dev container use
-      VAULT_ADDR: "https://${PRIMARY_VAULT_SERVER_FQDN_FULL}:8200"  # For production use with a valid FQDN (Hash the above, unhash this and rebuild)
-                                                                    # This should be populated in the environment file SERVER_1_FQDN_FULL="Your domain name here"
-      VAULT_API_ADDR: "https://vault_production_node:8200"
-      VAULT_CLUSTER_ADDR: "https://vault_production_node:8201"
-      VAULT_LOG_LEVEL: "debug"
-      VAULT_RAFT_NODE_ID: "Node1"
+      #VAULT_ADDR: "https://vault_production_node:8200"                                     # For dev container use (Hash / remove / just use the value below and change the value below in the .env file)
+                                                                                            # This entry refers to the containers name. Which because of docker is in a hosts entry
+                                                                                            # So reachability internally will work with this. Externally you would need to add an antry
+                                                                                            # for it on your dev machine if it's separate from the machine hosting the container.
+      VAULT_ADDR: "https://${PRIMARY_VAULT_SERVER_FQDN_FULL}:8200"                          # For production use with a valid FQDN (Hash the above, unhash this and rebuild)
+                                                                                            # This should be populated in the environment file SERVER_1_FQDN_FULL="Your domain name here"
+      VAULT_API_ADDR: "https://${PRIMARY_VAULT_SERVER_FQDN_FULL}:8200"
+      VAULT_CLUSTER_ADDR: "https://${PRIMARY_VAULT_SERVER_FQDN_FULL}:8201"
+      VAULT_LOG_LEVEL: "debug"                                                              # Used for debugging vault while you are testing. Comment out and rebuild with
+                                                                                            # VAULT_LOG_LEVEL: "info" for production use
+      #VAULT_LOG_LEVEL: "info"
+      VAULT_RAFT_NODE_ID: "Node1"                                                           # If you ever change this and reboot a node in an existing cluster you will have issues
+                                                                                            # So it's better to pick a name and keep it
     entrypoint: ["/bin/sh","-lc","exec vault server -config=/vault/config/config.hcl"]
