@@ -1528,3 +1528,164 @@ Then **log out and log back in** (or reboot) so the session picks up the changes
 - Bind mounts/volumes create files owned by “weird” numeric IDs (because mappings are broken)
 
 This is expected behavior when user namespace ID mapping is not configured correctly.
+
+
+#### 3.8.10 Spec Format Notes, Validation Checks, and Common Pitfalls (Updated)
+
+This repo supports **two** JSON formats for the multi-mount seeder:
+
+- **Preferred (recommended):** a single JSON object with `mounts[]`, and each mount contains `secrets` (either an **object map** or an **array**).
+- **Legacy (supported):** a single JSON object with `mounts[]` plus a top-level `writes[]` list. The script will merge `writes[]` into each mount’s `secrets`.
+
+In addition, the script accepts a convenience wrapper where the **root** is a single-element array, e.g. `[ { ... } ]`. Internally, the script unwraps it.
+
+Validation commands (run on the server):
+
+```bash
+# Must be valid JSON (object or [object])
+jq -e '.' seed_kv_spec.json >/dev/null && echo "OK: valid JSON"
+
+# Prefer a single object root (recommended)
+jq -e 'type=="object"' seed_kv_spec.json >/dev/null && echo "OK: object root"
+
+# Accept [ { ... } ] wrapper as well
+jq -e '(type=="object") or (type=="array" and length==1 and (.[0]|type=="object"))' seed_kv_spec.json >/dev/null \
+  && echo "OK: object or [object]"
+
+# Must include a non-empty mounts array
+jq -e 'type=="object" and (.mounts|type=="array") and (.mounts|length>0)' seed_kv_spec.json >/dev/null \
+  && echo "OK: mounts[] present"
+```
+
+Common pitfalls that lead to confusing errors:
+
+- **Accidentally creating an array root** (e.g., starting the file with `[` … `]`) when your script version expects an object root.
+- **Mount name mismatch:** `writes[].mount` must match one of `mounts[].mount` (typos are easy to miss).
+- **Including the prefix twice:** if your mount uses `"prefix": "bootstrap"`, then write paths should be **relative** (e.g., `"creds"`, not `"bootstrap/creds"`).
+
+---
+
+#### 3.8.11 Updated Multi-Mount Spec Example (Preferred)
+
+This format keeps *everything* for a mount in one place (mount config + the secrets to write).
+
+Notes:
+- `prefix` is optional. If set, it is prepended to each secret path.
+- `secrets` can be either:
+  - an **object map** of `{ "<path>": { ...data... } }`, or
+  - an **array** of `{ "path": "...", "data": {...} }`
+
+Example (`seed_kv_spec.json`):
+
+```json
+{
+  "mounts": [
+    {
+      "mount": "app_secrets",
+      "type": "kv",
+      "version": 2,
+      "description": "Network Tools application secrets (dev)",
+      "prefix": "bootstrap",
+      "v2_config": {
+        "max_versions": 20,
+        "cas_required": true,
+        "delete_version_after": "0s"
+      },
+      "secrets": {
+        "creds": {
+          "db_username": "example_user",
+          "db_password": {
+            "generate": { "type": "url_safe", "bytes": 32 }
+          }
+        },
+        "jwt": {
+          "secret": {
+            "generate": { "type": "hex", "bytes": 32 }
+          },
+          "issuer": "network_tools_dev"
+        }
+      }
+    },
+    {
+      "mount": "frontend_app_secrets",
+      "type": "kv",
+      "version": 2,
+      "description": "Network Tools frontend secrets (dev)",
+      "prefix": "bootstrap",
+      "v2_config": {
+        "max_versions": 10,
+        "cas_required": false,
+        "delete_version_after": "0s"
+      },
+      "secrets": [
+        {
+          "path": "oidc",
+          "data": {
+            "client_id": "example_client_id",
+            "client_secret": {
+              "generate": { "type": "url_safe", "bytes": 48 }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+#### 3.8.12 Legacy Spec Example (mounts + writes)
+
+This format is supported for compatibility and can be useful if you prefer a single flat list of writes.
+
+Best practice: if you define a `prefix` in the mount object, then keep each `writes[].path` **relative** (do not include the prefix).
+
+```json
+{
+  "mounts": [
+    {
+      "mount": "app_secrets",
+      "type": "kv",
+      "version": 2,
+      "description": "Network Tools application secrets (dev)",
+      "prefix": "bootstrap",
+      "v2_config": {
+        "max_versions": 20,
+        "cas_required": true,
+        "delete_version_after": "0s"
+      }
+    }
+  ],
+  "writes": [
+    {
+      "mount": "app_secrets",
+      "path": "creds",
+      "data": {
+        "db_username": "example_user",
+        "db_password": { "generate": { "type": "url_safe", "bytes": 32 } }
+      }
+    },
+    {
+      "mount": "app_secrets",
+      "path": "jwt",
+      "data": {
+        "secret": { "generate": { "type": "hex", "bytes": 32 } }
+      }
+    }
+  ]
+}
+```
+
+---
+
+#### 3.8.13 About `"generate": { ... }` Values
+
+The `"generate": { ... }` blocks are **not** a native Vault feature. They are a **bootstrap-script convention**:
+
+- The script generates the value at seed time (once), then writes the generated literal value into the KV path.
+- Vault will **not** regenerate the value on read.
+- To rotate, you re-run the seeding process (or build a dedicated rotation workflow) and write a new value.
+
+If you need values that are generated dynamically on every request, that is typically solved using Vault’s **dynamic secrets engines** (e.g., database credentials), or using **Transit** for signing/encryption workflows.
+

@@ -4,13 +4,15 @@
 # NOTES / HOW TO RUN
 # -----------------------------------------------------------------------------
 # Purpose:
-#   - Unseal Vault if sealed
-#   - In one run, enable/configure MULTIPLE KV mounts and seed secrets into each
+#   - Unseal Vault if sealed (This will require the unseal keys)
+#   - In one run, enable/configure MULTIPLE KV mounts and seed secrets into each (This will require the root token for initial setup)
 #   - Store a single consolidated artifact of resolved secrets under bootstrap/
 #
 # Recommended workflow:
 #   1) Run your Vault init/unseal script once to create unseal keys + root token
 #   2) Run THIS script to create KV mounts + seed all bootstrap secrets at once (Or use vault_unseal_kv_seed_bootstrap_rootless.sh if you only want to seed one at a time with individual files)
+#
+# If your URL is changed from the default dev url of vault_production_node then replace this with the new url.
 #
 # Example:
 #   bash ./backend/build_scripts/vault_unseal_multi_kv_seed_bootstrap_rootless.sh \
@@ -244,6 +246,9 @@ Output:
   -v, --verbose
 
 Spec format (recommended):
+- Root should be a single JSON object. A single-element array wrapper is also accepted: [ { ... } ].
+- Legacy mode is also supported: { "mounts": [...], "writes": [...] } (writes are merged into mount secrets).
+
 {
   "mounts": [
     {
@@ -659,7 +664,92 @@ write_file() {
 # -----------------------------
 # Spec parsing
 # -----------------------------
-# Supports only: {"mounts":[...]} where each entry contains "mount", "secrets", etc.
+# Supports:
+#   - Preferred: {"mounts":[ ... ]} with per-mount "secrets" (array or object)
+#   - Also accepted: legacy {"mounts":[ ... ], "writes":[ ... ]} (writes are merged into mount secrets)
+#   - Also accepted: a single-element array wrapper: [ { ... } ]
+#
+
+normalize_spec_json() {
+  # Normalizes the spec JSON into a single JSON object for consistent parsing.
+  #
+  # Accepted inputs:
+  #   1) Preferred:
+  #        { "mounts": [ { "mount": "...", "secrets": ... , ... } ] }
+  #   2) Legacy (supported for backward-compatibility):
+  #        { "mounts": [ ... ], "writes": [ { "mount": "...", "path": "...", "data": {...} } ] }
+  #      - If a mount already has "secrets", "writes" will be appended to it.
+  #      - Best practice: in legacy mode, keep write.path RELATIVE (do not include mount prefix).
+  #   3) Wrapper:
+  #        [ { ... } ]  (single-element array containing the object above)
+  #
+  # Output: pretty JSON object printed to stdout.
+  local in="$1"
+  [[ -f "$in" ]] || die "Spec file not found: $in"
+
+  local raw
+  raw="$(jq -c '.' "$in" 2>/dev/null)" || die "Spec file is not valid JSON: $in"
+
+  # Unwrap single-element array wrapper: [ { ... } ]
+  if jq -e 'type=="array"' >/dev/null 2>&1 <<<"$raw"; then
+    jq -e 'length==1 and (.[0]|type=="object")' >/dev/null 2>&1 <<<"$raw" \
+      || die "Spec root must be a JSON object (or a single-element array containing an object)."
+    raw="$(jq -c '.[0]' <<<"$raw")"
+  fi
+
+  # Require an object at the root.
+  jq -e 'type=="object"' >/dev/null 2>&1 <<<"$raw" || die "Spec root must be a JSON object."
+
+  # If legacy "writes" are present, validate and merge them into per-mount secrets.
+  if jq -e 'has("writes") and (.writes|type=="array") and (.writes|length>0)' >/dev/null 2>&1 <<<"$raw"; then
+    # Ensure mounts exist and are an array (we'll validate non-empty later in main)
+    jq -e 'has("mounts") and (.mounts|type=="array")' >/dev/null 2>&1 <<<"$raw" \
+      || die "Legacy spec mode requires .mounts as an array when .writes is present."
+
+    # Validate that every .writes[].mount is declared in .mounts[].mount (avoid silent typos)
+    local unknown
+    unknown="$(jq -r '
+      ([.mounts[].mount] | map(select(.!=null and .!="")) | unique) as $m
+      | ([.writes[].mount] | map(select(.!=null and .!="")) | unique)
+      | map(select(. as $x | ($m|index($x))|not))
+      | .[]?
+    ' <<<"$raw")"
+    if [[ -n "$unknown" ]]; then
+      die "Spec .writes references mount(s) not declared in .mounts: $(tr '\n' ' ' <<<"$unknown")"
+    fi
+
+    raw="$(jq -c '
+      def writes_norm:
+        (.writes // []) | map({
+          mount: (.mount // ""),
+          path: (.path // ""),
+          data: (.data // {}),
+          cas: (.cas // null)
+        }) | map(select(.mount != "" and .path != "" ));
+
+      def secrets_to_array:
+        if . == null then []
+        elif (type=="array") then
+          map({path:(.path//""), data:(.data//{}), cas:(.cas//null)}) | map(select(.path!=""))
+        elif (type=="object") then
+          to_entries | map({path:.key, data:(.value//{}), cas:null})
+        else [] end;
+
+      . as $root
+      | (writes_norm) as $w
+      | .mounts |= map(
+          . as $m
+          | ($m.secrets | secrets_to_array) as $existing
+          | ($w | map(select(.mount == ($m.mount // ""))) | map({path:.path, data:.data, cas:.cas})) as $from_writes
+          | $m + {secrets: ($existing + $from_writes)}
+        )
+      | del(.writes)
+    ' <<<"$raw")"
+  fi
+
+  jq '.' <<<"$raw"
+}
+
 get_mount_count() {
   jq -r '.mounts | length' "$SPEC_JSON"
 }
