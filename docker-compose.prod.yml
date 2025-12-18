@@ -15,9 +15,9 @@ services:
   #
   #
   vault_production_node:
-    build:
-      context: backend/app/security/configuration_files/vault
-      dockerfile: Dockerfile
+    #build:
+    #  context: backend/app/security/configuration_files/vault
+    #  dockerfile: Dockerfile
     image: hashicorp/vault:1.21.1
     hostname: vault_production_node
     container_name: vault_production_node
