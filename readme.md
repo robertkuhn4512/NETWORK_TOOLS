@@ -71,6 +71,14 @@ Later, this server will host:
     - [3.8.7 Example Seed Files](#387-example-seed-files)  
     - [3.8.8 Output, Artifact Storage, and Security Notes](#388-output-artifact-storage-and-security-notes)  
     - [3.8.9 Troubleshooting](#389-troubleshooting)  
+- [4. PostgreSQL](#4-postgresql)  
+  - [4.1 Bootstrap credentials (generate + seed)](#41-bootstrap-credentials-generate--seed)  
+  - [4.2 Retrieve credentials from Vault](#42-retrieve-credentials-from-vault)  
+  - [4.3 Use with Docker Compose](#43-use-with-docker-compose)  
+- [5. pgAdmin](#5-pgadmin)  
+  - [5.1 Bootstrap credentials (generate + seed)](#51-bootstrap-credentials-generate--seed)  
+  - [5.2 Retrieve credentials from Vault](#52-retrieve-credentials-from-vault)  
+  - [5.3 Use with Docker Compose](#53-use-with-docker-compose)  
 - [Appendix A – Certificate Management](#appendix-a--certificate-management)  
   - [A.1 Vault TLS Certificates – What to Keep and Where](#a1-vault-tls-certificates--what-to-keep-and-where)  
   - [A.2 Rootless Docker and Subordinate UID/GID Ranges (subuid/subgid)](#a2-rootless-docker-and-subordinate-uidgid-ranges-subuidsubgid)
@@ -1358,6 +1366,332 @@ scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_f
   Provide `--ca-cert` pointing at your local CA file, or install the CA into the host trust store (preferred for dev). Avoid relying on `-k` except temporarily for diagnostics.
 
 
+#### 3.8.10 Spec Format Notes, Validation Checks, and Common Pitfalls (Updated)
+
+This repo supports **two** JSON formats for the multi-mount seeder:
+
+- **Preferred (recommended):** a single JSON object with `mounts[]`, and each mount contains `secrets` (either an **object map** or an **array**).
+- **Legacy (supported):** a single JSON object with `mounts[]` plus a top-level `writes[]` list. The script will merge `writes[]` into each mount’s `secrets`.
+
+In addition, the script accepts a convenience wrapper where the **root** is a single-element array, e.g. `[ { ... } ]`. Internally, the script unwraps it.
+
+Validation commands (run on the server):
+
+```bash
+# Must be valid JSON (object or [object])
+jq -e '.' seed_kv_spec.json >/dev/null && echo "OK: valid JSON"
+
+# Prefer a single object root (recommended)
+jq -e 'type=="object"' seed_kv_spec.json >/dev/null && echo "OK: object root"
+
+# Accept [ { ... } ] wrapper as well
+jq -e '(type=="object") or (type=="array" and length==1 and (.[0]|type=="object"))' seed_kv_spec.json >/dev/null \
+  && echo "OK: object or [object]"
+
+# Must include a non-empty mounts array
+jq -e 'type=="object" and (.mounts|type=="array") and (.mounts|length>0)' seed_kv_spec.json >/dev/null \
+  && echo "OK: mounts[] present"
+```
+
+Common pitfalls that lead to confusing errors:
+
+- **Accidentally creating an array root** (e.g., starting the file with `[` … `]`) when your script version expects an object root.
+- **Mount name mismatch:** `writes[].mount` must match one of `mounts[].mount` (typos are easy to miss).
+- **Including the prefix twice:** if your mount uses `"prefix": "bootstrap"`, then write paths should be **relative** (e.g., `"creds"`, not `"bootstrap/creds"`).
+
+---
+
+#### 3.8.11 Updated Multi-Mount Spec Example (Preferred)
+
+This format keeps *everything* for a mount in one place (mount config + the secrets to write).
+
+Notes:
+- `prefix` is optional. If set, it is prepended to each secret path.
+- `secrets` can be either:
+  - an **object map** of `{ "<path>": { ...data... } }`, or
+  - an **array** of `{ "path": "...", "data": {...} }`
+
+Example (`seed_kv_spec.json`):
+
+```json
+{
+  "mounts": [
+    {
+      "mount": "app_secrets",
+      "type": "kv",
+      "version": 2,
+      "description": "Network Tools application secrets (dev)",
+      "prefix": "bootstrap",
+      "v2_config": {
+        "max_versions": 20,
+        "cas_required": true,
+        "delete_version_after": "0s"
+      },
+      "secrets": {
+        "creds": {
+          "db_username": "example_user",
+          "db_password": {
+            "generate": { "type": "url_safe", "bytes": 32 }
+          }
+        },
+        "jwt": {
+          "secret": {
+            "generate": { "type": "hex", "bytes": 32 }
+          },
+          "issuer": "network_tools_dev"
+        }
+      }
+    },
+    {
+      "mount": "frontend_app_secrets",
+      "type": "kv",
+      "version": 2,
+      "description": "Network Tools frontend secrets (dev)",
+      "prefix": "bootstrap",
+      "v2_config": {
+        "max_versions": 10,
+        "cas_required": false,
+        "delete_version_after": "0s"
+      },
+      "secrets": [
+        {
+          "path": "oidc",
+          "data": {
+            "client_id": "example_client_id",
+            "client_secret": {
+              "generate": { "type": "url_safe", "bytes": 48 }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+#### 3.8.12 Legacy Spec Example (mounts + writes)
+
+This format is supported for compatibility and can be useful if you prefer a single flat list of writes.
+
+Best practice: if you define a `prefix` in the mount object, then keep each `writes[].path` **relative** (do not include the prefix).
+
+```json
+{
+  "mounts": [
+    {
+      "mount": "app_secrets",
+      "type": "kv",
+      "version": 2,
+      "description": "Network Tools application secrets (dev)",
+      "prefix": "bootstrap",
+      "v2_config": {
+        "max_versions": 20,
+        "cas_required": true,
+        "delete_version_after": "0s"
+      }
+    }
+  ],
+  "writes": [
+    {
+      "mount": "app_secrets",
+      "path": "creds",
+      "data": {
+        "db_username": "example_user",
+        "db_password": { "generate": { "type": "url_safe", "bytes": 32 } }
+      }
+    },
+    {
+      "mount": "app_secrets",
+      "path": "jwt",
+      "data": {
+        "secret": { "generate": { "type": "hex", "bytes": 32 } }
+      }
+    }
+  ]
+}
+```
+
+---
+
+#### 3.8.13 About `"generate": { ... }` Values
+
+The `"generate": { ... }` blocks are **not** a native Vault feature. They are a **bootstrap-script convention**:
+
+- The script generates the value at seed time (once), then writes the generated literal value into the KV path.
+- Vault will **not** regenerate the value on read.
+- To rotate, you re-run the seeding process (or build a dedicated rotation workflow) and write a new value.
+
+If you need values that are generated dynamically on every request, that is typically solved using Vault’s **dynamic secrets engines** (e.g., database credentials), or using **Transit** for signing/encryption workflows.
+
+---
+
+## 4. PostgreSQL
+
+This section documents how we generate and store **initial PostgreSQL bootstrap credentials** for the Network Tools stack. The intent is that the rest of the containerized services (PostgreSQL itself, application backends, migrations, etc.) can pull their required values from **Vault KV** rather than hard-coding credentials into the repository or long-lived `.env` files.
+
+### 4.1 Bootstrap credentials (generate + seed)
+
+**Run as the same non-root user that runs rootless Docker** (e.g., `developer_network_tools`) from the repo root:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --unseal-required 3 \
+  --prompt-token
+```
+
+What the script does:
+
+- Generates:
+  - `POSTGRES_DB` (default: `network_tools`)
+  - `POSTGRES_USER` (default: `network_tools_user`)
+  - `POSTGRES_PASSWORD` (generated if not supplied)
+- Creates local **bootstrap artifacts** under:
+
+  ```text
+  $HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/
+  ```
+
+  Files created:
+  - `postgres_pgadmin.env` (shell env format)
+  - `postgres_pgadmin_credentials.json` (human-readable credentials JSON)
+  - `seed_kv_spec.postgres_pgadmin.json` (the spec used to seed Vault)
+
+- Seeds Vault KV mount **`app_postgress_secrets`** (default) with two secret paths:
+  - `postgres` (PostgreSQL values)
+  - `pgadmin` (pgAdmin values)
+
+Notes:
+
+- By default, the script writes to `postgres` and `pgadmin` **without** a prefix (this matches the desired layout: `postgres`, not `bootstrap/postgres`).
+- If you explicitly want a prefix later, use `--vault-prefix "<prefix>"`.
+
+Security and operational guidance:
+
+- These files contain plaintext credentials.
+- Immediately download them to a secure location and remove them from the server once you have verified the secrets are stored in Vault.
+- In production, prefer:
+  - short-lived bootstrap tokens,
+  - scoped policies,
+  - rotation workflows,
+  - and (where practical) Vault dynamic secrets engines instead of long-lived static passwords.
+
+### 4.2 Retrieve credentials from Vault
+
+The seeding script writes using the Vault HTTP API. If your mount is **KV v2** (the default in the generated spec), read secrets like this:
+
+```bash
+VAULT_ADDR="https://vault_production_node:8200"
+CA_CERT="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token")"
+
+# PostgreSQL secret (KV v2)
+curl -sS --cacert "$CA_CERT" \
+  -H "X-Vault-Token: $TOKEN" \
+  "$VAULT_ADDR/v1/app_postgress_secrets/data/postgres" | jq .
+```
+
+To extract a single value (example: password):
+
+```bash
+curl -sS --cacert "$CA_CERT" \
+  -H "X-Vault-Token: $TOKEN" \
+  "$VAULT_ADDR/v1/app_postgress_secrets/data/postgres" | jq -r '.data.data.POSTGRES_PASSWORD'
+```
+
+If you later choose to use **KV v1**, the read path will not include `/data/`:
+
+```bash
+curl -sS --cacert "$CA_CERT" \
+  -H "X-Vault-Token: $TOKEN" \
+  "$VAULT_ADDR/v1/app_postgress_secrets/postgres" | jq .
+```
+
+### 4.3 Use with Docker Compose
+
+You have two common patterns:
+
+**Option A (simple dev bootstrap): use the generated env file**
+
+This is convenient, but treat it as sensitive:
+
+```bash
+set -a
+# shellcheck disable=SC1090
+source "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/postgres_pgadmin.env"
+set +a
+```
+
+You can then reference the exported variables when starting your PostgreSQL container(s). (Compose examples will be added when the PostgreSQL compose/service definition is finalized.)
+
+**Option B (preferred): pull from Vault at runtime**
+
+For production-like workflows, prefer fetching secrets from Vault during deployment/startup (or using an agent/injector pattern), rather than persisting them as `.env` files on disk.
+
+
+## 5. pgAdmin
+
+This section documents the bootstrap credential(s) used by **pgAdmin** and how they are stored alongside the PostgreSQL credentials.
+
+### 5.1 Bootstrap credentials (generate + seed)
+
+The PostgreSQL/pgAdmin bootstrap script generates *both* Postgres and pgAdmin credentials in one run:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --unseal-required 3 \
+  --prompt-token
+```
+
+The pgAdmin secret is stored under:
+
+- KV mount: `app_postgress_secrets`
+- Secret path: `pgadmin`
+- Key: `PGADMIN_DEFAULT_PASSWORD`
+
+### 5.2 Retrieve credentials from Vault
+
+For KV v2 (default):
+
+```bash
+VAULT_ADDR="https://vault_production_node:8200"
+CA_CERT="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token")"
+
+curl -sS --cacert "$CA_CERT" \
+  -H "X-Vault-Token: $TOKEN" \
+  "$VAULT_ADDR/v1/app_postgress_secrets/data/pgadmin" | jq .
+```
+
+Example extracting the password only:
+
+```bash
+curl -sS --cacert "$CA_CERT" \
+  -H "X-Vault-Token: $TOKEN" \
+  "$VAULT_ADDR/v1/app_postgress_secrets/data/pgadmin" | jq -r '.data.data.PGADMIN_DEFAULT_PASSWORD'
+```
+
+### 5.3 Use with Docker Compose
+
+When you define the pgAdmin service, you will typically provide:
+
+- `PGADMIN_DEFAULT_EMAIL` (you choose this value; it is not generated by the script)
+- `PGADMIN_DEFAULT_PASSWORD` (seeded in Vault, or sourced from the generated env file)
+
+For dev-only usage, you may source the generated env file (see section **4.3**) and reference the environment variables in your compose file.
+
+
+
+
 ## Appendix A – Certificate Management
 
 ### A.1 Vault TLS Certificates – What to Keep and Where
@@ -1585,164 +1919,3 @@ Then **log out and log back in** (or reboot) so the session picks up the changes
 - Bind mounts/volumes create files owned by “weird” numeric IDs (because mappings are broken)
 
 This is expected behavior when user namespace ID mapping is not configured correctly.
-
-
-#### 3.8.10 Spec Format Notes, Validation Checks, and Common Pitfalls (Updated)
-
-This repo supports **two** JSON formats for the multi-mount seeder:
-
-- **Preferred (recommended):** a single JSON object with `mounts[]`, and each mount contains `secrets` (either an **object map** or an **array**).
-- **Legacy (supported):** a single JSON object with `mounts[]` plus a top-level `writes[]` list. The script will merge `writes[]` into each mount’s `secrets`.
-
-In addition, the script accepts a convenience wrapper where the **root** is a single-element array, e.g. `[ { ... } ]`. Internally, the script unwraps it.
-
-Validation commands (run on the server):
-
-```bash
-# Must be valid JSON (object or [object])
-jq -e '.' seed_kv_spec.json >/dev/null && echo "OK: valid JSON"
-
-# Prefer a single object root (recommended)
-jq -e 'type=="object"' seed_kv_spec.json >/dev/null && echo "OK: object root"
-
-# Accept [ { ... } ] wrapper as well
-jq -e '(type=="object") or (type=="array" and length==1 and (.[0]|type=="object"))' seed_kv_spec.json >/dev/null \
-  && echo "OK: object or [object]"
-
-# Must include a non-empty mounts array
-jq -e 'type=="object" and (.mounts|type=="array") and (.mounts|length>0)' seed_kv_spec.json >/dev/null \
-  && echo "OK: mounts[] present"
-```
-
-Common pitfalls that lead to confusing errors:
-
-- **Accidentally creating an array root** (e.g., starting the file with `[` … `]`) when your script version expects an object root.
-- **Mount name mismatch:** `writes[].mount` must match one of `mounts[].mount` (typos are easy to miss).
-- **Including the prefix twice:** if your mount uses `"prefix": "bootstrap"`, then write paths should be **relative** (e.g., `"creds"`, not `"bootstrap/creds"`).
-
----
-
-#### 3.8.11 Updated Multi-Mount Spec Example (Preferred)
-
-This format keeps *everything* for a mount in one place (mount config + the secrets to write).
-
-Notes:
-- `prefix` is optional. If set, it is prepended to each secret path.
-- `secrets` can be either:
-  - an **object map** of `{ "<path>": { ...data... } }`, or
-  - an **array** of `{ "path": "...", "data": {...} }`
-
-Example (`seed_kv_spec.json`):
-
-```json
-{
-  "mounts": [
-    {
-      "mount": "app_secrets",
-      "type": "kv",
-      "version": 2,
-      "description": "Network Tools application secrets (dev)",
-      "prefix": "bootstrap",
-      "v2_config": {
-        "max_versions": 20,
-        "cas_required": true,
-        "delete_version_after": "0s"
-      },
-      "secrets": {
-        "creds": {
-          "db_username": "example_user",
-          "db_password": {
-            "generate": { "type": "url_safe", "bytes": 32 }
-          }
-        },
-        "jwt": {
-          "secret": {
-            "generate": { "type": "hex", "bytes": 32 }
-          },
-          "issuer": "network_tools_dev"
-        }
-      }
-    },
-    {
-      "mount": "frontend_app_secrets",
-      "type": "kv",
-      "version": 2,
-      "description": "Network Tools frontend secrets (dev)",
-      "prefix": "bootstrap",
-      "v2_config": {
-        "max_versions": 10,
-        "cas_required": false,
-        "delete_version_after": "0s"
-      },
-      "secrets": [
-        {
-          "path": "oidc",
-          "data": {
-            "client_id": "example_client_id",
-            "client_secret": {
-              "generate": { "type": "url_safe", "bytes": 48 }
-            }
-          }
-        }
-      ]
-    }
-  ]
-}
-```
-
----
-
-#### 3.8.12 Legacy Spec Example (mounts + writes)
-
-This format is supported for compatibility and can be useful if you prefer a single flat list of writes.
-
-Best practice: if you define a `prefix` in the mount object, then keep each `writes[].path` **relative** (do not include the prefix).
-
-```json
-{
-  "mounts": [
-    {
-      "mount": "app_secrets",
-      "type": "kv",
-      "version": 2,
-      "description": "Network Tools application secrets (dev)",
-      "prefix": "bootstrap",
-      "v2_config": {
-        "max_versions": 20,
-        "cas_required": true,
-        "delete_version_after": "0s"
-      }
-    }
-  ],
-  "writes": [
-    {
-      "mount": "app_secrets",
-      "path": "creds",
-      "data": {
-        "db_username": "example_user",
-        "db_password": { "generate": { "type": "url_safe", "bytes": 32 } }
-      }
-    },
-    {
-      "mount": "app_secrets",
-      "path": "jwt",
-      "data": {
-        "secret": { "generate": { "type": "hex", "bytes": 32 } }
-      }
-    }
-  ]
-}
-```
-
----
-
-#### 3.8.13 About `"generate": { ... }` Values
-
-The `"generate": { ... }` blocks are **not** a native Vault feature. They are a **bootstrap-script convention**:
-
-- The script generates the value at seed time (once), then writes the generated literal value into the KV path.
-- Vault will **not** regenerate the value on read.
-- To rotate, you re-run the seeding process (or build a dedicated rotation workflow) and write a new value.
-
-If you need values that are generated dynamically on every request, that is typically solved using Vault’s **dynamic secrets engines** (e.g., database credentials), or using **Transit** for signing/encryption workflows.
-
