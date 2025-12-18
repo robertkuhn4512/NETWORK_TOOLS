@@ -920,7 +920,7 @@ This step is required **one time** for a brand-new Vault instance. It will:
    - If that fails, it will retry with `-k` and print a warning with the TLS verification error
 
    ```bash
-   bash ./backend/build_scripts/vault_init_unseal_rootless_pretty_v6.sh \
+   bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
      --vault-addr https://vault_production_node:8200
    ```
 
@@ -1523,7 +1523,7 @@ The `"generate": { ... }` blocks are **not** a native Vault feature. They are a 
 - Vault will **not** regenerate the value on read.
 - To rotate, you re-run the seeding process (or build a dedicated rotation workflow) and write a new value.
 
-If you need values that are generated dynamically on every request, that is typically solved using Vault’s **dynamic secrets engines** (e.g., database credentials), or using **Transit** for signing/encryption workflows.
+If you want dynamic per-request credentials/keys, use a Vault secrets engine designed for that (e.g., Database secrets engine, Transit, etc.), not KV.
 
 ---
 
@@ -1562,7 +1562,7 @@ What the script does:
   - `postgres_pgadmin_credentials.json` (human-readable credentials JSON)
   - `seed_kv_spec.postgres_pgadmin.json` (the spec used to seed Vault)
 
-- Seeds Vault KV mount **`app_postgress_secrets`** (default) with two secret paths:
+- Seeds Vault KV mount **`app_postgres_secrets`** (default) with two secret paths:
   - `postgres` (PostgreSQL values)
   - `pgadmin` (pgAdmin values)
 
@@ -1593,7 +1593,7 @@ TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault
 # PostgreSQL secret (KV v2)
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgress_secrets/data/postgres" | jq .
+  "$VAULT_ADDR/v1/app_postgres_secrets/data/postgres" | jq .
 ```
 
 To extract a single value (example: password):
@@ -1601,7 +1601,7 @@ To extract a single value (example: password):
 ```bash
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgress_secrets/data/postgres" | jq -r '.data.data.POSTGRES_PASSWORD'
+  "$VAULT_ADDR/v1/app_postgres_secrets/data/postgres" | jq -r '.data.data.POSTGRES_PASSWORD'
 ```
 
 If you later choose to use **KV v1**, the read path will not include `/data/`:
@@ -1609,7 +1609,7 @@ If you later choose to use **KV v1**, the read path will not include `/data/`:
 ```bash
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgress_secrets/postgres" | jq .
+  "$VAULT_ADDR/v1/app_postgres_secrets/postgres" | jq .
 ```
 
 ### 4.3 Use with Docker Compose
@@ -1654,7 +1654,7 @@ bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.
 
 The pgAdmin secret is stored under:
 
-- KV mount: `app_postgress_secrets`
+- KV mount: `app_postgres_secrets`
 - Secret path: `pgadmin`
 - Key: `PGADMIN_DEFAULT_PASSWORD`
 
@@ -1669,7 +1669,7 @@ TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault
 
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgress_secrets/data/pgadmin" | jq .
+  "$VAULT_ADDR/v1/app_postgres_secrets/data/pgadmin" | jq .
 ```
 
 Example extracting the password only:
@@ -1677,7 +1677,7 @@ Example extracting the password only:
 ```bash
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgress_secrets/data/pgadmin" | jq -r '.data.data.PGADMIN_DEFAULT_PASSWORD'
+  "$VAULT_ADDR/v1/app_postgres_secrets/data/pgadmin" | jq -r '.data.data.PGADMIN_DEFAULT_PASSWORD'
 ```
 
 ### 5.3 Use with Docker Compose
