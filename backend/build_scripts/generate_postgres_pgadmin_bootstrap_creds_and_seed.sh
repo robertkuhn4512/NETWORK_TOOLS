@@ -21,7 +21,7 @@
 #
 # Vault seeding (default ON):
 #   - Uses vault_unseal_multi_kv_seed_bootstrap_rootless.sh
-#   - Seeds KV mount: app_postgress_secrets (default)
+#   - Seeds KV mount: app_postgres_secrets (default)
 #   - Seeds paths (NO prefix by default):
 #       <mount>/postgres
 #       <mount>/pgadmin
@@ -47,7 +47,7 @@ POSTGRES_PASSWORD=""
 PGADMIN_DEFAULT_PASSWORD=""
 
 # IMPORTANT: requested mount name
-VAULT_MOUNT="app_postgress_secrets"
+VAULT_MOUNT="app_postgres_secrets"
 
 # IMPORTANT: user requested NO prefix (e.g., "postgres", not "bootstrap/postgres")
 VAULT_PREFIX=""
