@@ -2,7 +2,7 @@
 #
 # generate_local_postgres_certs.sh
 #
-# Generates a local CA + a single PostgreSQL server certificate/key for the Network Tools project.
+# Generates a local CA + a single postgres server certificate/key for the Network Tools project.
 #
 # NOTES / HOW TO RUN
 #   1) Place this script at:
@@ -376,9 +376,9 @@ main() {
   log "  Key     : ${srv_key}"
   log ""
   log "Compose mounts should point to something like:"
-  log "  ${OUT_DIR}/cert.crt  -> /etc/postgresql/certs/server.crt"
-  log "  ${OUT_DIR}/cert.key  -> /etc/postgresql/certs/server.key"
-  log "  ${OUT_DIR}/ca.crt    -> /etc/postgresql/certs/ca.crt"
+  log "  ${OUT_DIR}/cert.crt  -> /etc/postgres/certs/server.crt"
+  log "  ${OUT_DIR}/cert.key  -> /etc/postgres/certs/server.key"
+  log "  ${OUT_DIR}/ca.crt    -> /etc/postgres/certs/ca.crt"
   log ""
   log "Permissions applied (recommended defaults):"
   log "  Directory: 700  (contains private keys)"

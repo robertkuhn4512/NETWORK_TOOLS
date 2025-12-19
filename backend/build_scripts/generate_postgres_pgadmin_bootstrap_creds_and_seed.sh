@@ -179,7 +179,7 @@ cat > "${ENV_FILE}" <<EOF
 # Generated: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
 # Store securely. Do not commit to git.
 
-# PostgreSQL
+# postgres
 POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
