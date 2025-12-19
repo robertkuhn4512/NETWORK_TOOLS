@@ -14,7 +14,7 @@ Later, this server will host:
 
 - FastAPI applications
 - MariaDB
-- PostgreSQL
+- postgres
 - HashiCorp Vault
 - Keycloak
 - Rootless Docker for running these services under a non-privileged account
@@ -71,10 +71,15 @@ Later, this server will host:
     - [3.8.7 Example Seed Files](#387-example-seed-files)  
     - [3.8.8 Output, Artifact Storage, and Security Notes](#388-output-artifact-storage-and-security-notes)  
     - [3.8.9 Troubleshooting](#389-troubleshooting)  
-- [4. PostgreSQL](#4-postgresql)  
+- [4. postgres](#4-postgres)  
   - [4.1 Bootstrap credentials (generate + seed)](#41-bootstrap-credentials-generate--seed)  
   - [4.2 Retrieve credentials from Vault](#42-retrieve-credentials-from-vault)  
   - [4.3 Use with Docker Compose](#43-use-with-docker-compose)  
+    - [4.3.1 Compose prerequisites](#431-compose-prerequisites)  
+    - [4.3.2 Initialize the Postgres certs volume](#432-initialize-the-postgres-certs-volume)  
+    - [4.3.3 Start postgres_primary](#433-start-postgres_primary)  
+    - [4.3.4 Verify and connect](#434-verify-and-connect)  
+    - [4.3.5 Troubleshooting](#435-troubleshooting)  
 - [5. pgAdmin](#5-pgadmin)  
   - [5.1 Bootstrap credentials (generate + seed)](#51-bootstrap-credentials-generate--seed)  
   - [5.2 Retrieve credentials from Vault](#52-retrieve-credentials-from-vault)  
@@ -152,7 +157,7 @@ developer_network_tools@networktoolsvm:~$ tree --charset ascii
   - Use a **non-root user** for day-to-day work and development.
   - Restrict SSH to **key-based authentication**.
   - Run **rootless Docker** under a dedicated development account.
-  - Host **MariaDB**, **PostgreSQL**, **Vault**, and **Keycloak** in containers later.
+  - Host **MariaDB**, **postgres**, **Vault**, and **Keycloak** in containers later.
 
 > **Note:** For commands prefixed with `sudo`, run them from your normal user.  
 > If you are logged in as `root`, you can omit `sudo`.
@@ -1527,9 +1532,9 @@ If you want dynamic per-request credentials/keys, use a Vault secrets engine des
 
 ---
 
-## 4. PostgreSQL
+## 4. postgres
 
-This section documents how we generate and store **initial PostgreSQL bootstrap credentials** for the Network Tools stack. The intent is that the rest of the containerized services (PostgreSQL itself, application backends, migrations, etc.) can pull their required values from **Vault KV** rather than hard-coding credentials into the repository or long-lived `.env` files.
+This section documents how we generate and store **initial postgres bootstrap credentials** for the Network Tools stack. The intent is that the rest of the containerized services (postgres itself, application backends, migrations, etc.) can pull their required values from **Vault KV** rather than hard-coding credentials into the repository or long-lived `.env` files.
 
 ### 4.1 Bootstrap credentials (generate + seed)
 
@@ -1563,7 +1568,7 @@ What the script does:
   - `seed_kv_spec.postgres_pgadmin.json` (the spec used to seed Vault)
 
 - Seeds Vault KV mount **`app_postgres_secrets`** (default) with two secret paths:
-  - `postgres` (PostgreSQL values)
+  - `postgres` (postgres values)
   - `pgadmin` (pgAdmin values)
 
 Notes:
@@ -1590,7 +1595,7 @@ VAULT_ADDR="https://vault_production_node:8200"
 CA_CERT="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
 TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token")"
 
-# PostgreSQL secret (KV v2)
+# postgres secret (KV v2)
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
   "$VAULT_ADDR/v1/app_postgres_secrets/data/postgres" | jq .
@@ -1627,20 +1632,211 @@ source "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/boots
 set +a
 ```
 
-You can then reference the exported variables when starting your PostgreSQL container(s). (Compose examples will be added when the PostgreSQL compose/service definition is finalized.)
+You can then reference the exported variables when starting your postgres container(s). (Compose examples will be added when the postgres compose/service definition is finalized.)
 
 **Option B (preferred): pull from Vault at runtime**
 
 For production-like workflows, prefer fetching secrets from Vault during deployment/startup (or using an agent/injector pattern), rather than persisting them as `.env` files on disk.
 
 
+#### 4.3.1 Compose prerequisites
+
+Run these checks from the repository root (`~/NETWORK_TOOLS`) as the same non-root user that runs **rootless Docker** (e.g., `developer_network_tools`):
+
+1) Confirm the source certificate files exist on the host:
+
+```bash
+ls -lh ./backend/app/postgres/certs/
+```
+
+Expected (minimum) inputs:
+
+- `ca.crt`
+- `cert.crt`
+- `cert.key`
+
+2) Confirm the Postgres config files exist and are **not empty**:
+
+```bash
+ls -lh ./backend/app/postgres/config/postgres.conf ./backend/app/postgres/config/pg_hba.conf
+wc -l  ./backend/app/postgres/config/postgres.conf ./backend/app/postgres/config/pg_hba.conf
+```
+
+3) Validate the Compose file renders cleanly (this catches YAML formatting/indentation issues early):
+
+```bash
+docker compose -f docker-compose.prod.yml config > /tmp/network_tools.compose.rendered.yml
+```
+
+#### 4.3.2 Initialize the Postgres certs volume
+
+In this stack, Postgres TLS material is delivered via a **named volume** populated by a short-lived init container (`postgres_certs_init`). The primary Postgres service mounts that volume read-only at `/etc/postgres/certs`.
+
+Bring-up pattern:
+
+1) (Optional but recommended during troubleshooting) reset the cert volume and the init container:
+
+```bash
+docker compose -f docker-compose.prod.yml rm -sf postgres_primary postgres_certs_init
+
+# The actual on-disk volume name is prefixed by the compose project name (e.g., network_tools_postgres_certs)
+docker volume rm network_tools_postgres_certs 2>/dev/null || true
+```
+
+2) Start the init container and confirm it successfully populated the volume:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d postgres_certs_init
+docker logs postgres_certs_init
+```
+
+You should see a file listing of `/dest` at the end of the logs with:
+
+- `ca.crt`
+- `server.crt`
+- `server.key`
+
+3) (Optional) validate the volume contents directly:
+
+```bash
+docker run --rm -v network_tools_postgres_certs:/dest alpine ls -l /dest
+```
+
+Note: In rootless Docker, owners may appear as numeric IDs (e.g., `999`). That is expected.
+
+#### 4.3.3 Start postgres_primary
+
+Start the primary Postgres service after the init container has completed successfully:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d postgres_primary
+docker logs --tail 200 -f postgres_primary
+```
+
+A successful start ends with:
+
+- `database system is ready to accept connections`
+
+#### 4.3.4 Verify and connect
+
+1) Confirm the container is up:
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+docker ps --format "table {{.Names}}	{{.Status}}	{{.Ports}}"
+```
+
+2) Confirm the expected files exist inside the container:
+
+```bash
+docker exec -it postgres_primary sh -lc 'ls -lah /etc/postgres/certs && ls -lah /etc/postgres/postgres.conf /etc/postgres/pg_hba.conf'
+```
+
+3) Verify effective runtime settings (inside Postgres):
+
+```bash
+docker exec -it postgres_primary sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SHOW ssl; SHOW ssl_cert_file; SHOW ssl_key_file; SHOW ssl_ca_file; SHOW config_file; SHOW hba_file;"'
+```
+
+If you expect host connectivity, ensure your `postgres.conf` includes an appropriate `listen_addresses` value (e.g., `'*'`) and that the Compose service publishes `5432:5432`.
+
+#### 4.3.5 Troubleshooting
+
+**1) Mount error: “read-only file system” when creating `/etc/postgres/certs/*.crt` mountpoints**
+
+Symptom (example):
+
+- `create mountpoint "/etc/postgres/certs/ca.crt": read-only file system`
+
+Common cause:
+
+- The Compose service attempts to mount **individual cert files** into a path that is already covered by a **read-only directory mount** (for example, a named volume mounted at `/etc/postgres/certs:ro`).
+
+Fix (recommended):
+
+- Choose one approach. For this project, keep the **named volume** (`postgres_certs:/etc/postgres/certs:ro`) and remove file-level mounts to `/etc/postgres/certs/*`. Let `postgres_certs_init` populate the volume.
+
+**2) FATAL: could not load server certificate file (missing file)**
+
+Symptoms (examples):
+
+- `could not load server certificate file "/etc/postgres/certs/server.crt": No such file or directory`
+- `could not load server certificate file "/etc/postgres/certs/cert.crt": No such file or directory`
+
+Checklist:
+
+- Confirm `postgres_certs_init` completed successfully and the volume contains `server.crt` and `server.key` (Section **4.3.2**).
+- Confirm Postgres is configured to reference the filenames that actually exist.
+
+Recommendation:
+
+- Standardize on `server.crt` / `server.key` inside the container (as produced by `postgres_certs_init`), and set:
+
+  - `ssl_cert_file=/etc/postgres/certs/server.crt`
+  - `ssl_key_file=/etc/postgres/certs/server.key`
+  - `ssl_ca_file=/etc/postgres/certs/ca.crt`
+
+If your `postgres.conf` currently references `cert.crt`, update it (or alternately, add a copy step in `postgres_certs_init` so both names exist).
+
+**3) pg_hba.conf errors (empty or unreadable)**
+
+Symptoms:
+
+- `configuration file "/etc/postgres/pg_hba.conf" contains no entries`
+- `FATAL: could not load /etc/postgres/pg_hba.conf`
+
+Checklist:
+
+```bash
+# Host file must exist and be non-empty
+wc -l ./backend/app/postgres/config/pg_hba.conf
+
+# Container must see the same file (and it must be readable)
+docker exec -it postgres_primary sh -lc 'ls -l /etc/postgres/pg_hba.conf && wc -l /etc/postgres/pg_hba.conf'
+```
+
+Minimal example (tighten for your environment; do not use `trust` broadly in production):
+
+```conf
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+local   all             all                                     peer
+host    all             all             127.0.0.1/32            scram-sha-256
+host    all             all             ::1/128                 scram-sha-256
+
+# Example: allow app subnet over TLS (adjust CIDR)
+hostssl all             all             10.0.0.0/8              scram-sha-256
+```
+
+**4) “PostgreSQL Database directory appears to contain a database; Skipping initialization”**
+
+This is informational. It means your bound data directory already has an initialized cluster. If you intend a clean rebuild, stop Postgres and remove the data directory contents (or move them aside), then restart.
+
+**5) postgres_certs_init logs show only environment variables / no `/dest` listing**
+
+This typically indicates the init container did not execute the intended copy commands.
+
+- Re-check the rendered Compose output:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml config | sed -n '/postgres_certs_init:/,/postgres_primary:/p'
+  ```
+
+- Confirm `entrypoint` and `command` match the expected script, then recreate the init container:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml rm -sf postgres_certs_init
+  docker compose -f docker-compose.prod.yml up -d --force-recreate --no-deps postgres_certs_init
+  docker logs postgres_certs_init
+  ```
+
+
 ## 5. pgAdmin
 
-This section documents the bootstrap credential(s) used by **pgAdmin** and how they are stored alongside the PostgreSQL credentials.
+This section documents the bootstrap credential(s) used by **pgAdmin** and how they are stored alongside the postgres credentials.
 
 ### 5.1 Bootstrap credentials (generate + seed)
 
-The PostgreSQL/pgAdmin bootstrap script generates *both* Postgres and pgAdmin credentials in one run:
+The postgres/pgAdmin bootstrap script generates *both* Postgres and pgAdmin credentials in one run:
 
 ```bash
 cd "$HOME/NETWORK_TOOLS"

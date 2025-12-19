@@ -1,5 +1,8 @@
 name: network_tools
 
+volumes:
+  postgres_certs:
+
 services:
   # From the project root (~/NETWORK_TOOLS) to start all containers
   # docker compose -f docker-compose.prod.yml up -d
@@ -58,6 +61,32 @@ services:
                                                                                             # So it's better to pick a name and keep it
     entrypoint: ["/bin/sh","-lc","exec vault server -config=/vault/config/config.hcl"]
 
+  # docker compose -f docker-compose.prod.yml up -d postgres_primary
+
+  postgres_certs_init:
+    image: postgres:18.1
+    container_name: postgres_certs_init
+    user: "0:0"
+    restart: "no"
+    volumes:
+      - ./backend/app/postgres/certs:/src:ro
+      - postgres_certs:/dest
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        set -e
+        mkdir -p /dest
+        cp -f /src/cert.crt /dest/server.crt
+        cp -f /src/cert.key /dest/server.key
+        cp -f /src/ca.crt   /dest/ca.crt
+        chmod 600 /dest/server.key
+        chmod 644 /dest/server.crt /dest/ca.crt
+        chown -R 999:999 /dest || true
+        ls -l /dest
+
+  # If you only want to start the Vault service (named vault_production_node)
+  # docker compose -f docker-compose.prod.yml up -d postgres_primary
 
   postgres_primary:
     image: postgres:18.1
@@ -65,50 +94,51 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+
+    depends_on:
+      postgres_certs_init:
+        condition: service_completed_successfully
+
     environment:
       POSTGRES_DB: "${POSTGRES_DB}"
       POSTGRES_USER: "${POSTGRES_USER}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-      PGDATA: "${PGDATA:-/var/lib/postgresql/data/pgdata}"
+      PGDATA: "${PGDATA:-/var/lib/postgres/data/pgdata}"
 
     volumes:
       # Persistent Postgres data
-      - ./container_data/postgres/data:/var/lib/postgresql/data
+      - ./container_data/postgres/data:/var/lib/postgres/data
 
       # Postgres config
-      - ./backend/app/postgres/config/postgresql.conf:/etc/postgresql/postgresql.conf:ro
-      - ./backend/app/postgres/config/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./backend/app/postgres/config/postgres.conf:/etc/postgres/postgres.conf:ro
+      - ./backend/app/postgres/config/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
 
-      # TLS certs – Postgres-specific cert + key + shared CA
-      - ./backend/app/postgres/certs/cert.crt:/etc/postgresql/certs/server.crt:ro
-      - ./backend/app/postgres/certs/cert.key:/etc/postgresql/certs/server.key:ro
-      - ./backend/app/postgres/certs/ca.crt:/etc/postgresql/certs/ca.crt:ro
-
+      # TLS certs (from the init container into the named volume)
+      - postgres_certs:/etc/postgres/certs:ro
     command: >
       postgres
-      -c config_file=/etc/postgresql/postgresql.conf
-      -c hba_file=/etc/postgresql/pg_hba.conf
-      -c ssl=on
-      -c ssl_cert_file=/etc/postgresql/certs/server.crt
-      -c ssl_key_file=/etc/postgresql/certs/server.key
-      -c ssl_ca_file=/etc/postgresql/certs/ca.crt
+      -c config_file=/etc/postgres/postgres.conf
+      -c hba_file=/etc/postgres/pg_hba.conf
 
     ports:
       - "5432:5432"
 
-    pgadmin:
-      image: dpage/pgadmin4:9.11
-      container_name: pgadmin
-      restart: unless-stopped
+  # If you only want to start the Vault service (named vault_production_node)
+  # docker compose -f docker-compose.prod.yml up -d pgadmin
 
-      env_file:
-        - .env
-      environment:
-        PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
-        PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_DEFAULT_PASSWORD}"
+  pgadmin:
+    image: dpage/pgadmin4:9.11
+    container_name: pgadmin
+    restart: unless-stopped
 
-      depends_on:
-        - postgres_primary
+    env_file:
+      - .env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_DEFAULT_PASSWORD}"
 
-      ports:
-        - "8081:80"
+    depends_on:
+      - postgres_primary
+
+    ports:
+      - "8081:80"
