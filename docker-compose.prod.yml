@@ -2,6 +2,7 @@ name: network_tools
 
 volumes:
   postgres_certs:
+  postgres_vault_rendered:
 
 services:
   # From the project root (~/NETWORK_TOOLS) to start all containers
@@ -61,7 +62,39 @@ services:
                                                                                             # So it's better to pick a name and keep it
     entrypoint: ["/bin/sh","-lc","exec vault server -config=/vault/config/config.hcl"]
 
-  # docker compose -f docker-compose.prod.yml up -d postgres_primary
+  # docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin
+
+  vault_agent_postgres_pgadmin:
+    image: hashicorp/vault:1.21.1
+    container_name: vault_agent_postgres_pgadmin
+    restart: unless-stopped
+
+    depends_on:
+      - vault_production_node
+
+    entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
+
+    volumes:
+      # Trust bundle for Vault TLS (prefer CA if available)
+      - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
+
+      # Agent config + templates
+      - ./backend/app/postgres/vault_agent/agent.hcl:/vault/agent/agent.hcl:ro
+      - ./backend/app/postgres/vault_agent/templates:/vault/templates:ro
+
+      # Host-exported AppRole material
+      - ./container_data/vault/approle/postgres_pgadmin_agent:/vault/approle:ro
+
+      # Render target (shared)
+      - postgres_vault_rendered:/vault/rendered
+
+    healthcheck:
+      test: [ "CMD-SHELL", "test -s /vault/rendered/postgres_password && test -s /vault/rendered/pgadmin_password" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # docker compose -f docker-compose.prod.yml up -d postgres_certs_init
 
   postgres_certs_init:
     image: postgres:18.1
@@ -85,7 +118,8 @@ services:
         chown -R 999:999 /dest || true
         ls -l /dest
 
-  # If you only want to start the Vault service (named vault_production_node)
+
+
   # docker compose -f docker-compose.prod.yml up -d postgres_primary
 
   postgres_primary:
@@ -98,23 +132,24 @@ services:
     depends_on:
       postgres_certs_init:
         condition: service_completed_successfully
+      vault_agent_postgres_pgadmin:
+        condition: service_healthy
 
     environment:
-      POSTGRES_DB: "${POSTGRES_DB}"
-      POSTGRES_USER: "${POSTGRES_USER}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB_FILE: "/run/vault/postgres_db"
+      POSTGRES_USER_FILE: "/run/vault/postgres_user"
+      POSTGRES_PASSWORD_FILE: "/run/vault/postgres_password"
       PGDATA: "${PGDATA:-/var/lib/postgres/data/pgdata}"
 
     volumes:
-      # Persistent Postgres data
       - ./container_data/postgres/data:/var/lib/postgres/data
-
-      # Postgres config
       - ./backend/app/postgres/config/postgres.conf:/etc/postgres/postgres.conf:ro
       - ./backend/app/postgres/config/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
-
-      # TLS certs (from the init container into the named volume)
       - postgres_certs:/etc/postgres/certs:ro
+
+      # rendered secrets from vault agent
+      - postgres_vault_rendered:/run/vault:ro
+
     command: >
       postgres
       -c config_file=/etc/postgres/postgres.conf
@@ -123,7 +158,6 @@ services:
     ports:
       - "5432:5432"
 
-  # If you only want to start the Vault service (named vault_production_node)
   # docker compose -f docker-compose.prod.yml up -d pgadmin
 
   pgadmin:
@@ -131,14 +165,22 @@ services:
     container_name: pgadmin
     restart: unless-stopped
 
+    depends_on:
+      vault_agent_postgres_pgadmin:
+        condition: service_healthy
+      postgres_primary:
+        condition: service_started
+
     env_file:
       - .env
-    environment:
-      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
-      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_DEFAULT_PASSWORD}"
 
-    depends_on:
-      - postgres_primary
+    environment:
+      PGDATA: "/var/lib/postgres/data/pgdata"
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
+      PGADMIN_DEFAULT_PASSWORD_FILE: "/run/vault/pgadmin_password"
+
+    volumes:
+      - postgres_vault_rendered:/run/vault:ro
 
     ports:
       - "8081:80"
