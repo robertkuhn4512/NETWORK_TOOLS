@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+#
+# export_approle_from_vault_container.sh
+#
+# Notes / How to run:
+#   1) Ensure Vault is running (example):
+#        docker compose -f docker-compose.prod.yml up -d vault_production_node
+#
+#   2) Ensure a Vault token is available via ONE of these host-side files:
+#        ./backend/app/security/configuration_files/vault/bootstrap/root_token
+#        ./backend/app/security/configuration_files/vault/bootstrap/root_token.json   (expects .root_token)
+#
+#      If neither file exists, the script will securely prompt you (input hidden).
+#
+#   3) Run:
+#        chmod +x ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+#        ROLE_NAME=postgres_pgadmin_agent ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+#
+# What this script does:
+#   - Executes *all* Vault CLI operations via docker exec into: vault_production_node
+#   - Forces the in-container Vault CLI to talk to:
+#       VAULT_ADDR=https://vault_production_node:8200
+#       VAULT_CACERT=/vault/certs/cert.crt
+#     (This matches your “always use container name” requirement.)
+#   - Reads the AppRole role_id and generates a secret_id
+#   - Writes host files used for Vault Agent auto-auth bootstrapping:
+#       <OUT_DIR>/role_id
+#       <OUT_DIR>/secret_id
+#
+# Optional env vars:
+#   VAULT_CONTAINER=vault_production_node          (default: vault_production_node)
+#   ROLE_NAME=postgres_pgadmin_agent              (default: postgres_pgadmin_agent)
+#   OUT_DIR=./container_data/vault/approle/<ROLE_NAME>
+#   ROTATE_SECRET_ID=1                            (default: 1; set 0 to keep existing secret_id if present)
+#
+#   # TLS behavior for the in-container Vault CLI:
+#   VAULT_ADDR_IN_CONTAINER=https://vault_production_node:8200   (default)
+#   VAULT_CACERT_IN_CONTAINER=/vault/certs/cert.crt              (default)
+#   VAULT_SKIP_VERIFY_IN_CONTAINER=0                             (default: 0; set 1 only if you must)
+#
+#   # Token file locations (host-side)
+#   ROOT_TOKEN_FILE=/custom/path/root_token
+#   ROOT_TOKEN_JSON=/custom/path/root_token.json
+#
+# Important:
+#   If your Vault server certificate does NOT include "vault_production_node" in its SANs/CN,
+#   TLS hostname verification may fail. In that case either:
+#     - Regenerate the cert with "vault_production_node" as a SAN (recommended), OR
+#     - Set VAULT_SKIP_VERIFY_IN_CONTAINER=1 (not recommended, but available).
+
+set -euo pipefail
+
+VAULT_CONTAINER="${VAULT_CONTAINER:-vault_production_node}"
+ROLE_NAME="${ROLE_NAME:-postgres_pgadmin_agent}"
+OUT_DIR="${OUT_DIR:-./container_data/vault/approle/${ROLE_NAME}}"
+ROTATE_SECRET_ID="${ROTATE_SECRET_ID:-1}"
+
+VAULT_ADDR_IN_CONTAINER="${VAULT_ADDR_IN_CONTAINER:-https://vault_production_node:8200}"
+VAULT_CACERT_IN_CONTAINER="${VAULT_CACERT_IN_CONTAINER:-/vault/certs/cert.crt}"
+VAULT_SKIP_VERIFY_IN_CONTAINER="${VAULT_SKIP_VERIFY_IN_CONTAINER:-0}"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BOOTSTRAP_DIR_DEFAULT="${SCRIPT_DIR}/../../security/configuration_files/vault/bootstrap"
+ROOT_TOKEN_FILE="${ROOT_TOKEN_FILE:-${BOOTSTRAP_DIR_DEFAULT}/root_token}"
+ROOT_TOKEN_JSON="${ROOT_TOKEN_JSON:-${BOOTSTRAP_DIR_DEFAULT}/root_token.json}"
+
+need_bin() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing required binary: $1" >&2; exit 1; }; }
+need_bin docker
+need_bin sed
+
+trim() {
+  local t="${1:-}"
+  t="${t//$'\r'/}"
+  t="${t//$'\n'/}"
+  # shellcheck disable=SC2001
+  t="$(echo -n "$t" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  echo -n "$t"
+}
+
+load_token() {
+  # 1) plain token file
+  if [[ -f "${ROOT_TOKEN_FILE}" && -s "${ROOT_TOKEN_FILE}" ]]; then
+    local t
+    t="$(trim "$(cat "${ROOT_TOKEN_FILE}")")"
+    if [[ -n "${t}" ]]; then
+      echo -n "${t}"
+      return 0
+    fi
+  fi
+
+  # 2) json token file (expects .root_token)
+  if [[ -f "${ROOT_TOKEN_JSON}" && -s "${ROOT_TOKEN_JSON}" ]]; then
+    need_bin jq
+    local t=""
+    t="$(jq -r '.root_token // empty' "${ROOT_TOKEN_JSON}" 2>/dev/null || true)"
+    t="$(trim "${t}")"
+    if [[ -n "${t}" ]]; then
+      echo -n "${t}"
+      return 0
+    fi
+  fi
+
+  # 3) interactive prompt
+  if [[ -t 0 ]]; then
+    local prompted=""
+    read -r -s -p "Enter Vault token (input hidden): " prompted
+    echo >&2
+    prompted="$(trim "${prompted}")"
+    if [[ -n "${prompted}" ]]; then
+      echo -n "${prompted}"
+      return 0
+    fi
+  fi
+
+  echo "ERROR: Could not obtain a Vault token." >&2
+  echo "Looked for:" >&2
+  echo "  - ${ROOT_TOKEN_FILE}" >&2
+  echo "  - ${ROOT_TOKEN_JSON}" >&2
+  echo "Run interactively or create one of the files above." >&2
+  exit 1
+}
+
+container_running() {
+  docker ps --format '{{.Names}}' | grep -qx "${VAULT_CONTAINER}"
+}
+
+vault_in_container() {
+  # Runs `vault ...` inside the Vault container using docker exec.
+  # All connectivity is forced to VAULT_ADDR_IN_CONTAINER by container name.
+  local -a exec_env
+  exec_env=(
+    -e "VAULT_TOKEN=${VAULT_TOKEN}"
+    -e "VAULT_ADDR=${VAULT_ADDR_IN_CONTAINER}"
+    -e "VAULT_CACERT=${VAULT_CACERT_IN_CONTAINER}"
+  )
+
+  if [[ "${VAULT_SKIP_VERIFY_IN_CONTAINER}" == "1" ]]; then
+    exec_env+=(-e "VAULT_SKIP_VERIFY=true")
+  fi
+
+  docker exec "${exec_env[@]}" "${VAULT_CONTAINER}" vault "$@"
+}
+
+main() {
+  if ! container_running; then
+    echo "ERROR: Vault container '${VAULT_CONTAINER}' is not running." >&2
+    echo "Start it, e.g.: docker compose -f docker-compose.prod.yml up -d vault_production_node" >&2
+    exit 1
+  fi
+
+  VAULT_TOKEN="$(load_token)"
+  export VAULT_TOKEN
+
+  umask 077
+  mkdir -p "${OUT_DIR}"
+  chmod 700 "${OUT_DIR}"
+
+  local tmp_role_id tmp_secret_id
+  tmp_role_id="$(mktemp)"
+  tmp_secret_id="$(mktemp)"
+  trap 'rm -f "${tmp_role_id}" "${tmp_secret_id}"' EXIT
+
+  # Verify Vault is reachable and unsealed (best-effort; gives better errors)
+  if command -v jq >/dev/null 2>&1; then
+    local status_json sealed
+    status_json="$(vault_in_container status -format=json 2>/dev/null || true)"
+    if [[ -n "${status_json}" ]]; then
+      sealed="$(echo "${status_json}" | jq -r '.sealed // empty' 2>/dev/null || true)"
+      if [[ "${sealed}" == "true" ]]; then
+        echo "ERROR: Vault is sealed. Unseal it before exporting AppRole credentials." >&2
+        exit 1
+      fi
+    else
+      echo "WARNING: Unable to read Vault status as JSON. Continuing, but auth may fail." >&2
+      echo "         Addr: ${VAULT_ADDR_IN_CONTAINER}" >&2
+      echo "         CA:   ${VAULT_CACERT_IN_CONTAINER}" >&2
+    fi
+  else
+    # jq not available; fall back to simple status
+    if ! vault_in_container status >/dev/null 2>&1; then
+      echo "WARNING: 'vault status' failed inside container '${VAULT_CONTAINER}'." >&2
+      echo "         Addr: ${VAULT_ADDR_IN_CONTAINER}" >&2
+      echo "         CA:   ${VAULT_CACERT_IN_CONTAINER}" >&2
+    fi
+  fi
+
+  # Read role_id
+  vault_in_container read -field=role_id "auth/approle/role/${ROLE_NAME}/role-id" > "${tmp_role_id}"
+  if [[ ! -s "${tmp_role_id}" ]]; then
+    echo "ERROR: role_id read returned empty output." >&2
+    echo "       Path: auth/approle/role/${ROLE_NAME}/role-id" >&2
+    exit 1
+  fi
+
+  # Generate or reuse secret_id
+  if [[ "${ROTATE_SECRET_ID}" == "0" && -s "${OUT_DIR}/secret_id" ]]; then
+    echo "Keeping existing secret_id at: ${OUT_DIR}/secret_id (ROTATE_SECRET_ID=0)"
+  else
+    vault_in_container write -field=secret_id -f "auth/approle/role/${ROLE_NAME}/secret-id" > "${tmp_secret_id}"
+    if [[ ! -s "${tmp_secret_id}" ]]; then
+      echo "ERROR: secret_id generation returned empty output." >&2
+      echo "       Path: auth/approle/role/${ROLE_NAME}/secret-id" >&2
+      exit 1
+    fi
+  fi
+
+  mv -f "${tmp_role_id}" "${OUT_DIR}/role_id"
+  chmod 600 "${OUT_DIR}/role_id"
+
+  if [[ -s "${tmp_secret_id}" ]]; then
+    mv -f "${tmp_secret_id}" "${OUT_DIR}/secret_id"
+    chmod 600 "${OUT_DIR}/secret_id"
+  fi
+
+  echo "Wrote AppRole bootstrap files:"
+  ls -l "${OUT_DIR}/role_id" "${OUT_DIR}/secret_id" 2>/dev/null || true
+}
+
+main "$@"
