@@ -80,10 +80,24 @@ Later, this server will host:
     - [4.3.3 Start postgres_primary](#433-start-postgres_primary)  
     - [4.3.4 Verify and connect](#434-verify-and-connect)  
     - [4.3.5 Troubleshooting](#435-troubleshooting)  
+  - [4.4 Startup credential options (choose one)](#44-startup-credential-options-choose-one)  
 - [5. pgAdmin](#5-pgadmin)  
   - [5.1 Bootstrap credentials (generate + seed)](#51-bootstrap-credentials-generate--seed)  
   - [5.2 Retrieve credentials from Vault](#52-retrieve-credentials-from-vault)  
   - [5.3 Use with Docker Compose](#53-use-with-docker-compose)  
+  - [5.4 Startup credential options (choose one)](#54-startup-credential-options-choose-one)  
+- [6. Postgres and pgAdmin Vault Integration Bootstrapping](#6-postgres-and-pgadmin-vault-integration-bootstrapping)  
+  - [6.1 Overview and constraints](#61-overview-and-constraints)  
+  - [6.2 Option A – Keep env file (.env) as the runtime source of truth](#62-option-a--keep-env-file-env-as-the-runtime-source-of-truth)  
+  - [6.3 Option B – Vault Agent sidecar renders file-based secrets at container start](#63-option-b--vault-agent-sidecar-renders-file-based-secrets-at-container-start)  
+    - [6.3.1 Create a least-privilege Vault policy](#631-create-a-least-privilege-vault-policy)  
+    - [6.3.2 Create an AppRole for the agent](#632-create-an-approle-for-the-agent)  
+    - [6.3.3 Host-side export script (role_id + secret_id)](#633-host-side-export-script-role_id--secret_id)  
+    - [6.3.4 Vault Agent config + templates](#634-vault-agent-config--templates)  
+    - [6.3.5 Docker Compose wiring (vault-agent + shared secrets volume)](#635-docker-compose-wiring-vault-agent--shared-secrets-volume)  
+    - [6.3.6 Bring-up and verification](#636-bring-up-and-verification)  
+    - [6.3.7 Rotation and operational notes](#637-rotation-and-operational-notes)  
+  - [6.4 Option C – Advanced: Vault Database secrets engine (dynamic credentials)](#64-option-c--advanced-vault-database-secrets-engine-dynamic-credentials)  
 - [Appendix A – Certificate Management](#appendix-a--certificate-management)  
   - [A.1 Vault TLS Certificates – What to Keep and Where](#a1-vault-tls-certificates--what-to-keep-and-where)  
   - [A.2 Rootless Docker and Subordinate UID/GID Ranges (subuid/subgid)](#a2-rootless-docker-and-subordinate-uidgid-ranges-subuidsubgid)
@@ -97,51 +111,84 @@ Use this section to document the repository layout on the server. The easiest wa
 > Suggested command: `tree -a -L 8`
 
 ```text
-developer_network_tools@networktoolsvm:~$ tree --charset ascii
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 .
-`-- NETWORK_TOOLS
-    |-- backend
-    |   |-- app
-    |   |   |-- mariadb_queries
-    |   |   |-- postgres
-    |   |   |-- routers
-    |   |   `-- security
-    |   |       `-- configuration_files
-    |   |           `-- vault
-    |   |               |-- bootstrap # After init and setup, These files should be removed and stored securely Offline and somewhere online securely
-    |   |               |   |-- root_token
-    |   |               |   |-- root_token.json
-    |   |               |   |-- seeded_secrets_app_secrets.json
-    |   |               |   |-- seeded_secrets_fast_api.json
-    |   |               |   |-- seed_secrets.template.json
-    |   |               |   `-- unseal_keys.json
-    |   |               |-- certs
-    |   |               |   |-- ca.crt      # Created with generate_local_vault_certs.sh
-    |   |               |   |-- ca.key      # Same - Remove and store somewhere off the servers and NOT in git
-    |   |               |   |-- ca.srl      # Same
-    |   |               |   |-- cert.crt    # Same
-    |   |               |   `-- cert.key    # Same
-    |   |               |-- config
-    |   |               |   `-- vault_configuration_primary_node.hcl        # This is the configuration file for the primary node
-    |   |               `-- Dockerfile      # This is the Dockerfile associated with the vault instance
-    |   |               
-    |   |-- build_scripts
-    |   |   |-- generate_local_vault_certs.sh
-    |   |   |-- vault_first_time_init_only_rootless.sh
-    |   |   `-- vault_unseal_kv_seed_bootstrap_rootless.sh
-    |   `-- nginx
-    |-- container_data
-    |   `-- vault
-    |       `-- data
-    |           |-- logs
-    |           |-- raft
-    |           |   |-- raft.db
-    |           |   `-- snapshots
-    |           `-- vault.db
-    |-- docker-compose.prod.yml
-    |-- environment_variable_guide.md
-    |-- frontend
-    `-- readme.md
+|-- backend
+|   |-- app
+|   |   |-- mariadb_queries
+|   |   |-- postgres
+|   |   |   |-- certs
+|   |   |   |   |-- ca.crt
+|   |   |   |   |-- ca.key
+|   |   |   |   |-- ca.srl
+|   |   |   |   |-- cert.crt
+|   |   |   |   `-- cert.key
+|   |   |   |-- config
+|   |   |   |   |-- pg_hba.conf
+|   |   |   |   |-- postgres.conf
+|   |   |   |   `-- postgresql.conf
+|   |   |   `-- scripts
+|   |   |       `-- export_approle_from_vault_container.sh
+|   |   |-- routers
+|   |   `-- security
+|   |       `-- configuration_files
+|   |           `-- vault
+|   |               |-- bootstrap
+|   |               |   |-- postgres_pgadmin_credentials.json
+|   |               |   |-- postgres_pgadmin.env
+|   |               |   |-- root_token
+|   |               |   |-- root_token.json
+|   |               |   |-- seeded_secrets_all.json
+|   |               |   |-- seed_kv_spec.postgres_pgadmin.json
+|   |               |   `-- unseal_keys.json
+|   |               |-- certs
+|   |               |   |-- ca.crt
+|   |               |   |-- ca.key
+|   |               |   |-- ca.srl
+|   |               |   |-- cert.crt
+|   |               |   `-- cert.key
+|   |               |-- config
+|   |               |   |-- certs
+|   |               |   |-- postgres_pgadmin_agent.hcl
+|   |               |   |-- postgres_pgadmin_kv_read.hcl
+|   |               |   `-- vault_configuration_primary_node.hcl
+|   |               `-- Dockerfile
+|   |-- build_scripts
+|   |   |-- generate_local_postgres_certs.sh
+|   |   |-- generate_local_vault_certs.sh
+|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- guides
+|   |   |   |-- seed_kv_spec.example.json
+|   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- vault_first_time_init_only_rootless.sh
+|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+|   `-- nginx
+|-- container_data
+|   |-- postgres
+|   |   `-- data
+|   |       `-- pgdata  [error opening dir]
+|   `-- vault
+|       |-- approle
+|       |   `-- postgres_pgadmin_agent
+|       |       |-- role_id
+|       |       `-- secret_id
+|       `-- data
+|           |-- logs
+|           |-- raft
+|           |   |-- raft.db
+|           |   `-- snapshots
+|           `-- vault.db
+|-- docker-compose.prod.yml
+|-- environment_variable_guide.md
+|-- frontend
+|-- how_to_videos
+|   |-- HOW_TO_3.2 Validate Certificates.mov
+|   |-- HOW_TO_3.3 Start Vault with Docker Compose.mov
+|   |-- HOW_TO_3.6 Initialize and Unseal Vault (First Run).mov
+|   |-- HOW_TO_3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh).mov
+|   `-- HOW_TO_3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh).mov
+`-- readme.md
 ```
 
 ---
@@ -1830,6 +1877,26 @@ This typically indicates the init container did not execute the intended copy co
   ```
 
 
+### 4.4 Startup credential options (choose one)
+
+Postgres does **not** natively “connect to Vault” on startup. In Docker, you typically implement that behavior using one of the following patterns:
+
+1) **Baseline (current Compose approach): `.env` / `env_file`**
+   - The host (or a build script) populates `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` in `.env`.
+   - `docker-compose.prod.yml` consumes those values (see **4.3**).
+
+2) **Vault Agent sidecar (recommended when you want Vault dependency at container start)**
+   - A Vault Agent container authenticates to Vault and renders secrets into files in a shared volume.
+   - The official Postgres image supports file-based inputs via `POSTGRES_DB_FILE`, `POSTGRES_USER_FILE`, and `POSTGRES_PASSWORD_FILE`.
+   - See **Section 6** for the full wiring and bootstrapping procedure.
+
+3) **Host “pre-flight” fetch from Vault (simple, but less ideal)**
+   - A host script reads secrets from Vault and writes them into `.env` immediately before `docker compose up`.
+   - This is easy to operate, but it places secrets back into `.env` (which you should treat as sensitive).
+
+Operational note:
+- These variables are only used by the Postgres image when initializing an **empty** data directory. If your Postgres volume already contains a database cluster, changing the values will not automatically rotate users/passwords.
+
 ## 5. pgAdmin
 
 This section documents the bootstrap credential(s) used by **pgAdmin** and how they are stored alongside the postgres credentials.
@@ -1887,6 +1954,531 @@ For dev-only usage, you may source the generated env file (see section **4.3**) 
 
 
 
+
+### 5.4 Startup credential options (choose one)
+
+pgAdmin also does not “pull from Vault” by itself. The common approaches are the same as Postgres:
+
+1) **Baseline (current Compose approach): `.env` / `env_file`**
+   - `PGADMIN_DEFAULT_EMAIL` and `PGADMIN_DEFAULT_PASSWORD` are provided via `.env`.
+
+2) **Vault Agent sidecar (recommended when you want Vault dependency at container start)**
+   - A Vault Agent container renders the admin password into a file in a shared volume.
+   - pgAdmin supports `PGADMIN_DEFAULT_PASSWORD_FILE`, allowing you to source the password from a file (Docker secret / rendered file).
+   - See **Section 6** for the full wiring and bootstrapping procedure.
+
+3) **Host “pre-flight” fetch from Vault (simple, but less ideal)**
+   - A host script reads the pgAdmin password from Vault and writes it into `.env` immediately before `docker compose up`.
+
+Operational note:
+- pgAdmin persists its own internal configuration database. On first startup it initializes the admin account based on the provided variables. If you rotate the password later, treat it like an application credential rotation (update Vault, update the container inputs, and restart).
+
+## 6. Postgres and pgAdmin Vault Integration Bootstrapping
+
+This section consolidates the “integration” story end-to-end: how Postgres and pgAdmin can start with credentials stored in Vault, while still supporting a fallback to locally stored bootstrap artifacts.
+
+### 6.1 Overview and constraints
+
+Key points to internalize up front:
+
+- **Postgres and pgAdmin do not natively query Vault.** Something else must authenticate to Vault and deliver the values to the containers (host scripting, init containers, or a Vault Agent sidecar).
+- **Prefer file-based secrets over environment variables** where possible:
+  - The official Postgres image supports `_FILE` variants for `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` (and a few others), meaning you can supply those values from files (e.g., Docker secrets or a rendered file).
+  - pgAdmin supports `PGADMIN_DEFAULT_PASSWORD_FILE`, meaning the admin password can be supplied from a file.
+- **Initialization behavior matters:** these variables affect initialization **only** when the Postgres data directory is empty. If your Postgres data volume already contains a database cluster, changing `POSTGRES_*` values will not automatically rotate users/passwords. Rotation requires explicit SQL (`ALTER USER ...`) and controlled restarts.
+
+Vault KV paths and mounts used in this repo:
+- The bootstrap seeding flow in **4.1** writes `postgres` and `pgadmin` under the configured mount (commonly `app_postgres_secrets`).
+- If you used a different mount name (for example, a spelling variation), use that consistently in policies, templates, and read paths.
+
+### 6.2 Option A – Keep env file (.env) as the runtime source of truth
+
+This is the simplest operationally because it requires **no changes** to the current `docker-compose.prod.yml` Postgres/pgAdmin services.
+
+#### When to use this option
+- You want the stack to start even if Vault is down.
+- You accept that secrets will exist (briefly or persistently) in `.env` on the host.
+- You primarily use Vault as your “system of record” (seed/backup), not as a hard runtime dependency.
+
+#### Steps
+
+1) **Generate and seed** using the existing repo script (see **4.1** and **5.1**).
+2) **Choose the fallback file location** (these are created by the script):
+   - `./backend/app/security/configuration_files/vault/bootstrap/postgres_pgadmin.env`
+   - `./backend/app/security/configuration_files/vault/bootstrap/postgres_pgadmin_credentials.json`
+3) **Populate `.env` for Compose**.
+
+Example: merge only the postgres/pgAdmin values into your existing `.env`:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+BOOT_ENV="./backend/app/security/configuration_files/vault/bootstrap/postgres_pgadmin.env"
+test -f "$BOOT_ENV" || { echo "Missing: $BOOT_ENV"; exit 1; }
+
+# Create a backup copy the first time
+cp -n .env ".env.bak.$(date +%Y%m%d_%H%M%S)" || true
+
+# Remove any prior definitions, then append the new ones (keeps .env clean)
+grep -vE '^(POSTGRES_DB|POSTGRES_USER|POSTGRES_PASSWORD|PGADMIN_DEFAULT_PASSWORD)=' .env > .env.tmp || true
+cat "$BOOT_ENV" >> .env.tmp
+mv .env.tmp .env
+chmod 600 .env
+```
+
+4) Bring up the services normally:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d postgres_certs_init postgres_primary pgadmin
+```
+
+Security note:
+- If you use this option, treat `.env` as a **secret-bearing file**: permissions `600`, do not commit it, and limit access to the docker host.
+
+### 6.3 Option B – Vault Agent sidecar renders file-based secrets at container start
+
+This pattern is the closest to “Postgres boots and obtains credentials from Vault,” while still remaining idiomatic for containers:
+- A **Vault Agent** container authenticates to Vault using **AppRole**.
+- The agent renders secrets into **files** inside a shared volume.
+- Postgres and pgAdmin read those values using their supported `*_FILE` environment variables.
+
+#### High-level flow
+
+1) Vault is running, initialized, unsealed, and seeded with the `postgres` and `pgadmin` KV entries.
+2) You create a Vault policy that can only read those two secrets.
+3) You create an AppRole bound to that policy.
+4) A Vault Agent container uses the AppRole to obtain a short-lived token.
+5) The Vault Agent templates render:
+   - `postgres_db`, `postgres_user`, `postgres_password`
+   - `pgadmin_password`
+6) Postgres uses:
+   - `POSTGRES_DB_FILE=/run/vault/postgres_db`
+   - `POSTGRES_USER_FILE=/run/vault/postgres_user`
+   - `POSTGRES_PASSWORD_FILE=/run/vault/postgres_password`
+7) pgAdmin uses:
+   - `PGADMIN_DEFAULT_PASSWORD_FILE=/run/vault/pgadmin_password`
+
+### 6.3.1 Create a least-privilege Vault policy
+
+Create a policy that can only read the two KV secrets.
+
+If your mount is KV v2 (the repo default), the paths include `/data/`:
+
+```hcl
+# postgres + pgAdmin runtime reads (KV v2)
+path "app_postgres_secrets/data/postgres" {
+  capabilities = ["read"]
+}
+
+path "app_postgres_secrets/data/pgadmin" {
+  capabilities = ["read"]
+}
+```
+
+If your mount is KV v1, remove `/data/`:
+
+```hcl
+# postgres + pgAdmin runtime reads (KV v1)
+path "app_postgres_secrets/postgres" {
+  capabilities = ["read"]
+}
+
+path "app_postgres_secrets/pgadmin" {
+  capabilities = ["read"]
+}
+```
+
+Apply the policy (run from the host using `docker exec` into the Vault container; this assumes you have a Vault admin/root token available for setup tasks):
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+VAULT_CONTAINER="vault_production_node"
+VAULT_ADDR_INTERNAL="https://vault_production_node:8200"
+VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"
+
+docker exec -i       -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"       -e VAULT_TOKEN="$VAULT_TOKEN"       -e VAULT_CACERT="/vault/certs/cert.crt"       "$VAULT_CONTAINER"       sh -lc 'cat > /tmp/postgres_pgadmin_read.hcl && vault policy write postgres_pgadmin_read /tmp/postgres_pgadmin_read.hcl' <<'HCL'
+path "app_postgres_secrets/data/postgres" {
+  capabilities = ["read"]
+}
+path "app_postgres_secrets/data/pgadmin" {
+  capabilities = ["read"]
+}
+HCL
+```
+
+### 6.3.2 Create an AppRole for the agent
+
+Enable AppRole auth (one-time):
+
+```bash
+docker exec -it       -e VAULT_ADDR="https://vault_production_node:8200"       -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"       -e VAULT_CACERT="/vault/certs/cert.crt"       vault_production_node       sh -lc 'vault auth enable approle || true'
+```
+
+Create the role (tune TTLs and constraints as you prefer):
+
+```bash
+docker exec -it       -e VAULT_ADDR="https://vault_production_node:8200"       -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"       -e VAULT_CACERT="/vault/certs/cert.crt"       vault_production_node       sh -lc '
+    vault write auth/approle/role/postgres-pgadmin           token_policies="postgres_pgadmin_read"           token_ttl="1h"           token_max_ttl="4h"           secret_id_ttl="24h"           secret_id_num_uses="1"
+  '
+```
+
+### 6.3.3 Host-side export script (role_id + secret_id)
+
+Your requirement: “from the host OS, log into the Vault container, read the role id and secret id, then populate it in the files.”
+
+Recommended on-host destination (rootless-friendly, not committed to git):
+
+```text
+./container_data/vault/approle/postgres-pgadmin/
+  role_id
+  secret_id
+```
+
+#### 6.3.3.1 Recommended: use the repo script (docker exec into Vault container)
+
+This repo includes a host-side helper script that performs the required `docker exec` calls against the **known Vault container name** and writes `role_id` / `secret_id` into the expected on-host directory.
+
+Script location (repo):
+
+- `./backend/app/postgres/scripts/export_approle_from_vault_container.sh`
+
+What it does:
+
+- Reads the AppRole `role_id`
+- Generates (optionally rotates) a `secret_id`
+- Writes both to: `./container_data/vault/approle/<ROLE_NAME>/{role_id,secret_id}` with restrictive permissions
+
+Run it from the project root:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+# Ensure Vault is running
+docker compose -f docker-compose.prod.yml up -d vault_production_node
+
+# Ensure the root token exists (this is produced by your init/unseal workflow)
+ls -lah ./backend/app/security/configuration_files/vault/bootstrap/root_token*
+
+# Run the export (defaults: VAULT_CONTAINER=vault_production_node, ROLE_NAME=postgres_pgadmin_agent)
+chmod +x ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+
+# If your role name differs (example: you created 'postgres-pgadmin' earlier), override ROLE_NAME:
+ROLE_NAME="postgres-pgadmin" ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+
+# If you do NOT want to rotate secret_id on every run:
+ROTATE_SECRET_ID=0 ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+
+# Verify outputs
+ls -lah ./container_data/vault/approle/
+```
+
+Notes:
+
+- The script uses `root_token` / `root_token.json` under the bootstrap directory by default, and will securely prompt if neither exists. See the script header for details.
+- The script relies on the Vault container’s internal `VAULT_ADDR` / `VAULT_CACERT` environment. If you are running Vault in “production FQDN mode” and the container cannot resolve that FQDN internally, switch Vault’s `VAULT_ADDR` back to `https://vault_production_node:8200` (see `docker-compose.prod.yml`) while running bootstrap tasks.
+
+#### 6.3.3.2 Manual commands (fully expanded; no script)
+
+If you prefer copy/paste commands (or need to troubleshoot the script), this is the complete sequence:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+umask 077
+
+VAULT_CONTAINER="vault_production_node"
+VAULT_ADDR_INTERNAL="https://vault_production_node:8200"
+VAULT_CACERT_INTERNAL="/vault/certs/cert.crt"
+
+# Choose the AppRole name you created
+ROLE_NAME="postgres_pgadmin_agent"   # repo default
+# ROLE_NAME="postgres-pgadmin"       # older example
+
+VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"
+
+OUT_DIR="./container_data/vault/approle/${ROLE_NAME}"
+mkdir -p "$OUT_DIR"
+chmod 700 "$OUT_DIR"
+
+ROLE_ID="$(
+  docker exec -i     -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"     -e VAULT_TOKEN="$VAULT_TOKEN"     -e VAULT_CACERT="$VAULT_CACERT_INTERNAL"     "$VAULT_CONTAINER"     sh -lc "vault read -field=role_id auth/approle/role/${ROLE_NAME}/role-id"
+)"
+
+SECRET_ID="$(
+  docker exec -i     -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"     -e VAULT_TOKEN="$VAULT_TOKEN"     -e VAULT_CACERT="$VAULT_CACERT_INTERNAL"     "$VAULT_CONTAINER"     sh -lc "vault write -field=secret_id -f auth/approle/role/${ROLE_NAME}/secret-id"
+)"
+
+printf '%s' "$ROLE_ID"   > "$OUT_DIR/role_id"
+printf '%s' "$SECRET_ID" > "$OUT_DIR/secret_id"
+chmod 600 "$OUT_DIR/role_id" "$OUT_DIR/secret_id"
+
+ls -lah "$OUT_DIR"
+```
+
+
+Manual commands (copy/paste):
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+VAULT_CONTAINER="vault_production_node"
+VAULT_ADDR_INTERNAL="https://vault_production_node:8200"
+VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"
+
+ROLE_ID="$(
+  docker exec -i         -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"         -e VAULT_TOKEN="$VAULT_TOKEN"         -e VAULT_CACERT="/vault/certs/cert.crt"         "$VAULT_CONTAINER"         sh -lc 'vault read -format=json auth/approle/role/postgres-pgadmin/role-id'       | jq -r '.data.role_id'
+)"
+
+SECRET_ID="$(
+  docker exec -i         -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"         -e VAULT_TOKEN="$VAULT_TOKEN"         -e VAULT_CACERT="/vault/certs/cert.crt"         "$VAULT_CONTAINER"         sh -lc 'vault write -f -format=json auth/approle/role/postgres-pgadmin/secret-id'       | jq -r '.data.secret_id'
+)"
+
+OUT_DIR="./container_data/vault/approle/postgres-pgadmin"
+mkdir -p "$OUT_DIR"
+
+printf '%s' "$ROLE_ID"   > "$OUT_DIR/role_id"
+printf '%s' "$SECRET_ID" > "$OUT_DIR/secret_id"
+
+chmod 600 "$OUT_DIR/role_id" "$OUT_DIR/secret_id"
+ls -lah "$OUT_DIR"
+```
+
+Operational notes:
+- Vault Agent’s AppRole auto-auth can delete the `secret_id` file after it reads it (recommended).
+- With `secret_id_num_uses=1`, you will need to generate a new `secret_id` whenever you restart the agent (depending on caching and how you tune the role).
+
+### 6.3.4 Vault Agent config + templates
+
+Recommended repo paths (create these files in git, but do **not** commit role_id/secret_id):
+
+```text
+./backend/app/postgres/vault_agent/
+  agent.hcl
+  templates/
+    postgres_db.ctmpl
+    postgres_user.ctmpl
+    postgres_password.ctmpl
+    pgadmin_password.ctmpl
+```
+
+Example `agent.hcl` (KV v2 paths shown):
+
+```hcl
+pid_file = "/tmp/vault-agent.pid"
+
+vault {
+  address = "https://vault_production_node:8200"
+  ca_cert = "/vault/ca/ca.crt"
+}
+
+auto_auth {
+  method "approle" {
+    config = {
+      role_id_file_path                   = "/vault/approle/role_id"
+      secret_id_file_path                 = "/vault/approle/secret_id"
+      remove_secret_id_file_after_reading = true
+    }
+  }
+
+  sink "file" {
+    config = {
+      path = "/vault/agent/token"
+    }
+  }
+}
+
+cache {
+  use_auto_auth_token = true
+}
+
+template {
+  source      = "/vault/templates/postgres_db.ctmpl"
+  destination = "/vault/rendered/postgres_db"
+  perms       = "0640"
+}
+
+template {
+  source      = "/vault/templates/postgres_user.ctmpl"
+  destination = "/vault/rendered/postgres_user"
+  perms       = "0640"
+}
+
+template {
+  source      = "/vault/templates/postgres_password.ctmpl"
+  destination = "/vault/rendered/postgres_password"
+  perms       = "0600"
+}
+
+template {
+  source      = "/vault/templates/pgadmin_password.ctmpl"
+  destination = "/vault/rendered/pgadmin_password"
+  perms       = "0600"
+}
+```
+
+Template examples (KV v2):
+
+`postgres_db.ctmpl`
+```ctmpl
+{{- with secret "app_postgres_secrets/data/postgres" -}}
+{{ .Data.data.POSTGRES_DB }}
+{{- end }}
+```
+
+`postgres_user.ctmpl`
+```ctmpl
+{{- with secret "app_postgres_secrets/data/postgres" -}}
+{{ .Data.data.POSTGRES_USER }}
+{{- end }}
+```
+
+`postgres_password.ctmpl`
+```ctmpl
+{{- with secret "app_postgres_secrets/data/postgres" -}}
+{{ .Data.data.POSTGRES_PASSWORD }}
+{{- end }}
+```
+
+`pgadmin_password.ctmpl`
+```ctmpl
+{{- with secret "app_postgres_secrets/data/pgadmin" -}}
+{{ .Data.data.PGADMIN_DEFAULT_PASSWORD }}
+{{- end }}
+```
+
+### 6.3.5 Docker Compose wiring (vault-agent + shared secrets volume)
+
+This repo currently wires Postgres/pgAdmin via `.env` (see `docker-compose.prod.yml`). To support the Vault Agent pattern cleanly, use **one of these approaches**:
+
+**Approach 1 (recommended): add an override compose file**
+- Keep `docker-compose.prod.yml` unchanged.
+- Create `docker-compose.postgres_vault.override.yml` that:
+  - Adds a `vault_agent_postgres_pgadmin` service.
+  - Adds a named volume (example: `postgres_vault_rendered`) mounted at `/run/vault` in Postgres and pgAdmin.
+  - Switches Postgres env to use `*_FILE` variables.
+  - Switches pgAdmin to use `PGADMIN_DEFAULT_PASSWORD_FILE`.
+
+Conceptual example (trimmed for clarity):
+
+```yaml
+services:
+  vault_agent_postgres_pgadmin:
+    image: hashicorp/vault:1.21.1
+    container_name: vault_agent_postgres_pgadmin
+    restart: unless-stopped
+    depends_on:
+      - vault_production_node
+    entrypoint: ["/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl"]
+    volumes:
+      - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
+      - ./backend/app/postgres/vault_agent/agent.hcl:/vault/agent/agent.hcl:ro
+      - ./backend/app/postgres/vault_agent/templates:/vault/templates:ro
+      - ./container_data/vault/approle/postgres-pgadmin:/vault/approle:ro
+      - postgres_vault_rendered:/vault/rendered
+
+  postgres_primary:
+    environment:
+      POSTGRES_DB_FILE: "/run/vault/postgres_db"
+      POSTGRES_USER_FILE: "/run/vault/postgres_user"
+      POSTGRES_PASSWORD_FILE: "/run/vault/postgres_password"
+    volumes:
+      - postgres_vault_rendered:/run/vault:ro
+    depends_on:
+      - vault_agent_postgres_pgadmin
+
+  pgadmin:
+    environment:
+      PGADMIN_DEFAULT_PASSWORD_FILE: "/run/vault/pgadmin_password"
+    volumes:
+      - postgres_vault_rendered:/run/vault:ro
+    depends_on:
+      - vault_agent_postgres_pgadmin
+
+volumes:
+  postgres_vault_rendered:
+```
+
+Bring up with both files:
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.postgres_vault.override.yml up -d
+```
+
+**Approach 2: modify `docker-compose.prod.yml` directly**
+- Suitable if you are comfortable committing the changes and keeping Vault Agent as the default.
+
+### 6.3.6 Bring-up and verification
+
+1) Ensure Vault is up and healthy:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d vault_production_node
+docker logs --tail 200 -f vault_production_node
+```
+
+2) Initialize/unseal/seed Vault (use your existing repo procedures in section 3.x).
+
+3) Confirm the postgres + pgAdmin secrets exist in Vault (see **4.2** and **5.2**).
+
+4) Export `role_id` + `secret_id` onto the host (see **6.3.3**).
+
+5) Start the Vault Agent service:
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.postgres_vault.override.yml up -d vault_agent_postgres_pgadmin
+docker logs --tail 200 -f vault_agent_postgres_pgadmin
+```
+
+6) Confirm rendered files exist (example):
+
+```bash
+docker exec -it vault_agent_postgres_pgadmin sh -lc 'ls -lah /vault/rendered && echo "----" && sed -n "1,3p" /vault/rendered/postgres_user'
+```
+
+7) Start Postgres and pgAdmin:
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.postgres_vault.override.yml up -d postgres_certs_init postgres_primary pgadmin
+docker logs --tail 200 -f postgres_primary
+docker logs --tail 200 -f pgadmin
+```
+
+### 6.3.7 Rotation and operational notes
+
+- **Rotate the rendered secret files**
+  - Generate a new `secret_id` (see **6.3.3**) and restart the agent container.
+  - If you configured `remove_secret_id_file_after_reading=true`, the agent will remove the file after it reads it; your operational runbook should account for regenerating it.
+
+- **Rotate the Postgres user password**
+  - Changing the KV value alone is not sufficient if the database cluster is already initialized.
+  - You must:
+    1) Update the password in Postgres:
+       ```bash
+       docker exec -it postgres_primary sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "ALTER USER \"$POSTGRES_USER\" WITH PASSWORD \"NEW_PASSWORD\";"'
+       ```
+    2) Update Vault KV (`POSTGRES_PASSWORD`).
+    3) Restart clients that authenticate using that password (pgAdmin, apps, etc.).
+
+- **Prefer dynamic credentials for applications**
+  - When you are ready, move application authentication to Vault dynamic database credentials (see **6.4**). This reduces long-lived static passwords.
+
+### 6.4 Option C – Advanced: Vault Database secrets engine (dynamic credentials)
+
+This option is the most secure pattern for **applications** connecting to Postgres:
+- Vault issues short-lived, revocable Postgres credentials on demand.
+- Your application fetches credentials from Vault (or via Vault Agent templates) and renews them automatically.
+
+Important limitation:
+- This does **not** change how the `postgres` container itself initializes the database. It primarily improves how *other services* authenticate to Postgres after it is up.
+
+High-level steps (outline):
+1) Enable the database secrets engine in Vault (`vault secrets enable database`).
+2) Configure a Postgres connection in Vault using an admin credential (managed carefully).
+3) Create Vault roles that define SQL for creating/revoking users with TTLs.
+4) Update your apps to request credentials from Vault at runtime.
+
+When you adopt this, keep the initial bootstrap password in Vault as a break-glass/admin secret, but prefer dynamic roles for day-to-day service auth.
 
 ## Appendix A – Certificate Management
 
