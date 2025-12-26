@@ -31,7 +31,30 @@ services:
     # Rootless: publish ports instead of host networking
     ports:
       - "8200:8200"
-      - "8201:8201"
+      - "8201:8201"   # There is no need to publish this port unless you are running multiple nodes and they
+                      # Need to sync to each other. In either case, It's best practice to also firewall each
+                      # Port to the servers that need to talk to each other.
+    expose:
+      - "8200"
+      - "8201"
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - IPC_LOCK  # required for memory locking :contentReference[oaicite:4]{index=4}
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /run:rw,noexec,nosuid,size=64m
+    # Resource guardrails (tune to your host)
+    pids_limit: 256
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      core: 0  # disables core dumps at container level (defense-in-depth) :contentReference[oaicite:5]{index=5}
     restart: unless-stopped
     volumes:
       - ./backend/app/security/configuration_files/vault/config/vault_configuration_primary_node.hcl:/vault/config/config.hcl:ro
@@ -44,9 +67,11 @@ services:
       - ./container_data/vault/data:/vault/data
       - ./container_data/vault/data/logs:/vault/logs
     environment:
-      VAULT_DISABLE_MLOCK: "true"
+      VAULT_DISABLE_MLOCK: "true"                                                          # Prefer enabling mlock; if you cannot, keep it true and harden host swap settings.
       VAULT_UI: "true"
-      VAULT_CACERT: "/vault/certs/cert.crt"
+      VAULT_CACERT: "/vault/certs/cert.crt"                                                 # VAULT_CACERT should normally point to a CA certificate (e.g., ca.crt),
+                                                                                            # not the server leaf cert—unless your leaf cert is self-signed and acting as CA. Make this explicit by
+                                                                                            # mounting a CA file and pointing to it.
       #VAULT_ADDR: "https://vault_production_node:8200"                                     # For dev container use (Hash / remove / just use the value below and change the value below in the .env file)
                                                                                             # This entry refers to the containers name. Which because of docker is in a hosts entry
                                                                                             # So reachability internally will work with this. Externally you would need to add an antry
@@ -59,7 +84,11 @@ services:
                                                                                             # VAULT_LOG_LEVEL: "info" for production use
       #VAULT_LOG_LEVEL: "info"
       VAULT_RAFT_NODE_ID: "Node1"                                                           # If you ever change this and reboot a node in an existing cluster you will have issues
-                                                                                            # So it's better to pick a name and keep it
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"                                                                                       # So it's better to pick a name and keep it
     entrypoint: ["/bin/sh","-lc","exec vault server -config=/vault/config/config.hcl"]
 
   # docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin

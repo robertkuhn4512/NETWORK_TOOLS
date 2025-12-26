@@ -12,3 +12,5 @@ listener "tcp" {
 storage "raft" {
   path = "/vault/data"
 }
+
+disable_mlock = true

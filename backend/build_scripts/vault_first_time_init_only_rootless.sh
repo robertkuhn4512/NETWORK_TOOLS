@@ -13,6 +13,9 @@
 #       - Enable secrets engines (KV, etc.)
 #       - Create policies/roles, write secrets, or test AppRole logins
 #
+#     Optional (recommended hardening):
+#       - Enable a file audit device writing to /vault/logs/audit.log (disable with --no-enable-audit)
+#
 #   Security:
 #     This script writes unseal keys + root token to disk (0600) for the bootstrap phase.
 #     Move them to your secure storage immediately, or delete once you have your operational model.
@@ -61,6 +64,13 @@ Compose behavior (rootless; no sudo):
 Unseal behavior:
   --no-unseal                     Skip unseal step (init only)
 
+Audit logging (recommended):
+  --no-enable-audit              Skip enabling the file audit device
+  --audit-path NAME               Audit device mount path (default: file)
+  --audit-file-path PATH          Audit log file path inside Vault container (default: /vault/logs/audit.log)
+  --audit-description TEXT        Optional description for the audit device
+  --audit-token-file PATH         Token file to use for audit enable/list (default: <root-token-file>)
+
 Pretty output:
   --no-pretty-output              Disable pretty JSON formatting (writes unseal_keys.json compact)
   --no-print-artifact-contents    Do NOT print the contents of the key/token JSON files to the terminal
@@ -97,6 +107,13 @@ PRINT_ARTIFACT_CONTENTS=1
 VERBOSE=0
 HTTP_DEBUG=0
 
+# Audit logging (file device)
+ENABLE_AUDIT=1
+AUDIT_PATH="file"
+AUDIT_FILE_PATH="/vault/logs/audit.log"
+AUDIT_DESCRIPTION=""
+AUDIT_TOKEN_FILE=""
+
 # -------------------- Parser helpers --------------------
 _require_val() { [[ -n "${2-}" && "${2:0:1}" != "-" ]] || { echo "ERROR: Missing value for $1" >&2; exit 2; }; }
 _set_opt() {
@@ -131,6 +148,14 @@ while [[ $# -gt 0 ]]; do
     --compose-build)                       COMPOSE_BUILD=1; shift ;;
 
     --no-unseal)                           NO_UNSEAL=1; shift ;;
+
+    --no-enable-audit)                     ENABLE_AUDIT=0; shift ;;
+    --audit-path|--audit-path=*)           if _set_opt --audit-path "$1" "${2-}" AUDIT_PATH; then shift 1; else shift 2; fi ;;
+    --audit-file-path|--audit-file-path=*) if _set_opt --audit-file-path "$1" "${2-}" AUDIT_FILE_PATH; then shift 1; else shift 2; fi ;;
+    --audit-description|--audit-description=*)
+                                           if _set_opt --audit-description "$1" "${2-}" AUDIT_DESCRIPTION; then shift 1; else shift 2; fi ;;
+    --audit-token-file|--audit-token-file=*)
+                                           if _set_opt --audit-token-file "$1" "${2-}" AUDIT_TOKEN_FILE; then shift 1; else shift 2; fi ;;
     --no-pretty-output)                    PRETTY_OUTPUT=0; shift ;;
     --no-print-artifact-contents)         PRINT_ARTIFACT_CONTENTS=0; shift ;;
 
@@ -145,11 +170,14 @@ done
 [[ -n "$VAULT_ADDR" ]] || { echo "ERROR: --vault-addr is required" >&2; exit 2; }
 
 VAULT_ADDR="${VAULT_ADDR%/}"
+AUDIT_PATH="${AUDIT_PATH%/}"
 COMPOSE_FILE="${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
 
 UNSEAL_KEYS_FILE="${UNSEAL_KEYS_FILE:-$BOOTSTRAP_DIR/unseal_keys.json}"
 ROOT_TOKEN_FILE="${ROOT_TOKEN_FILE:-$BOOTSTRAP_DIR/root_token}"
 ROOT_TOKEN_JSON_FILE="${ROOT_TOKEN_JSON_FILE:-$BOOTSTRAP_DIR/root_token.json}"
+
+AUDIT_TOKEN_FILE="${AUDIT_TOKEN_FILE:-$ROOT_TOKEN_FILE}"
 
 command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is required" >&2; exit 3; }
 command -v curl  >/dev/null 2>&1 || { echo "ERROR: curl is required"  >&2; exit 3; }
@@ -280,6 +308,110 @@ request_public() {
 
   rm -f "$stderr_tmp" 2>/dev/null || true
 }
+request_authed() {
+  # Authenticated Vault API call using X-Vault-Token read from a token file or provided by caller.
+  # Stores response body in RESP_JSON and HTTP status in HTTP_CODE.
+  local token="$1" method="$2" path="$3" body="${4-}"
+  local url="${VAULT_ADDR}${path}"
+
+  [[ -n "$token" ]] || die "request_authed called with empty token"
+
+  local -a args=("${CURL_COMMON[@]}" "${CURL_TLS_ARGS[@]}" "${NS_HDR[@]}" -H "X-Vault-Token: ${token}" -X "$method")
+  if [[ -n "$body" ]]; then args+=(-H "Content-Type: application/json" -d "$body"); fi
+
+  local stderr_tmp body_and_code rc
+  stderr_tmp="$(mktemp)"
+
+  set +e
+  body_and_code="$(curl "${args[@]}" "$url" -w $'\n%{http_code}' 2>"$stderr_tmp")"
+  rc=$?
+  set -e
+
+  HTTP_CODE="${body_and_code##*$'\n'}"
+  RESP_JSON="${body_and_code%$'\n'$HTTP_CODE}"
+  dbg "authed $method $path -> http=$HTTP_CODE rc=$rc"
+
+  if (( rc != 0 )) && (( AUTO_INSECURE_FALLBACK )) && [[ "${#CURL_TLS_ARGS[@]}" -eq 0 ]]; then
+    local err
+    err="$(cat "$stderr_tmp" 2>/dev/null || true)"
+
+    log "WARN: TLS verification failed using system trust store (no --ca-cert provided)."
+    if [[ -n "$err" ]]; then
+      log "WARN: curl error: ${err//$'\n'/ | }"
+    fi
+    log "WARN: Retrying with -k (insecure). For proper TLS verification, provide --ca-cert <path-to-ca.crt>."
+
+    CURL_TLS_ARGS=(-k)
+
+    rm -f "$stderr_tmp" 2>/dev/null || true
+    stderr_tmp="$(mktemp)"
+
+    args=("${CURL_COMMON[@]}" "${CURL_TLS_ARGS[@]}" "${NS_HDR[@]}" -H "X-Vault-Token: ${token}" -X "$method")
+    if [[ -n "$body" ]]; then args+=(-H "Content-Type: application/json" -d "$body"); fi
+
+    set +e
+    body_and_code="$(curl "${args[@]}" "$url" -w $'\n%{http_code}' 2>"$stderr_tmp")"
+    rc=$?
+    set -e
+
+    HTTP_CODE="${body_and_code##*$'\n'}"
+    RESP_JSON="${body_and_code%$'\n'$HTTP_CODE}"
+    dbg "authed retry(insecure) $method $path -> http=$HTTP_CODE rc=$rc"
+  fi
+
+  rm -f "$stderr_tmp" 2>/dev/null || true
+}
+
+enable_file_audit_if_needed() {
+  (( ENABLE_AUDIT )) || { log "Audit enable disabled (--no-enable-audit)."; return 0; }
+
+  # Vault must be unsealed for authenticated sys/audit operations.
+  request_public GET "/v1/sys/seal-status"
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "seal-status read failed before audit enable (${HTTP_CODE}): ${RESP_JSON}"
+  if [[ "$(jq -r '.sealed' <<<"$RESP_JSON")" == "true" ]]; then
+    log "WARN: Vault is sealed; skipping audit enable."
+    return 0
+  fi
+
+  [[ -f "$AUDIT_TOKEN_FILE" ]] || die "Audit token file not found: $AUDIT_TOKEN_FILE (use --audit-token-file or --no-enable-audit)"
+  local token
+  token="$(tr -d '
+' < "$AUDIT_TOKEN_FILE" | head -c 4096)"
+  [[ -n "$token" ]] || die "Audit token file is empty: $AUDIT_TOKEN_FILE"
+
+  # List enabled audit devices
+  request_authed "$token" GET "/v1/sys/audit"
+  if [[ "$HTTP_CODE" == "403" ]]; then
+    die "Permission denied listing audit devices (need sudo on sys/audit). Token file: $AUDIT_TOKEN_FILE"
+  fi
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "sys/audit list failed (${HTTP_CODE}): ${RESP_JSON}"
+
+  if jq -e --arg p "$AUDIT_PATH" 'has($p)' >/dev/null 2>&1 <<<"$RESP_JSON"; then
+    log "Audit device already enabled at path: ${AUDIT_PATH}/"
+    return 0
+  fi
+
+  log "Enabling file audit device at path '${AUDIT_PATH}/' -> ${AUDIT_FILE_PATH}"
+  local payload
+  if [[ -n "$AUDIT_DESCRIPTION" ]]; then
+    payload="$(jq -n --arg t "file" --arg d "$AUDIT_DESCRIPTION" --arg fp "$AUDIT_FILE_PATH" '{type:$t, description:$d, options:{file_path:$fp}}')"
+  else
+    payload="$(jq -n --arg t "file" --arg fp "$AUDIT_FILE_PATH" '{type:$t, options:{file_path:$fp}}')"
+  fi
+
+  request_authed "$token" POST "/v1/sys/audit/${AUDIT_PATH}" "$payload"
+  if [[ "$HTTP_CODE" == "403" ]]; then
+    die "Permission denied enabling audit device (need sudo on sys/audit/${AUDIT_PATH}). Token file: $AUDIT_TOKEN_FILE"
+  fi
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "sys/audit enable failed (${HTTP_CODE}): ${RESP_JSON}"
+
+  # Generate at least one authenticated request post-enable (helps ensure the file is created)
+  request_authed "$token" GET "/v1/sys/audit"
+  [[ "$HTTP_CODE" =~ ^2 ]] || true
+
+  log "Audit device enabled successfully."
+}
+
 
 compose_up() {
   [[ -f "$COMPOSE_FILE" ]] || die "Compose file missing: $COMPOSE_FILE"
@@ -457,6 +589,7 @@ main() {
   wait_for_vault
   init_if_needed
   unseal_if_needed
+  enable_file_audit_if_needed
   print_bootstrap_artifacts_instructions
   print_bootstrap_artifacts_contents
 
@@ -472,6 +605,9 @@ main() {
     --arg compose_project "$COMPOSE_PROJECT" \
     --argjson pretty_output "$PRETTY_OUTPUT" \
     --argjson print_artifact_contents "$PRINT_ARTIFACT_CONTENTS" \
+    --argjson enable_audit "$ENABLE_AUDIT" \
+    --arg audit_path "$AUDIT_PATH" \
+    --arg audit_file_path "$AUDIT_FILE_PATH" \
     '{
       vault_addr: $vault_addr,
       compose: { project: $compose_project, file: $compose_file, service: $service_name },
@@ -483,6 +619,7 @@ main() {
       },
       pretty_output: ($pretty_output == 1),
       print_artifact_contents: ($print_artifact_contents == 1),
+      audit: { enabled: ($enable_audit == 1), path: $audit_path, file_path: $audit_file_path },
       initialized: true,
       unsealed: true
     }'

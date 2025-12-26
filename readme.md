@@ -946,21 +946,23 @@ This step is required **one time** for a brand-new Vault instance. It will:
 > Run these commands as **developer_network_tools** (no sudo).
 
 1. Ensure Vault is running (the script can run compose for you, but it’s still useful to know the manual command):
-
+   >**Skip this step if the container is already up**
    ```bash
+   
    cd ~/NETWORK_TOOLS
    docker compose -p network_tools -f docker-compose.prod.yml up -d vault_production_node
    ```
 
 2. Ensure the init/unseal script is executable:
-
+   >**The following script will initilize and setup fault for it's first time run**
    ```bash
    cd ~/NETWORK_TOOLS
    chmod +x ./backend/build_scripts/vault_first_time_init_only_rootless.sh
    ```
 
 3. Run it with your local CA (recommended):
-
+   >This might change if you are using a public CA / Cert file. Just make sure<br>
+   >you use the correct files from your certificate provider
    ```bash
    bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
      --vault-addr https://vault_production_node:8200 \
@@ -1189,9 +1191,45 @@ Notes:
 
 #### 3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh)
 
-**Primary goal**: unseal Vault (if sealed), optionally create a KV mount, then seed secrets from JSON, and write a “resolved secrets” artifact file next to the root token so you can download/store it securely.
+**Primary goal**: unseal Vault (if sealed), optionally create a KV mount (v1 or v2), and seed one or more secrets under that mount from a JSON template file. The script also writes a **resolved artifact** (with generated values) into the bootstrap directory next to the root token so you can download/store it securely.
 
-Typical usage:
+Key flags (seeding-related):
+- `--secrets-json <file>`: JSON template describing what to write (validate with `jq . <file>`).
+- `--secrets-prefix <prefix>`: optional prefix under the mount (recommended for bootstraps).
+- `--secrets-cas <N>`: KV v2 CAS value used for writes (default `0`, meaning **create-only**).
+- `--secrets-dry-run`: resolves/generates values but does not write; prints only target paths.
+- `--print-secrets`: prints resolved secret values to the terminal (sensitive).
+
+##### Working example (recommended): create mount + seed secrets under a prefix (no double-prefix)
+
+This pattern produces secrets at:
+
+- `app_secrets/bootstrap/creds`
+- `app_secrets/bootstrap/crypto`
+
+1) Create a template file (map format). **Note**: paths in the file are **relative** (no `bootstrap/`), because we pass `--secrets-prefix bootstrap`.
+
+```bash
+BOOTSTRAP_DIR="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap"
+
+cat > "${BOOTSTRAP_DIR}/seed_app_secrets.json" <<'EOF'
+{
+  "creds": {
+    "username": "example_user",
+    "password": { "generate": { "type": "url_safe", "bytes": 24 } }
+  },
+  "crypto": {
+    "jwt_secret": { "generate": { "type": "hex", "bytes": 32 } },
+    "fernet_key": { "generate": { "type": "base64", "bytes": 32 } }
+  }
+}
+EOF
+
+# Always validate before running the seeder
+jq . "${BOOTSTRAP_DIR}/seed_app_secrets.json" >/dev/null
+```
+
+2) Run the seeder (unseal + create KV v2 mount + seed):
 
 ```bash
 bash ./backend/build_scripts/vault_unseal_kv_seed_bootstrap_rootless.sh \
@@ -1199,50 +1237,43 @@ bash ./backend/build_scripts/vault_unseal_kv_seed_bootstrap_rootless.sh \
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
   --unseal-keys "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" \
   --unseal-required 3 \
+  --prompt-token \
   --create-kv "app_secrets" \
   --kv-version 2 \
   --kv-description "Network Tools app secrets (dev)" \
   --kv-max-versions 20 \
   --kv-cas-required true \
   --kv-delete-version-after 0s \
-  --prompt-token \
-  --secrets-json "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seed_secrets.template.json" \
+  --secrets-json "${BOOTSTRAP_DIR}/seed_app_secrets.json" \
   --secrets-prefix "bootstrap" \
-  --print-secrets
+  --secrets-cas 0
 ```
 
-Key options (common):
-- `--vault-addr`  
-  Defaults to `https://vault_production_node:8200`
-- `--ca-cert`  
-  Strongly recommended for HTTPS in dev (your local CA). If omitted, the script will try system trust and may fall back to insecure `-k` behavior with a warning.
-- `--unseal-keys`  
-  Defaults to: `$BOOTSTRAP_DIR/unseal_keys.json`
-- `--unseal-required <N>`  
-  Optional, but recommended. If set, the script validates you have at least **N** keys and only attempts **N** unseal operations.
-- `--prompt-token` / `--token` / `--token-file`  
-  Provide a Vault token. If not provided, the script attempts the default bootstrap token files.
-- `--create-kv <mount>`  
-  Enables the KV engine at `<mount>/` (for example `app_secrets/`)
-- `--secrets-json <file>`  
-  Your template JSON file describing what to write.
-- `--secrets-prefix <prefix>`  
-  Optional prefix under the mount (example: `bootstrap/app/config` instead of `app/config`).
+3) Optional verification (example):
+
+```bash
+vault kv get app_secrets/bootstrap/creds
+vault kv get app_secrets/bootstrap/crypto
+```
+
+##### Reseeding note (KV v2 CAS)
+
+By default, the seeder uses `--secrets-cas 0` (create-only). If you re-run the seeder against a path that already exists, Vault will typically return a 400 and the script will report failure for that secret.
+
+For iterative development, you have three practical options:
+- Seed into **new paths** (e.g., change the prefix from `bootstrap` to `bootstrap_2025_12_25`).
+- **Delete** the existing secret paths before reseeding (safe only in non-production environments).
+- Use list format (Section 3.8.5-B) and set per-secret `cas` to the current version (obtained via `vault kv metadata get`), if you need controlled overwrites.
 
 Output artifacts (defaults):
-- Resolved secrets JSON artifact:  
-  `$BOOTSTRAP_DIR/seeded_secrets_<mount>.json`
-
-The script will also echo “recommended next steps” that include `scp` commands to download artifacts and a `rm -f` example to remove sensitive files from the server after verifying the download.
+- Resolved secrets JSON artifact: `$BOOTSTRAP_DIR/seeded_secrets_<mount>.json` (override with `--output-secrets-file`)
 
 #### 3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh)
 
-**Primary goal**: perform the same unseal/token handling, but allow a single “spec” file that:
-- creates multiple KV mounts (optional per mount)
-- writes multiple secret objects across multiple paths/mounts
-- stores a resolved “what was written” artifact under the same bootstrap directory
-
-This is intended for “bootstrap the whole cluster in one run” operations.
+**Primary goal**: unseal/token handling plus a single “spec” file that can:
+- ensure multiple KV mounts exist (optionally configuring KV v2 behavior per mount)
+- write multiple secret objects across multiple paths/mounts
+- store a resolved “what was written” artifact under the same bootstrap directory
 
 Typical usage (example):
 
@@ -1252,15 +1283,22 @@ bash ./backend/build_scripts/vault_unseal_multi_kv_seed_bootstrap_rootless.sh \
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
   --unseal-required 3 \
   --prompt-token \
-  --spec-json "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seed_kv_spec.json" \
-  --print-secrets
+  --spec-json "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seed_kv_spec.json"
 ```
+
+Useful flags:
+- `--dry-run`: resolves/generates values but does not write; prints only target paths.
+- `--print-secrets`: prints resolved secret values to the terminal (sensitive).
+- `--output-artifact <file>`: override the output artifact path (default: `$BOOTSTRAP_DIR/seeded_secrets_all.json`).
+- `--output-format {pretty|compact}`: control artifact formatting.
 
 #### 3.8.5 Seed Input Formats
 
 The **single-mount seeder** supports two JSON formats for `--secrets-json`.
 
-**A) Map format (recommended): “path -> data object”**
+##### A) Map format (recommended): “path -> data object”
+
+Use this format for the common case (simple, readable). Paths are **relative** to the mount (and also relative to `--secrets-prefix` if you pass it).
 
 ```json
 {
@@ -1274,7 +1312,13 @@ The **single-mount seeder** supports two JSON formats for `--secrets-json`.
 }
 ```
 
-**B) List format: “explicit path + data (+ optional CAS per secret)”**
+Notes:
+- Map format defaults each item’s CAS to `0` (create-only) for KV v2.
+- Use `--secrets-prefix` to keep the JSON paths clean (avoid repeating `bootstrap/` in every key).
+
+##### B) List format: supports per-secret CAS overrides (KV v2)
+
+Use this when you need different CAS behavior per secret (or when you prefer explicit objects).
 
 ```json
 [
@@ -1282,197 +1326,165 @@ The **single-mount seeder** supports two JSON formats for `--secrets-json`.
     "path": "app/config",
     "data": {
       "db_username": "example_user",
-      "db_password": { "generate": { "type": "base64", "bytes": 32 } }
+      "db_password": { "generate": { "type": "url_safe", "bytes": 32 } }
+    },
+    "cas": 0
+  },
+  {
+    "path": "jwt",
+    "data": {
+      "secret": { "generate": { "type": "hex", "bytes": 32 } }
     },
     "cas": 0
   }
 ]
 ```
 
-Supported generators:
+##### Supported generators
+
 - `hex` (requires `bytes`)
 - `base64` (requires `bytes`)
 - `url_safe` (requires `bytes`)
 - `uuid`
 
-Optional “ENV injection” values (useful when you *must* avoid putting secrets into a file):
+##### Optional “ENV injection” values
+
+Useful when you must avoid putting a plaintext secret value into a file:
+
 - Required env var: `{ "env": "ENV_VAR_NAME" }`
 - Optional env var: `{ "env": "ENV_VAR_NAME", "optional": true }`
 
+##### Prefix rule (avoid double-prefix)
+
+Choose exactly one approach:
+- Use `--secrets-prefix bootstrap` and keep paths in JSON **relative** (e.g., `creds`, `jwt`), or
+- Put `bootstrap/...` directly in the JSON paths and **do not** pass `--secrets-prefix`.
+
 #### 3.8.6 Multi Spec JSON Schema
 
-The multi-mount seeder uses a single JSON file (a “spec”) that defines:
-- mounts to ensure exist (optional per item)
-- writes to perform (mount + path + data)
+The multi-mount seeder uses a single JSON file (a “spec”) that defines mounts and the secrets to write under each mount.
 
-A typical pattern is:
+Supported top-level shapes:
+- Preferred: `{ "mounts": [ ... ] }`
+- Wrapper: `[ { "mounts": [ ... ] } ]` (single-element array)
+- Legacy (supported): `{ "mounts": [ ... ], "writes": [ ... ] }` (writes are merged into per-mount secrets)
+
+##### Preferred schema (per-mount secrets)
 
 ```json
-
 {
   "mounts": [
     {
       "mount": "frontend_app_secrets",
       "version": 2,
-      "description": "Frontend Secrets!",
+      "description": "Frontend secrets",
+      "prefix": "bootstrap",
       "v2_config": {
         "max_versions": 20,
         "cas_required": true,
         "delete_version_after": "0s"
       },
-      "prefix": "my_favorite_creds",
+      "secrets": {
+        "keycloak": {
+          "client_secret": { "generate": { "type": "url_safe", "bytes": 32 } }
+        }
+      }
+    },
+    {
+      "mount": "app_secrets",
+      "version": 2,
+      "description": "Network Tools app secrets (dev)",
+      "prefix": "bootstrap",
       "secrets": [
         {
           "path": "creds",
           "data": {
-            "un": "something",
-            "pw": "password"
-          }
+            "username": "example_user",
+            "password": { "generate": { "type": "url_safe", "bytes": 24 } }
+          },
+          "cas": 0
         },
         {
-          "path": "creds_two",
+          "path": "jwt",
           "data": {
-            "un": "something",
-            "pw": "password"
-          }
+            "secret": { "generate": { "type": "hex", "bytes": 32 } }
+          },
+          "cas": 0
         }
       ]
     }
   ]
 }
-
 ```
 
 Notes:
-- Keep the spec **template-safe** (use `generate` directives and/or env injection) whenever possible.
-- The “resolved” output (actual generated values) should be written as an artifact file under the bootstrap directory for secure download.
+- `.secrets` may be either:
+  - an **object map** (`{"path": {...}}`) or
+  - an **array** of `{path,data,cas}` objects (useful when you want per-secret CAS in KV v2).
+- `.prefix` is applied to every secret path for that mount. Keep secret paths **relative** when you use `.prefix`.
+- `.v2_config` is only relevant for KV v2 mounts and matches what the multi seeder validates:
+  - `max_versions` (int), `cas_required` (bool), `delete_version_after` (string like `"0s"`, `"24h"`).
 
 #### 3.8.7 Example Seed Files
 
-**Single-mount template example** (map format):
+Below are **copy/paste-valid** examples that match what the scripts accept.
+
+##### Single-mount template example (map format) + `--secrets-prefix bootstrap`
+
+This file is intended to be used with:
+
+- `--create-kv app_secrets`
+- `--secrets-prefix bootstrap`
+
+So the keys below are **relative** (no `bootstrap/` in the JSON):
 
 ```json
 {
-  "bootstrap/creds": {
+  "creds": {
     "un": "example_user",
     "pw": { "generate": { "type": "url_safe", "bytes": 24 } }
   },
-  "bootstrap/crypto": {
+  "crypto": {
     "jwt_secret": { "generate": { "type": "hex", "bytes": 32 } },
     "fernet_key": { "generate": { "type": "base64", "bytes": 32 } }
   }
 }
 ```
 
-**Multi spec example** (mount + multiple writes):
+##### Single-mount template example (list format) with per-secret CAS (KV v2)
 
 ```json
-{
-  "mounts": [
-    { "mount": "app_secrets", "type": "kv", "version": 2, "description": "Network Tools app secrets (dev)" }
-  ],
-  "writes": [
-    { "mount": "app_secrets", "path": "bootstrap/creds", "data": { "un": "example_user", "pw": { "generate": { "type": "url_safe", "bytes": 24 } } } },
-    { "mount": "app_secrets", "path": "bootstrap/jwt", "data": { "secret": { "generate": { "type": "hex", "bytes": 32 } } } }
-  ]
-}
+[
+  {
+    "path": "creds",
+    "data": {
+      "un": "example_user",
+      "pw": { "generate": { "type": "url_safe", "bytes": 24 } }
+    },
+    "cas": 0
+  },
+  {
+    "path": "crypto",
+    "data": {
+      "jwt_secret": { "generate": { "type": "hex", "bytes": 32 } },
+      "fernet_key": { "generate": { "type": "base64", "bytes": 32 } }
+    },
+    "cas": 0
+  }
+]
 ```
 
-#### 3.8.8 Output, Artifact Storage, and Security Notes
+##### Multi spec example (preferred: per-mount secrets)
 
-When you run init/unseal and seed operations, you should treat these as sensitive artifacts:
-
-- `unseal_keys.json`
-- `root_token` / `root_token.json`
-- any `seeded_secrets_*.json` output artifacts
-
-Recommended flow:
-1. Run the script(s) on the server.
-2. `scp -p` the required artifacts to a secure workstation or secrets storage location.
-3. Verify the downloads.
-4. Remove sensitive artifacts from the server (or move into an encrypted/controlled location).
-
-Example (download from server):
-
-```bash
-scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" .
-scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token" .
-scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json" .
-# Optional: resolved seed artifact(s)
-scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_app_secrets.json" .
-```
-
-#### 3.8.9 Troubleshooting
-
-
-- **Secrets file is not valid JSON**  
-  Ensure your `--secrets-json` file is strict JSON (double quotes, `:` between keys/values, no trailing commas). For example, this is **invalid**: `{'un':'x', 'pw','y'}`. This is valid:
-
-  ```json
-  { "un": "x", "pw": "y" }
-  ```
-- **Vault health response parsing errors (missing `.sealed`)**  
-  Some endpoints differ (`/v1/sys/health` vs `/v1/sys/seal-status`). Use `--verbose` and ensure TLS is configured correctly. If you can `curl --cacert "$CA" https://.../v1/sys/health` successfully, then fix the script inputs accordingly.
-
-- **TLS errors (`unknown CA`, `self-signed certificate in chain`)**  
-  Provide `--ca-cert` pointing at your local CA file, or install the CA into the host trust store (preferred for dev). Avoid relying on `-k` except temporarily for diagnostics.
-
-
-#### 3.8.10 Spec Format Notes, Validation Checks, and Common Pitfalls (Updated)
-
-This repo supports **two** JSON formats for the multi-mount seeder:
-
-- **Preferred (recommended):** a single JSON object with `mounts[]`, and each mount contains `secrets` (either an **object map** or an **array**).
-- **Legacy (supported):** a single JSON object with `mounts[]` plus a top-level `writes[]` list. The script will merge `writes[]` into each mount’s `secrets`.
-
-In addition, the script accepts a convenience wrapper where the **root** is a single-element array, e.g. `[ { ... } ]`. Internally, the script unwraps it.
-
-Validation commands (run on the server):
-
-```bash
-# Must be valid JSON (object or [object])
-jq -e '.' seed_kv_spec.json >/dev/null && echo "OK: valid JSON"
-
-# Prefer a single object root (recommended)
-jq -e 'type=="object"' seed_kv_spec.json >/dev/null && echo "OK: object root"
-
-# Accept [ { ... } ] wrapper as well
-jq -e '(type=="object") or (type=="array" and length==1 and (.[0]|type=="object"))' seed_kv_spec.json >/dev/null \
-  && echo "OK: object or [object]"
-
-# Must include a non-empty mounts array
-jq -e 'type=="object" and (.mounts|type=="array") and (.mounts|length>0)' seed_kv_spec.json >/dev/null \
-  && echo "OK: mounts[] present"
-```
-
-Common pitfalls that lead to confusing errors:
-
-- **Accidentally creating an array root** (e.g., starting the file with `[` … `]`) when your script version expects an object root.
-- **Mount name mismatch:** `writes[].mount` must match one of `mounts[].mount` (typos are easy to miss).
-- **Including the prefix twice:** if your mount uses `"prefix": "bootstrap"`, then write paths should be **relative** (e.g., `"creds"`, not `"bootstrap/creds"`).
-
----
-
-#### 3.8.11 Updated Multi-Mount Spec Example (Preferred)
-
-This format keeps *everything* for a mount in one place (mount config + the secrets to write).
-
-Notes:
-- `prefix` is optional. If set, it is prepended to each secret path.
-- `secrets` can be either:
-  - an **object map** of `{ "<path>": { ...data... } }`, or
-  - an **array** of `{ "path": "...", "data": {...} }`
-
-Example (`seed_kv_spec.json`):
+This example creates two mounts and writes multiple paths under the `bootstrap/` prefix in each:
 
 ```json
 {
   "mounts": [
     {
       "mount": "app_secrets",
-      "type": "kv",
       "version": 2,
-      "description": "Network Tools application secrets (dev)",
+      "description": "Network Tools app secrets (dev)",
       "prefix": "bootstrap",
       "v2_config": {
         "max_versions": 20,
@@ -1481,39 +1493,147 @@ Example (`seed_kv_spec.json`):
       },
       "secrets": {
         "creds": {
-          "db_username": "example_user",
-          "db_password": {
-            "generate": { "type": "url_safe", "bytes": 32 }
-          }
+          "un": "example_user",
+          "pw": { "generate": { "type": "url_safe", "bytes": 24 } }
         },
         "jwt": {
-          "secret": {
-            "generate": { "type": "hex", "bytes": 32 }
-          },
-          "issuer": "network_tools_dev"
+          "secret": { "generate": { "type": "hex", "bytes": 32 } }
         }
       }
     },
     {
       "mount": "frontend_app_secrets",
-      "type": "kv",
       "version": 2,
-      "description": "Network Tools frontend secrets (dev)",
+      "description": "Frontend secrets (dev)",
+      "prefix": "bootstrap",
+      "secrets": {
+        "keycloak": {
+          "client_secret": { "generate": { "type": "url_safe", "bytes": 32 } }
+        }
+      }
+    }
+  ]
+}
+```
+
+Validation tip (before running the seeder):
+
+```bash
+jq . seed_kv_spec.json >/dev/null
+```
+
+#### 3.8.8 Output, Artifact Storage, and Security Notes
+
+When you run init/unseal and seed operations, treat these as **sensitive artifacts**:
+
+- `unseal_keys.json`
+- `root_token` / `root_token.json`
+- any `seeded_secrets_*.json` output artifacts
+
+Artifact defaults:
+- Single-mount seeder: `$BOOTSTRAP_DIR/seeded_secrets_<mount>.json`
+- Multi-mount seeder: `$BOOTSTRAP_DIR/seeded_secrets_all.json` (override with `--output-artifact <file>`)
+
+Recommended flow:
+1. Run the script(s) on the server.
+2. `scp -p` the required artifacts to a secure workstation or secrets storage location.
+3. Verify the downloads.
+4. Remove sensitive artifacts from the server (or move into an encrypted/controlled location).
+
+Security note: avoid `--print-secrets` except during controlled debugging; it will print plaintext values to your terminal history/logs.
+
+#### 3.8.9 Troubleshooting
+
+
+Common seeding issues and what they usually mean:
+
+- **“Spec file is not valid JSON” / “Secrets file is not valid JSON”**  
+  Validate with `jq . <file>` and correct trailing commas, unquoted keys, or incomplete objects.
+
+- **Paths end up as `bootstrap/bootstrap/...`**  
+  You likely used both:
+  - `--secrets-prefix bootstrap` (or mount `.prefix: "bootstrap"`) **and**
+  - JSON paths that already include `bootstrap/...`  
+  Fix by keeping JSON paths relative when using a prefix.
+
+- **KV v2 write fails with HTTP 400 after a successful first run**  
+  This is commonly CAS behavior. If you are using CAS create-only (`cas: 0` / `--secrets-cas 0`) and the secret already exists, Vault will reject the write. Options are described in the “Reseeding note” in Section 3.8.3.
+
+- **“permission denied” / HTTP 403**  
+  The token in use does not have write access to the target mount/path. Verify policies and confirm you are using the intended token.
+
+- **TLS/cert errors**  
+  Ensure `--ca-cert` points to the CA that issued Vault’s server cert (or ensure the CA is trusted by the OS). As a last resort for diagnostics, some scripts may fall back to insecure validation; do not rely on that in production.
+
+#### 3.8.10 Spec Format Notes, Validation Checks, and Common Pitfalls (Updated)
+
+Validation checks enforced by the scripts (high-level):
+
+Single-mount seeder (`--secrets-json`):
+- Must be valid JSON.
+- Accepts either:
+  - map format: `{ "path": { ...data... }, ... }` (all values must be JSON objects), or
+  - list format: `[ { "path": "...", "data": { ... }, "cas": 0 }, ... ]`.
+
+Multi-mount seeder (`--spec-json`):
+- Must be valid JSON.
+- Root must be an object (or a single-element array containing an object).
+- Preferred: `.mounts` is an array of mount objects with:
+  - `mount` (string), `version` (1 or 2), optional `description`, optional `prefix`
+  - `secrets` as an object map or an array of `{path,data,cas}`.
+- Optional KV v2 config per mount via `.v2_config`:
+  - `max_versions` (int)
+  - `cas_required` (bool)
+  - `delete_version_after` (string like `"0s"`, `"24h"`)
+
+Common pitfalls:
+- **Prefix duplication** (most common): use a prefix in exactly one place (CLI `--secrets-prefix` or spec `.prefix`, not also in every JSON path).
+- **Invalid JSON in examples**: do not use placeholders like `...` inside JSON. Always validate with `jq .`.
+- **CAS expectations**: `cas: 0` is create-only. If you want rerunnable/idempotent behavior, plan for either deletion, new paths, or explicit CAS updates (KV v2).
+- **Wrong “path” semantics in legacy `writes`**: in multi legacy mode, `.writes[].path` must be relative (do not include the mount name, and do not include `.prefix` if you set one on the mount).
+
+#### 3.8.11 Updated Multi-Mount Spec Example (Preferred)
+
+This is the **preferred** format: all secrets are nested under each mount (no top-level `writes`).
+
+```json
+{
+  "mounts": [
+    {
+      "mount": "app_secrets",
+      "version": 2,
+      "description": "Network Tools app secrets (dev)",
       "prefix": "bootstrap",
       "v2_config": {
-        "max_versions": 10,
-        "cas_required": false,
+        "max_versions": 20,
+        "cas_required": true,
         "delete_version_after": "0s"
       },
+      "secrets": {
+        "creds": {
+          "un": "example_user",
+          "pw": { "generate": { "type": "url_safe", "bytes": 24 } }
+        },
+        "jwt": {
+          "secret": { "generate": { "type": "hex", "bytes": 32 } }
+        },
+        "crypto": {
+          "fernet_key": { "generate": { "type": "base64", "bytes": 32 } }
+        }
+      }
+    },
+    {
+      "mount": "frontend_app_secrets",
+      "version": 2,
+      "description": "Frontend secrets (dev)",
+      "prefix": "bootstrap",
       "secrets": [
         {
-          "path": "oidc",
+          "path": "keycloak",
           "data": {
-            "client_id": "example_client_id",
-            "client_secret": {
-              "generate": { "type": "url_safe", "bytes": 48 }
-            }
-          }
+            "client_secret": { "generate": { "type": "url_safe", "bytes": 32 } }
+          },
+          "cas": 0
         }
       ]
     }
@@ -1521,22 +1641,22 @@ Example (`seed_kv_spec.json`):
 }
 ```
 
----
-
 #### 3.8.12 Legacy Spec Example (mounts + writes)
 
-This format is supported for compatibility and can be useful if you prefer a single flat list of writes.
+Legacy mode is supported for backward compatibility: top-level `writes` entries are merged into the matching mount’s `.secrets`.
 
-Best practice: if you define a `prefix` in the mount object, then keep each `writes[].path` **relative** (do not include the prefix).
+Important rules:
+- Every `.writes[].mount` must match an entry in `.mounts[].mount` (the script validates this).
+- `.writes[].path` must be **relative** (do not include the mount name).
+- If the mount defines a `.prefix`, `.writes[].path` should be relative to that prefix (do not repeat it).
 
 ```json
 {
   "mounts": [
     {
       "mount": "app_secrets",
-      "type": "kv",
       "version": 2,
-      "description": "Network Tools application secrets (dev)",
+      "description": "Network Tools app secrets (dev)",
       "prefix": "bootstrap",
       "v2_config": {
         "max_versions": 20,
@@ -1550,22 +1670,22 @@ Best practice: if you define a `prefix` in the mount object, then keep each `wri
       "mount": "app_secrets",
       "path": "creds",
       "data": {
-        "db_username": "example_user",
-        "db_password": { "generate": { "type": "url_safe", "bytes": 32 } }
-      }
+        "un": "example_user",
+        "pw": { "generate": { "type": "url_safe", "bytes": 24 } }
+      },
+      "cas": 0
     },
     {
       "mount": "app_secrets",
       "path": "jwt",
       "data": {
         "secret": { "generate": { "type": "hex", "bytes": 32 } }
-      }
+      },
+      "cas": 0
     }
   ]
 }
 ```
-
----
 
 #### 3.8.13 About `"generate": { ... }` Values
 
@@ -1575,9 +1695,8 @@ The `"generate": { ... }` blocks are **not** a native Vault feature. They are a 
 - Vault will **not** regenerate the value on read.
 - To rotate, you re-run the seeding process (or build a dedicated rotation workflow) and write a new value.
 
-If you want dynamic per-request credentials/keys, use a Vault secrets engine designed for that (e.g., Database secrets engine, Transit, etc.), not KV.
+If you want dynamic per-request credentials/keys, use a Vault secrets engine designed for that (for example: Database secrets engine, Transit, PKI), not KV.
 
----
 
 ## 4. postgres
 
@@ -1665,6 +1784,22 @@ curl -sS --cacert "$CA_CERT" \
 ```
 
 ### 4.3 Use with Docker Compose
+
+**Before you start: generate local Postgres TLS certs (one-time per environment)**
+
+If Postgres TLS is enabled (the default in this repo), make sure the Postgres certificate files exist **before** bringing the Compose stack up. From the repo root:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+bash ./backend/build_scripts/generate_local_postgres_certs.sh
+```
+
+Verify the expected cert files were created (these are the files mounted into the Postgres container):
+
+```bash
+ls -lah ./backend/app/postgres/certs/
+# Expected (minimum): ca.crt, cert.crt, cert.key
+```
 
 You have two common patterns:
 
