@@ -24,10 +24,6 @@ Later, this server will host:
 ## Table of Contents
 
 - [0. Repository File Structure](#0-repository-file-structure)  
-- [0.1 Vault AppRole Authentication (Role ID and Secret ID)](#01-vault-approle-authentication-role-id-and-secret-id)  
-  - [0.1.1 Validate that an AppRole exists and retrieve the Role ID](#011-validate-that-an-approle-exists-and-retrieve-the-role-id)  
-  - [0.1.2 Generate a new Secret ID](#012-generate-a-new-secret-id)  
-  - [0.1.3 Optional validation of the Role ID and Secret ID pair](#013-optional-validation-of-the-role-id-and-secret-id-pair)  
 - [1. System Preparation](#1-system-preparation)  
   - [1.1 Assumptions](#11-assumptions)  
   - [1.2 Update the Operating System](#12-update-the-operating-system)  
@@ -192,134 +188,52 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 
 ---
 
-## 0.1 Vault AppRole Authentication (Role ID and Secret ID)
+## 0.2 Conventions (recommended environment variables)
 
-Several parts of this stack (especially **Vault Agent sidecars**) authenticate to Vault using **AppRole**. AppRole uses two inputs:
+To keep commands readable, the examples in this README are often provided in two forms:
 
-- **Role ID** (`role_id`): a stable identifier for a named AppRole. It is not *by itself* sufficient to authenticate, but should still be handled carefully.
-- **Secret ID** (`secret_id`): a short-lived credential used together with the Role ID to obtain a Vault token. Treat this like a password.
+- **Environment-variable form**: set a few variables once per shell session, then run shorter commands.
+- **Fully expanded form**: no environment variables required.
 
-In this repo, the expected pattern is:
-
-- A **host-side** directory holds `role_id` and `secret_id` files, and is bind-mounted read-only into the Vault Agent container.
-- The Vault Agent uses those files to log in via `auth/approle/login` and render the required secrets into a shared volume.
-
-> For the scripted workflow that exports these files from the Vault container, see **Section 6.3.3** (“Host-side export script (role_id + secret_id)”).
-
-### 0.1.1 Validate that an AppRole exists and retrieve the Role ID
-
-You need a Vault token with sufficient capability to read the role (during bootstrap, this is typically your root token file under the repo bootstrap directory). In the commands below:
-
-- `ROLE_NAME` is the AppRole name (example used in this repo: `postgres_pgadmin_agent`).
-- `VAULT_CONTAINER` is your Vault container name (example: `vault_production_node`).
-- The commands run the Vault CLI **inside** the Vault container, which avoids requiring a Vault CLI install on the host.
+### 0.2.1 Recommended host-side variables (run once per shell session)
 
 ```bash
-cd "$HOME/NETWORK_TOOLS"
-umask 077
+export NT_ROOT="$HOME/NETWORK_TOOLS"
+export COMPOSE_FILE="$NT_ROOT/docker-compose.prod.yml"
 
-VAULT_CONTAINER="vault_production_node"
-ROLE_NAME="postgres_pgadmin_agent"
-ROOT_TOKEN_FILE="./backend/app/security/configuration_files/vault/bootstrap/root_token"
+# Vault endpoint (host-side; used by scripts and curl)
+export VAULT_ADDR="https://vault_production_node:8200"
+export VAULT_CA_CERT="$NT_ROOT/backend/app/security/configuration_files/vault/certs/ca.crt"
 
-# Destination directory (host-side; NOT committed to git)
-APPROLE_DIR="./container_data/vault/approle/${ROLE_NAME}"
-mkdir -p "${APPROLE_DIR}"
+# Bootstrap artifacts (written by the first-time init script)
+export VAULT_BOOTSTRAP_DIR="$NT_ROOT/backend/app/security/configuration_files/vault/bootstrap"
+export VAULT_ROOT_TOKEN_FILE="$VAULT_BOOTSTRAP_DIR/root_token"
 
-# 1) Confirm AppRole auth is enabled (one-time; safe if already enabled)
-docker exec -it \
-  -e VAULT_ADDR="https://vault_production_node:8200" \
-  -e VAULT_TOKEN="$(cat "${ROOT_TOKEN_FILE}")" \
-  -e VAULT_CACERT="/vault/certs/cert.crt" \
-  "${VAULT_CONTAINER}" \
-  sh -lc 'vault auth list | grep -q "^approle/" && echo "OK: approle enabled" || echo "MISSING: approle not enabled"'
-
-# 2) Confirm the role exists (lists roles; requires list capability on auth/approle/role)
-docker exec -it \
-  -e VAULT_ADDR="https://vault_production_node:8200" \
-  -e VAULT_TOKEN="$(cat "${ROOT_TOKEN_FILE}")" \
-  -e VAULT_CACERT="/vault/certs/cert.crt" \
-  "${VAULT_CONTAINER}" \
-  sh -lc 'vault list auth/approle/role || true'
-
-# 3) Read the role_id (this fails clearly if the role does not exist)
-docker exec -it \
-  -e VAULT_ADDR="https://vault_production_node:8200" \
-  -e VAULT_TOKEN="$(cat "${ROOT_TOKEN_FILE}")" \
-  -e VAULT_CACERT="/vault/certs/cert.crt" \
-  "${VAULT_CONTAINER}" \
-  sh -lc "vault read -field=role_id auth/approle/role/${ROLE_NAME}/role-id" \
-  > "${APPROLE_DIR}/role_id"
-
-chmod 600 "${APPROLE_DIR}/role_id"
-echo "Wrote: ${APPROLE_DIR}/role_id"
+# KV mount that stores the Postgres + pgAdmin credentials
+# Repo default: app_postgres_secrets
+# Legacy/typo variant sometimes seen: app_postgress_secrets
+export POSTGRES_KV_MOUNT="app_postgres_secrets"
 ```
 
-**Common outcomes:**
+### 0.2.2 Container-side notes (Vault CLI via `docker exec`)
 
-- If the role is missing, the read typically returns an error like “no value found” or “permission denied”.
-- If you see “permission denied”, your token lacks access to `auth/approle/role/<ROLE_NAME>/role-id`. In that case, use the bootstrap root token (or a break-glass admin token) for this step.
+Many setup/validation commands below run the Vault CLI **inside** the Vault container so you do not need to install the Vault CLI on the host.
 
-### 0.1.2 Generate a new Secret ID
+- Vault container name (repo default): `vault_production_node`
+- Container-side CA path (mounted): `/vault/certs/ca.crt`
 
-Generating a `secret_id` requires **write** capability on the role’s `secret-id` endpoint. Many AppRoles are configured with `secret_id_num_uses=1`; in that case, each Secret ID can be used only once and you should expect to regenerate it when rotating or troubleshooting.
+### 0.2.3 Shell line continuation (common source of errors)
 
-```bash
-cd "$HOME/NETWORK_TOOLS"
-umask 077
+If you split a long command across multiple lines, each continued line must end with a trailing `\`.
 
-VAULT_CONTAINER="vault_production_node"
-ROLE_NAME="postgres_pgadmin_agent"
-ROOT_TOKEN_FILE="./backend/app/security/configuration_files/vault/bootstrap/root_token"
+If you see an error like:
 
-APPROLE_DIR="./container_data/vault/approle/${ROLE_NAME}"
-mkdir -p "${APPROLE_DIR}"
-
-docker exec -it \
-  -e VAULT_ADDR="https://vault_production_node:8200" \
-  -e VAULT_TOKEN="$(cat "${ROOT_TOKEN_FILE}")" \
-  -e VAULT_CACERT="/vault/certs/cert.crt" \
-  "${VAULT_CONTAINER}" \
-  sh -lc "vault write -f -field=secret_id auth/approle/role/${ROLE_NAME}/secret-id" \
-  > "${APPROLE_DIR}/secret_id"
-
-chmod 600 "${APPROLE_DIR}/secret_id"
-echo "Wrote: ${APPROLE_DIR}/secret_id"
+```text
+--init-shares: command not found
 ```
 
-**Notes:**
+it almost always means one of your argument lines was executed as a separate command due to a missing trailing `\` on the prior line.
 
-- Treat `secret_id` as a secret. Do not print it to the terminal unless you are in a controlled debugging workflow.
-- The Secret ID is not recoverable later. If you lose it, generate a new one.
-
-### 0.1.3 Optional validation of the Role ID and Secret ID pair
-
-If you want to confirm the pair is valid, perform an AppRole login and confirm Vault returns a client token:
-
-```bash
-# Adjust if you used a different role name or Vault container name
-VAULT_CONTAINER="vault_production_node"
-ROLE_NAME="postgres_pgadmin_agent"
-APPROLE_DIR="./container_data/vault/approle/${ROLE_NAME}"
-
-ROLE_ID="$(cat "${APPROLE_DIR}/role_id")"
-SECRET_ID="$(cat "${APPROLE_DIR}/secret_id")"
-
-docker exec -it \
-  -e VAULT_ADDR="https://vault_production_node:8200" \
-  -e VAULT_CACERT="/vault/certs/cert.crt" \
-  "${VAULT_CONTAINER}" \
-  sh -lc "vault write -format=json auth/approle/login role_id='${ROLE_ID}' secret_id='${SECRET_ID}'"
-```
-
-From the JSON output, confirm:
-
-- `auth.client_token` is present (login succeeded)
-- `auth.policies` contains the expected policy for that role
-
-You can then test the returned token against one read path you expect the agent to be able to access (for example, the KV path it will render).
-
----
 
 ## 1. System Preparation
 
@@ -1073,114 +987,103 @@ This step is required **one time** for a brand-new Vault instance. It will:
 
 > Run these commands as **developer_network_tools** (no sudo).
 
-1. Ensure Vault is running (the script can run compose for you, but it’s still useful to know the manual command):
-   >**Skip this step if the container is already up**
-   ```bash
-   
-   cd ~/NETWORK_TOOLS
-   docker compose -p network_tools -f docker-compose.prod.yml up -d vault_production_node
-   ```
+This script is intended for a **first-time** Vault bring-up. It will:
 
-2. Ensure the init/unseal script is executable:
-   >**The following script will initilize and setup fault for it's first time run**
-   ```bash
-   cd ~/NETWORK_TOOLS
-   chmod +x ./backend/build_scripts/vault_first_time_init_only_rootless.sh
-   ```
+- Start Vault (optional; if you already started the container, it will reuse it)
+- Initialize Vault (`vault operator init`)
+- Unseal Vault using the configured threshold
+- Enable the file audit device (if configured)
+- **Create required ACL policy + AppRole for Postgres/pgAdmin** (first-run convenience; enabled by default in this repo)
 
-3. Run it with your local CA (recommended):
-   >This might change if you are using a public CA / Cert file. Just make sure<br>
-   >you use the correct files from your certificate provider
-   ```bash
-   bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
-     --vault-addr https://vault_production_node:8200 \
-     --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
-   ```
+1) Ensure Vault is running (skip if already up):
 
-4. If you do **not** pass `--ca-cert`, the script will:
-   - Try the system trust store first (no `-k`)
-   - If that fails, it will retry with `-k` and print a warning with the TLS verification error
+```bash
+cd "$HOME/NETWORK_TOOLS"
+docker compose -p network_tools -f docker-compose.prod.yml up -d vault_production_node
+```
 
-   ```bash
-   bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
-     --vault-addr https://vault_production_node:8200
-   ```
+2) Ensure the script is executable:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+chmod +x ./backend/build_scripts/vault_first_time_init_only_rootless.sh
+```
+
+3) Run the script (recommended: pass the local CA and make init parameters explicit).
+
+Environment-variable form:
+
+```bash
+cd "$NT_ROOT"
+bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
+  --vault-addr "$VAULT_ADDR" \
+  --ca-cert "$VAULT_CA_CERT" \
+  --init-shares 5 \
+  --init-threshold 3 \
+  --no-print-artifact-contents
+```
+
+Fully expanded form:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --init-shares 5 \
+  --init-threshold 3
+```
+
+4) If you omit `--ca-cert`, the script will:
+
+- Try the system trust store first (no `-k`)
+- If that fails, retry with `-k` and print a warning with the TLS verification error
+
+```bash
+bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
+  --vault-addr "https://vault_production_node:8200"
+```
 
 #### 3.6.2 Bootstrap Artifacts (Download Then Remove)
 
-By default, the init/unseal script writes the bootstrap artifacts here:
+By default, the init/unseal script writes bootstrap artifacts here:
 
 ```text
 $HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/
   - unseal_keys.json
   - root_token
   - root_token.json
-  
-  Example data below with a default setting of shares=5, threshold=3
-  Meaning, it will create a password shard 5 long, but require only 3 to unseal the vault instance. 
-  By default the init script will do the initial unseal process for you. But everytime the server
-  is shutdown and restarted it will go back to being sealed.
-  
-    ----- /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json -----
-    {
-      "keys": [
-        "0fc7e06a4b4f428ec6703af5144752e95dc5e813b8ec5f4731f7f703ff885e14ad",
-        "fcc27fcf8b26b15cefc6ddfdab2323efe90ce302c70899ee75889fcdc2c6664ac0",
-        "4bf02b6140139e9c302765ca7ec53fbc5f332e8f31e87b48127aeee055a3e1141b",
-        "e242d0d470a123c7d132a377be1a04d670fd1d2c806fe3f5f6339749782483e0c4",
-        "64d0c9dee98e759b4fe9f91f263fca866c790b65087200cd522bac3d0548c85dbd"
-      ],
-      "keys_base64": [
-        "D8fgaktPQo7GcDr1FEdS6V3F6BO47F9HMff3A/+IXhSt",
-        "/MJ/z4smsVzvxt39qyMj7+kM4wLHCJnudYifzcLGZkrA",
-        "S/ArYUATnpwwJ2XKfsU/vF8zLo8x6HtIEnru4FWj4RQb",
-        "4kLQ1HChI8fRMqN3vhoE1nD9HSyAb+P19jOXSXgkg+DE",
-        "ZNDJ3umOdZtP6fkfJj/Khmx5C2UIcgDNUiusPQVIyF29"
-      ],
-      "root_token": "hvs.qMX2xsnXzINWiTAByu3fy6SR"
-    }
-    
-    ----- /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json -----
-    {
-      "root_token": "hvs.qMX2xsnXzINWiTAByu3fy6SR" <--- REMOVE THIS FROM THE SERVER AND REVOKE FROM VAULT WHEN YOU ARE DONE WITH IT !!!
-                                                        BEST PRACTICE IS TO SET EVERYTHING UP THE WAY YOU NEED IT 
-                                                        AND REMOVE THE ROOT TOKEN COMPLETELY. A NEW ONE CAN BE REGENERATED LATER IF NEEDED
-                                                        [HashiCorp Vault – Generate root token docs](https://developer.hashicorp.com/vault/docs/troubleshoot/generate-root-token)
-                                                        
-                                                        ONLY REVOKE WHEN EVERYTHING IS SETUP
-                                                        vault token revoke <your-root-token-string>
-    }
-    
-    {
-      "vault_addr": "https://vault_production_node:8200",
-      "compose": {
-        "project": "network_tools",
-        "file": "/home/developer_network_tools/NETWORK_TOOLS/docker-compose.prod.yml",
-        "service": "vault_production_node"
-      },
-      "bootstrap_dir": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap",
-      "files": {
-        "unseal_keys_json": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json",
-        "root_token": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token",
-        "root_token_json": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json"
-      },
-      "pretty_output": true,
-      "print_artifact_contents": true,
-      "initialized": true,
-      "unsealed": true
-    }
-
-
-  
 ```
 
-**Best practice (local/dev and production alike):**
+These files are **credentials**. Treat them as highly sensitive.
+
+- `unseal_keys.json` contains the unseal key shares (and the root token in JSON form, depending on init output).
+- `root_token` / `root_token.json` contain the initial root token.
+
+Example structure (values redacted):
+
+```json
+{
+  "keys_base64": ["<UNSEAL_KEY_1_B64>", "<UNSEAL_KEY_2_B64>", "<...>"],
+  "root_token": "<VAULT_ROOT_TOKEN>"
+}
+```
+
+**Operational guidance**
 
 - Download the artifacts to a secure location immediately (password manager / offline vault / secure storage).
 - Do **not** commit these files to Git.
 - After you have secured them, remove them from the server.
 
-Example download (from your workstation):
+Example download (from your workstation) — environment-variable form:
+
+```bash
+scp -p <user>@<server>:"$VAULT_BOOTSTRAP_DIR/unseal_keys.json" .
+scp -p <user>@<server>:"$VAULT_BOOTSTRAP_DIR/root_token" .
+scp -p <user>@<server>:"$VAULT_BOOTSTRAP_DIR/root_token.json" .
+```
+
+Example download — fully expanded form:
 
 ```bash
 scp -p <user>@<server>:"$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" .
@@ -1197,16 +1100,14 @@ rm -f \
   "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json"
 ```
 
-If you do **not** want the script to print sensitive JSON contents to your terminal, use:
+Optional stronger delete (not always effective on all storage):
 
 ```bash
-bash ./backend/build_scripts/vault_init_unseal_rootless_pretty_v6.sh \
-  --vault-addr https://vault_production_node:8200 \
-  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
-  --no-print-artifact-contents
+shred -u \
+  "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" \
+  "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token" \
+  "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json"
 ```
-
----
 
 ### 3.7 TLS Certificate Trust and Best Practices
 
@@ -2343,7 +2244,7 @@ This pattern is the closest to “Postgres boots and obtains credentials from Va
 
 ### 6.3.1 Create a least-privilege Vault policy
 
-Create a policy that can only read the two KV secrets.
+Create an ACL policy that can only read the two KV secrets needed at runtime (Postgres + pgAdmin).
 
 If your mount is KV v2 (the repo default), the paths include `/data/`:
 
@@ -2371,23 +2272,65 @@ path "app_postgres_secrets/pgadmin" {
 }
 ```
 
-Apply the policy (run from the host using `docker exec` into the Vault container; this assumes you have a Vault admin/root token available for setup tasks):
+> If your KV mount name differs (for example, legacy `app_postgres_secrets`), replace `app_postgres_secrets` everywhere in the policy, templates, and validation commands.
+
+Apply the policy (run from the host using `docker exec` into the Vault container; requires a Vault admin/root token for setup tasks).
+
+Environment-variable form:
 
 ```bash
-cd "$HOME/NETWORK_TOOLS"
+cd "$NT_ROOT"
 
 VAULT_CONTAINER="vault_production_node"
-VAULT_ADDR_INTERNAL="https://vault_production_node:8200"
-VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"
+VAULT_ADDR_INTERNAL="$VAULT_ADDR"
+VAULT_TOKEN="$(cat "$VAULT_ROOT_TOKEN_FILE")"
 
-docker exec -i       -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"       -e VAULT_TOKEN="$VAULT_TOKEN"       -e VAULT_CACERT="/vault/certs/cert.crt"       "$VAULT_CONTAINER"       sh -lc 'cat > /tmp/postgres_pgadmin_read.hcl && vault policy write postgres_pgadmin_read /tmp/postgres_pgadmin_read.hcl' <<'HCL'
+docker exec -i \
+  -e VAULT_ADDR="$VAULT_ADDR_INTERNAL" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  "$VAULT_CONTAINER" \
+  sh -lc 'cat >/tmp/postgres_pgadmin_read.hcl && vault policy write postgres_pgadmin_read /tmp/postgres_pgadmin_read.hcl' <<'HCL'
 path "app_postgres_secrets/data/postgres" {
   capabilities = ["read"]
 }
+
 path "app_postgres_secrets/data/pgadmin" {
   capabilities = ["read"]
 }
 HCL
+```
+
+Fully expanded form:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+docker exec -i \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  vault_production_node \
+  sh -lc 'cat >/tmp/postgres_pgadmin_read.hcl && vault policy write postgres_pgadmin_read /tmp/postgres_pgadmin_read.hcl' <<'HCL'
+path "app_postgres_secrets/data/postgres" {
+  capabilities = ["read"]
+}
+
+path "app_postgres_secrets/data/pgadmin" {
+  capabilities = ["read"]
+}
+HCL
+```
+
+Validation (optional):
+
+```bash
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  vault_production_node \
+  sh -lc 'vault policy read postgres_pgadmin_read'
 ```
 
 ### 6.3.2 Create an AppRole for the agent
@@ -2398,26 +2341,75 @@ Enable AppRole auth (one-time):
 docker exec -it \
   -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
-  -e VAULT_CACERT="/vault/certs/cert.crt" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
   vault_production_node \
   sh -lc 'vault auth enable approle || true'
 ```
 
-Create the role (tune TTLs and constraints as you prefer):
+Create (or update) the role. This repo uses the AppRole name `postgres_pgadmin_agent`.
+
+Environment-variable form:
+
+```bash
+cd "$NT_ROOT"
+
+VAULT_CONTAINER="vault_production_node"
+ROLE_NAME="postgres_pgadmin_agent"
+VAULT_TOKEN="$(cat "$VAULT_ROOT_TOKEN_FILE")"
+
+docker exec -it \
+  -e VAULT_ADDR="$VAULT_ADDR" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  "$VAULT_CONTAINER" \
+  sh -lc "
+    vault write auth/approle/role/${ROLE_NAME} \
+      token_policies=postgres_pgadmin_read \
+      token_ttl=1h \
+      token_max_ttl=4h \
+      secret_id_ttl=24h \
+      secret_id_num_uses=1
+  "
+```
+
+Fully expanded form:
 
 ```bash
 docker exec -it \
   -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
-  -e VAULT_CACERT="/vault/certs/cert.crt" \
-  vault_production_node sh -lc '
-    vault write auth/approle/role/postgres-pgadmin \
-      token_policies="postgres_pgadmin_read" \
-      token_ttl="1h" \
-      token_max_ttl="4h" \
-      secret_id_ttl="24h" \
-      secret_id_num_uses="1"
-  '
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  vault_production_node \
+  sh -lc "
+    vault write auth/approle/role/postgres_pgadmin_agent \
+      token_policies=postgres_pgadmin_read \
+      token_ttl=1h \
+      token_max_ttl=4h \
+      secret_id_ttl=24h \
+      secret_id_num_uses=1
+  "
+```
+
+Validate that the role exists and retrieve the Role ID:
+
+```bash
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  vault_production_node \
+  sh -lc 'vault read -field=role_id auth/approle/role/postgres_pgadmin_agent/role-id'
+```
+
+Generate a new Secret ID:
+
+```bash
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  vault_production_node \
+  sh -lc 'vault write -f -field=secret_id auth/approle/role/postgres_pgadmin_agent/secret-id'
 ```
 
 ### 6.3.3 Host-side export script (role_id + secret_id)
@@ -2511,7 +2503,7 @@ umask 077
 
 VAULT_CONTAINER="vault_production_node"
 VAULT_ADDR_INTERNAL="https://vault_production_node:8200"
-VAULT_CACERT_INTERNAL="/vault/certs/cert.crt"
+VAULT_CACERT_INTERNAL="/vault/certs/ca.crt"
 
 # Choose the AppRole name you created
 ROLE_NAME="postgres_pgadmin_agent"   # repo default
@@ -2549,11 +2541,11 @@ VAULT_ADDR_INTERNAL="https://vault_production_node:8200"
 VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"
 
 ROLE_ID="$(
-  docker exec -i         -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"         -e VAULT_TOKEN="$VAULT_TOKEN"         -e VAULT_CACERT="/vault/certs/cert.crt"         "$VAULT_CONTAINER"         sh -lc 'vault read -format=json auth/approle/role/postgres-pgadmin/role-id'       | jq -r '.data.role_id'
+  docker exec -i         -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"         -e VAULT_TOKEN="$VAULT_TOKEN"         -e VAULT_CACERT="/vault/certs/ca.crt"         "$VAULT_CONTAINER"         sh -lc 'vault read -format=json auth/approle/role/postgres-pgadmin/role-id'       | jq -r '.data.role_id'
 )"
 
 SECRET_ID="$(
-  docker exec -i         -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"         -e VAULT_TOKEN="$VAULT_TOKEN"         -e VAULT_CACERT="/vault/certs/cert.crt"         "$VAULT_CONTAINER"         sh -lc 'vault write -f -format=json auth/approle/role/postgres-pgadmin/secret-id'       | jq -r '.data.secret_id'
+  docker exec -i         -e VAULT_ADDR="$VAULT_ADDR_INTERNAL"         -e VAULT_TOKEN="$VAULT_TOKEN"         -e VAULT_CACERT="/vault/certs/ca.crt"         "$VAULT_CONTAINER"         sh -lc 'vault write -f -format=json auth/approle/role/postgres-pgadmin/secret-id'       | jq -r '.data.secret_id'
 )"
 
 OUT_DIR="./container_data/vault/approle/postgres-pgadmin"
@@ -2745,14 +2737,14 @@ docker logs --tail 200 -f vault_production_node
 # validate the secret exists (path may vary by your seeding convention)
 docker exec -it vault_production_node sh -lc '
   export VAULT_ADDR=https://vault_production_node:8200
-  export VAULT_CACERT=/vault/certs/cert.crt
+  export VAULT_CACERT=/vault/certs/ca.crt
   export VAULT_TOKEN="$(cat /vault/bootstrap/root_token 2>/dev/null || true)"
-  vault kv get app_postgress_secrets/postgres 2>/dev/null || true
-  vault kv get app_postgress_secrets/pgadmin 2>/dev/null || true
+  vault kv get app_postgres_secrets/postgres 2>/dev/null || true
+  vault kv get app_postgres_secrets/pgadmin 2>/dev/null || true
 '
 ```
 
-> Note: The KV mount name is currently `app_postgress_secrets` (historical spelling). If you standardize the mount to `app_postgres_secrets`, update the Vault Agent templates and validation commands accordingly.
+> Note: The KV mount name is currently `app_postgres_secrets` (historical spelling). If you standardize the mount to `app_postgres_secrets`, update the Vault Agent templates and validation commands accordingly.
 
 4) Export AppRole `role_id` + `secret_id` onto the host (Section 6.3.3). This produces:
 
@@ -2760,43 +2752,6 @@ docker exec -it vault_production_node sh -lc '
 ./container_data/vault/approle/postgres_pgadmin_agent/role_id
 ./container_data/vault/approle/postgres_pgadmin_agent/secret_id
 ```
-
-> Manual fallback (if the export script did not run, or the files are missing):
->
-> ```bash
-> umask 077
->
-> VAULT_CONTAINER="vault_production_node"
-> ROLE_NAME="postgres_pgadmin_agent"   # repo default
-> # ROLE_NAME="postgres-pgadmin"       # older example
->
-> ROOT_TOKEN_FILE="./backend/app/security/configuration_files/vault/bootstrap/root_token"
-> OUT_DIR="./container_data/vault/approle/${ROLE_NAME}"
->
-> mkdir -p "$OUT_DIR"
-> chmod 700 "$OUT_DIR"
->
-> # role_id is stable for a role (safe to re-read at any time)
-> docker exec -i \
->   -e VAULT_ADDR="https://vault_production_node:8200" \
->   -e VAULT_TOKEN="$(cat "$ROOT_TOKEN_FILE")" \
->   -e VAULT_CACERT="/vault/certs/cert.crt" \
->   "$VAULT_CONTAINER" \
->   sh -lc "vault read -field=role_id auth/approle/role/${ROLE_NAME}/role-id" \
->   > "$OUT_DIR/role_id"
->
-> # secret_id is intended to be rotated (may be single-use depending on role settings)
-> docker exec -i \
->   -e VAULT_ADDR="https://vault_production_node:8200" \
->   -e VAULT_TOKEN="$(cat "$ROOT_TOKEN_FILE")" \
->   -e VAULT_CACERT="/vault/certs/cert.crt" \
->   "$VAULT_CONTAINER" \
->   sh -lc "vault write -field=secret_id -f auth/approle/role/${ROLE_NAME}/secret-id" \
->   > "$OUT_DIR/secret_id"
->
-> chmod 600 "$OUT_DIR/role_id" "$OUT_DIR/secret_id"
-> ls -lah "$OUT_DIR"
-> ```
 
 5) Start the Vault Agent and wait for it to be healthy:
 
@@ -2850,7 +2805,7 @@ docker logs --tail 200 -f pgadmin
 docker compose -f docker-compose.prod.yml up -d --no-deps --no-recreate pgadmin
 ```
 
-#### 6.3.6.2 Troubleshooting errors seen tonight
+#### 6.3.6.2 Troubleshooting: common Vault Agent errors
 
 **A) Vault Agent: `error validating configuration: no auto_auth, cache, or listener block found`**
 
@@ -3046,7 +3001,7 @@ Enable the database secrets engine once:
 ```bash
 docker exec -it vault_production_node sh -lc '
   export VAULT_ADDR=https://vault_production_node:8200
-  export VAULT_CACERT=/vault/certs/cert.crt
+  export VAULT_CACERT=/vault/certs/ca.crt
   export VAULT_TOKEN="$(cat /vault/bootstrap/root_token 2>/dev/null || true)"
 
   vault secrets list | grep -q "^database/" || vault secrets enable database
@@ -3058,7 +3013,7 @@ Configure the connection (replace password and SSL parameters to match your setu
 ```bash
 docker exec -it vault_production_node sh -lc '
   export VAULT_ADDR=https://vault_production_node:8200
-  export VAULT_CACERT=/vault/certs/cert.crt
+  export VAULT_CACERT=/vault/certs/ca.crt
   export VAULT_TOKEN="$(cat /vault/bootstrap/root_token 2>/dev/null || true)"
 
   vault write database/config/network_tools_pg     plugin_name=postgresql-database-plugin     allowed_roles="network_tools_app"     connection_url="postgresql://{{username}}:{{password}}@postgres_primary:5432/network_tools?sslmode=verify-full&sslrootcert=/vault/postgres_certs/ca.crt"     username="vault_admin"     password="REPLACE_ME_STRONG_PASSWORD"
@@ -3076,7 +3031,7 @@ Example role that grants basic DML on the `public` schema:
 ```bash
 docker exec -it vault_production_node sh -lc '
   export VAULT_ADDR=https://vault_production_node:8200
-  export VAULT_CACERT=/vault/certs/cert.crt
+  export VAULT_CACERT=/vault/certs/ca.crt
   export VAULT_TOKEN="$(cat /vault/bootstrap/root_token 2>/dev/null || true)"
 
   vault write database/roles/network_tools_app     db_name=network_tools_pg     default_ttl="1h"     max_ttl="24h"     creation_statements="
@@ -3102,7 +3057,7 @@ Fetch a new set of credentials:
 ```bash
 docker exec -it vault_production_node sh -lc '
   export VAULT_ADDR=https://vault_production_node:8200
-  export VAULT_CACERT=/vault/certs/cert.crt
+  export VAULT_CACERT=/vault/certs/ca.crt
   export VAULT_TOKEN="$(cat /vault/bootstrap/root_token 2>/dev/null || true)"
 
   vault read -format=json database/creds/network_tools_app
@@ -3118,7 +3073,7 @@ Once the database config is correct, Vault can rotate the management user passwo
 ```bash
 docker exec -it vault_production_node sh -lc '
   export VAULT_ADDR=https://vault_production_node:8200
-  export VAULT_CACERT=/vault/certs/cert.crt
+  export VAULT_CACERT=/vault/certs/ca.crt
   export VAULT_TOKEN="$(cat /vault/bootstrap/root_token 2>/dev/null || true)"
 
   vault write -f database/rotate-root/network_tools_pg
@@ -3268,7 +3223,7 @@ Recommended practices:
      chmod 600 backend/app/security/configuration_files/vault/certs/ca.key
      chmod 600 backend/app/security/configuration_files/vault/certs/cert.key
      chmod 644 backend/app/security/configuration_files/vault/certs/ca.crt
-     chmod 644 backend/app/security/configuration_files/vault/certs/cert.crt
+     chmod 644 backend/app/security/configuration_files/vault/certs/ca.crt
      ```
 
 3. **Perform a one-time secure backup of critical keys**
