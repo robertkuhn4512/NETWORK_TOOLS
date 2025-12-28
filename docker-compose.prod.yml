@@ -41,7 +41,7 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      - IPC_LOCK  # required for memory locking :contentReference[oaicite:4]{index=4}
+      - IPC_LOCK  # required for memory locking
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -54,7 +54,7 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-      core: 0  # disables core dumps at container level (defense-in-depth) :contentReference[oaicite:5]{index=5}
+      core: 0  # disables core dumps at container level (defense-in-depth)
     restart: unless-stopped
     volumes:
       - ./backend/app/security/configuration_files/vault/config/vault_configuration_primary_node.hcl:/vault/config/config.hcl:ro
@@ -118,7 +118,7 @@ services:
       - postgres_vault_rendered:/vault/rendered
 
     healthcheck:
-      test: [ "CMD-SHELL", "test -s /vault/rendered/postgres_password && test -s /vault/rendered/pgadmin_password" ]
+      test: [ "CMD-SHELL", "test -s /vault/rendered/postgres_db && test -s /vault/rendered/postgres_user && test -s /vault/rendered/postgres_password && test -s /vault/rendered/pgadmin_password" ]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -146,8 +146,6 @@ services:
         chmod 644 /dest/server.crt /dest/ca.crt
         chown -R 999:999 /dest || true
         ls -l /dest
-
-
 
   # docker compose -f docker-compose.prod.yml up -d postgres_primary
 
