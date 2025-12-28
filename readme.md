@@ -23,84 +23,131 @@ Later, this server will host:
 
 ## Table of Contents
 
-- [0. Repository File Structure](#0-repository-file-structure)  
-- [1. System Preparation](#1-system-preparation)  
-  - [1.1 Assumptions](#11-assumptions)  
-  - [1.2 Update the Operating System](#12-update-the-operating-system)  
-  - [1.3 Address Slow `sudo` Response (Optional)](#13-address-slow-sudo-response-optional)  
-  - [1.4 Create a Dedicated Development User and Code Root](#14-create-a-dedicated-development-user-and-code-root)  
-    - [1.4.1 Create the `developer_network_tools` User](#141-create-the-developer_network_tools-user)  
-    - [1.4.2 Create the `NETWORK_TOOLS` Code Root](#142-create-the-network_tools-code-root)  
-    - [1.4.3 Verify the Setup from the Development User](#143-verify-the-setup-from-the-development-user)  
-  - [1.5 SSH Key Setup and Hardening](#15-ssh-key-setup-and-hardening)  
-    - [1.5.1 Generate an SSH Key Pair on the Developer Machine](#151-generate-an-ssh-key-pair-on-the-developer-machine)  
-    - [1.5.2 Install the SSH Key for the Administrative User](#152-install-the-ssh-key-for-the-administrative-user)  
-    - [1.5.3 Install the SSH Key for `developer_network_tools`](#153-install-the-ssh-key-for-developer_network_tools)  
-    - [1.5.4 Harden the SSH Server Configuration](#154-harden-the-ssh-server-configuration)  
-    - [1.5.5 Verify Access and Fallback Plan](#155-verify-access-and-fallback-plan)  
-- [2. Rootless Docker Install](#2-rootless-docker-install)  
-  - [2.1 Install Docker Engine Packages](#21-install-docker-engine-packages)  
-  - [2.2 Install Rootless Prerequisites](#22-install-rootless-prerequisites)  
-  - [2.3 Configure Subordinate UID/GID Ranges](#23-configure-subordinate-uidgid-ranges)  
-  - [2.4 Disable Rootful Docker Daemon (Recommended)](#24-disable-rootful-docker-daemon-recommended)  
-  - [2.5 Install and Start Rootless Docker](#25-install-and-start-rootless-docker)  
-  - [2.6 Enable Rootless Docker at Boot](#26-enable-rootless-docker-at-boot)  
-  - [2.7 Configure Shell Environment](#27-configure-shell-environment)  
-  - [2.8 Validate Rootless Docker](#28-validate-rootless-docker)  
+
+
+- [0. Repository File Structure](#0-repository-file-structure)
+- [0.1 Vault AppRole Authentication (Role ID and Secret ID)](#01-vault-approle-authentication-role-id-and-secret-id)
+  - [0.1.1 Validate that an AppRole exists and retrieve the Role ID](#011-validate-that-an-approle-exists-and-retrieve-the-role-id)
+  - [0.1.2 Generate a new Secret ID](#012-generate-a-new-secret-id)
+  - [0.1.3 Optional validation of the Role ID and Secret ID pair](#013-optional-validation-of-the-role-id-and-secret-id-pair)
+- [0.2 Conventions (recommended environment variables)](#02-conventions-recommended-environment-variables)
+  - [0.2.1 Recommended host-side variables (run once per shell session)](#021-recommended-host-side-variables-run-once-per-shell-session)
+  - [0.2.2 Container-side notes (Vault CLI via `docker exec`)](#022-container-side-notes-vault-cli-via-docker-exec)
+  - [0.2.3 Shell line continuation (common source of errors)](#023-shell-line-continuation-common-source-of-errors)
+- [1. System Preparation](#1-system-preparation)
+  - [1.1 Assumptions](#11-assumptions)
+  - [1.2 Update the Operating System](#12-update-the-operating-system)
+  - [1.3 Address Slow `sudo` Response (Optional)](#13-address-slow-sudo-response-optional)
+  - [1.4 Create a Dedicated Development User and Code Root](#14-create-a-dedicated-development-user-and-code-root)
+    - [1.4.1 Create the `developer_network_tools` User](#141-create-the-developer_network_tools-user)
+    - [1.4.2 Create the `NETWORK_TOOLS` Code Root](#142-create-the-network_tools-code-root)
+    - [1.4.3 Verify the Setup from the Development User](#143-verify-the-setup-from-the-development-user)
+  - [1.5 SSH Key Setup and Hardening](#15-ssh-key-setup-and-hardening)
+    - [1.5.1 Generate an SSH Key Pair on the Developer Machine](#151-generate-an-ssh-key-pair-on-the-developer-machine)
+    - [1.5.2 Install the SSH Key for the Administrative User](#152-install-the-ssh-key-for-the-administrative-user)
+    - [1.5.3 Install the SSH Key for `developer_network_tools`](#153-install-the-ssh-key-for-developer_network_tools)
+    - [1.5.4 Harden the SSH Server Configuration](#154-harden-the-ssh-server-configuration)
+    - [1.5.5 Verify Access and Fallback Plan](#155-verify-access-and-fallback-plan)
+- [2. Rootless Docker Install](#2-rootless-docker-install)
+  - [2.1 Install Docker Engine Packages](#21-install-docker-engine-packages)
+  - [2.2 Install Rootless Prerequisites](#22-install-rootless-prerequisites)
+  - [2.3 Configure Subordinate UID/GID Ranges](#23-configure-subordinate-uidgid-ranges)
+  - [2.4 Disable Rootful Docker Daemon (Recommended)](#24-disable-rootful-docker-daemon-recommended)
+  - [2.5 Install and Start Rootless Docker](#25-install-and-start-rootless-docker)
+  - [2.6 Enable Rootless Docker at Boot](#26-enable-rootless-docker-at-boot)
+  - [2.7 Configure Shell Environment](#27-configure-shell-environment)
+  - [2.8 Validate Rootless Docker](#28-validate-rootless-docker)
   - [2.9 Rootless Notes and Troubleshooting](#29-rootless-notes-and-troubleshooting)
-- [3. Vault Bring-up](#3-vault-bring-up)  
-  - [3.1 Generate TLS Certificates](#31-generate-tls-certificates)  
-  - [3.2 Validate Certificates](#32-validate-certificates)  
-  - [3.3 Start Vault with Docker Compose](#33-start-vault-with-docker-compose)  
-  - [3.4 Confirm Vault is Reachable](#34-confirm-vault-is-reachable)  
-  - [3.5 Vault Bring-up Troubleshooting](#35-vault-bring-up-troubleshooting)  
-  - [3.6 Initialize and Unseal Vault (First Run)](#36-initialize-and-unseal-vault-first-run)  
-    - [3.6.1 Run the Init + Unseal Script](#361-run-the-init--unseal-script)  
-    - [3.6.2 Bootstrap Artifacts (Download Then Remove)](#362-bootstrap-artifacts-download-then-remove)  
-  - [3.7 TLS Certificate Trust and Best Practices](#37-tls-certificate-trust-and-best-practices)  
-    - [3.7.1 Local Development (Self-Signed CA)](#371-local-development-self-signed-ca)  
-    - [3.7.2 Production Environments (Recommended)](#372-production-environments-recommended)  
-    - [3.7.3 Practical Guidance for This Repo](#373-practical-guidance-for-this-repo)  
-  - [3.8 Vault Unseal and KV Seeding Bootstrap Scripts](#38-vault-unseal-and-kv-seeding-bootstrap-scripts)  
-    - [3.8.1 Overview (Which Script to Use)](#381-overview-which-script-to-use)  
-    - [3.8.2 Unseal-Only Usage](#382-unseal-only-usage)  
-    - [3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh)](#383-single-mount-seeder-vault_unseal_kv_seed_bootstrap_rootlesssh)  
-    - [3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh)](#384-multi-mount-seeder-vault_unseal_multi_kv_seed_bootstrap_rootlesssh)  
-    - [3.8.5 Seed Input Formats](#385-seed-input-formats)  
-    - [3.8.6 Multi Spec JSON Schema](#386-multi-spec-json-schema)  
-    - [3.8.7 Example Seed Files](#387-example-seed-files)  
-    - [3.8.8 Output, Artifact Storage, and Security Notes](#388-output-artifact-storage-and-security-notes)  
-    - [3.8.9 Troubleshooting](#389-troubleshooting)  
-- [4. postgres](#4-postgres)  
-  - [4.1 Bootstrap credentials (generate + seed)](#41-bootstrap-credentials-generate--seed)  
-  - [4.2 Retrieve credentials from Vault](#42-retrieve-credentials-from-vault)  
-  - [4.3 Use with Docker Compose](#43-use-with-docker-compose)  
-    - [4.3.1 Compose prerequisites](#431-compose-prerequisites)  
-    - [4.3.2 Initialize the Postgres certs volume](#432-initialize-the-postgres-certs-volume)  
-    - [4.3.3 Start postgres_primary](#433-start-postgres_primary)  
-    - [4.3.4 Verify and connect](#434-verify-and-connect)  
-    - [4.3.5 Troubleshooting](#435-troubleshooting)  
-  - [4.4 Startup credential options (choose one)](#44-startup-credential-options-choose-one)  
-- [5. pgAdmin](#5-pgadmin)  
-  - [5.1 Bootstrap credentials (generate + seed)](#51-bootstrap-credentials-generate--seed)  
-  - [5.2 Retrieve credentials from Vault](#52-retrieve-credentials-from-vault)  
-  - [5.3 Use with Docker Compose](#53-use-with-docker-compose)  
-  - [5.4 Startup credential options (choose one)](#54-startup-credential-options-choose-one)  
-- [6. Postgres and pgAdmin Vault Integration Bootstrapping](#6-postgres-and-pgadmin-vault-integration-bootstrapping)  
-  - [6.1 Overview and constraints](#61-overview-and-constraints)  
-  - [6.2 Option A – Keep env file (.env) as the runtime source of truth](#62-option-a--keep-env-file-env-as-the-runtime-source-of-truth)  
-  - [6.3 Option B – Vault Agent sidecar renders file-based secrets at container start](#63-option-b--vault-agent-sidecar-renders-file-based-secrets-at-container-start)  
-    - [6.3.1 Create a least-privilege Vault policy](#631-create-a-least-privilege-vault-policy)  
-    - [6.3.2 Create an AppRole for the agent](#632-create-an-approle-for-the-agent)  
-    - [6.3.3 Host-side export script (role_id + secret_id)](#633-host-side-export-script-role_id--secret_id)  
-    - [6.3.4 Vault Agent config + templates](#634-vault-agent-config--templates)  
-    - [6.3.5 Docker Compose wiring (vault-agent + shared secrets volume)](#635-docker-compose-wiring-vault-agent--shared-secrets-volume)  
-    - [6.3.6 Bring-up and verification](#636-bring-up-and-verification)  
-    - [6.3.7 Rotation and operational notes](#637-rotation-and-operational-notes)  
-  - [6.4 Option C – Advanced: Vault Database secrets engine (dynamic credentials)](#64-option-c--advanced-vault-database-secrets-engine-dynamic-credentials)  
-- [Appendix A – Certificate Management](#appendix-a--certificate-management)  
-  - [A.1 Vault TLS Certificates – What to Keep and Where](#a1-vault-tls-certificates--what-to-keep-and-where)  
-  - [A.2 Rootless Docker and Subordinate UID/GID Ranges (subuid/subgid)](#a2-rootless-docker-and-subordinate-uidgid-ranges-subuidsubgid)
+- [3. Vault Bring-up](#3-vault-bring-up)
+  - [3.1 Generate TLS Certificates](#31-generate-tls-certificates)
+  - [3.2 Validate Certificates](#32-validate-certificates)
+  - [3.3 Start Vault with Docker Compose](#33-start-vault-with-docker-compose)
+  - [3.4 Confirm Vault is Reachable](#34-confirm-vault-is-reachable)
+  - [3.5 Vault Bring-up Troubleshooting](#35-vault-bring-up-troubleshooting)
+  - [3.6 Initialize and Unseal Vault (First Run)](#36-initialize-and-unseal-vault-first-run)
+    - [3.6.1 Run the Init + Unseal Script](#361-run-the-init--unseal-script)
+    - [3.6.2 Bootstrap Artifacts (Download Then Remove)](#362-bootstrap-artifacts-download-then-remove)
+  - [3.7 TLS Certificate Trust and Best Practices](#37-tls-certificate-trust-and-best-practices)
+    - [3.7.1 Local Development (Self-Signed CA)](#371-local-development-self-signed-ca)
+    - [3.7.2 Production Environments (Recommended)](#372-production-environments-recommended)
+    - [3.7.3 Practical Guidance for This Repo](#373-practical-guidance-for-this-repo)
+  - [3.8 Vault Unseal and KV Seeding Bootstrap Scripts](#38-vault-unseal-and-kv-seeding-bootstrap-scripts)
+    - [3.8.1 Overview (Which Script to Use)](#381-overview-which-script-to-use)
+    - [3.8.2 Unseal-Only Usage](#382-unseal-only-usage)
+    - [3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh)](#383-single-mount-seeder-vault_unseal_kv_seed_bootstrap_rootlesssh)
+    - [3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh)](#384-multi-mount-seeder-vault_unseal_multi_kv_seed_bootstrap_rootlesssh)
+    - [3.8.5 Seed Input Formats](#385-seed-input-formats)
+    - [3.8.6 Multi Spec JSON Schema](#386-multi-spec-json-schema)
+    - [3.8.7 Example Seed Files](#387-example-seed-files)
+    - [3.8.8 Output, Artifact Storage, and Security Notes](#388-output-artifact-storage-and-security-notes)
+    - [3.8.9 Troubleshooting](#389-troubleshooting)
+    - [3.8.10 Spec Format Notes, Validation Checks, and Common Pitfalls (Updated)](#3810-spec-format-notes-validation-checks-and-common-pitfalls-updated)
+    - [3.8.11 Updated Multi-Mount Spec Example (Preferred)](#3811-updated-multi-mount-spec-example-preferred)
+    - [3.8.12 Legacy Spec Example (mounts + writes)](#3812-legacy-spec-example-mounts--writes)
+    - [3.8.13 About `"generate": { ... }` Values](#3813-about-generate----values)
+- [4. postgres](#4-postgres)
+  - [4.1 Bootstrap credentials (generate + seed)](#41-bootstrap-credentials-generate--seed)
+  - [4.2 Retrieve credentials from Vault](#42-retrieve-credentials-from-vault)
+  - [4.3 Use with Docker Compose](#43-use-with-docker-compose)
+    - [4.3.1 Compose prerequisites](#431-compose-prerequisites)
+    - [4.3.2 Initialize the Postgres certs volume](#432-initialize-the-postgres-certs-volume)
+    - [4.3.3 Start postgres_primary](#433-start-postgres_primary)
+    - [4.3.4 Verify and connect](#434-verify-and-connect)
+    - [4.3.5 Troubleshooting](#435-troubleshooting)
+  - [4.4 Startup credential options (choose one)](#44-startup-credential-options-choose-one)
+- [5. pgAdmin](#5-pgadmin)
+  - [5.1 Bootstrap credentials (generate + seed)](#51-bootstrap-credentials-generate--seed)
+  - [5.2 Retrieve credentials from Vault](#52-retrieve-credentials-from-vault)
+  - [5.3 Use with Docker Compose](#53-use-with-docker-compose)
+  - [5.4 Startup credential options (choose one)](#54-startup-credential-options-choose-one)
+- [6. Postgres and pgAdmin Vault Integration Bootstrapping](#6-postgres-and-pgadmin-vault-integration-bootstrapping)
+  - [6.1 Overview and constraints](#61-overview-and-constraints)
+  - [6.2 Option A – Keep env file (.env) as the runtime source of truth](#62-option-a--keep-env-file-env-as-the-runtime-source-of-truth)
+    - [When to use this option](#when-to-use-this-option)
+    - [Steps](#steps)
+  - [6.3 Option B – Vault Agent sidecar renders file-based secrets at container start](#63-option-b--vault-agent-sidecar-renders-file-based-secrets-at-container-start)
+    - [High-level flow](#high-level-flow)
+  - [6.3.1 Create a least-privilege Vault policy](#631-create-a-least-privilege-vault-policy)
+  - [6.3.2 Create an AppRole for the agent](#632-create-an-approle-for-the-agent)
+  - [6.3.3 Host-side export script (role_id + secret_id)](#633-host-side-export-script-role_id--secret_id)
+    - [6.3.3.1 Recommended: use the repo script (docker exec into Vault container)](#6331-recommended-use-the-repo-script-docker-exec-into-vault-container)
+    - [6.3.3.2 Manual commands (fully expanded; no script)](#6332-manual-commands-fully-expanded-no-script)
+  - [6.3.4 Vault Agent config + templates](#634-vault-agent-config--templates)
+  - [6.3.5 Docker Compose wiring (vault-agent + shared secrets volume)](#635-docker-compose-wiring-vault-agent--shared-secrets-volume)
+  - [6.3.6 Bring-up and verification](#636-bring-up-and-verification)
+    - [6.3.6.1 Current bring-up commands (Approach 2: single compose file)](#6361-current-bring-up-commands-approach-2-single-compose-file)
+    - [6.3.6.2 Troubleshooting: common Vault Agent errors](#6362-troubleshooting-common-vault-agent-errors)
+  - [6.3.7 Rotation and operational notes](#637-rotation-and-operational-notes)
+  - [6.4 Option C – Advanced: Vault Database secrets engine (dynamic credentials)](#64-option-c--advanced-vault-database-secrets-engine-dynamic-credentials)
+    - [6.4.1 What this enables (and what it is *not*)](#641-what-this-enables-and-what-it-is-not)
+    - [6.4.2 Prerequisites](#642-prerequisites)
+    - [6.4.3 Create a dedicated Postgres management role for Vault](#643-create-a-dedicated-postgres-management-role-for-vault)
+    - [6.4.4 Enable and configure Vault’s PostgreSQL database connection](#644-enable-and-configure-vaults-postgresql-database-connection)
+    - [6.4.5 Create a Vault role that defines how dynamic users are created](#645-create-a-vault-role-that-defines-how-dynamic-users-are-created)
+    - [6.4.6 Fetch credentials and validate](#646-fetch-credentials-and-validate)
+    - [6.4.7 Rotation (future-facing)](#647-rotation-future-facing)
+- [Appendix A – Certificate Management](#appendix-a--certificate-management)
+  - [A.1 Vault TLS Certificates – What to Keep and Where](#a1-vault-tls-certificates--what-to-keep-and-where)
+    - [1. Files That Must Be Treated as Secrets](#1-files-that-must-be-treated-as-secrets)
+    - [2. Files That Can Be Safely Distributed](#2-files-that-can-be-safely-distributed)
+    - [3. Recommended Project Layout and Git Hygiene](#3-recommended-project-layout-and-git-hygiene)
+    - [4. Minimal “Must-Keep” List](#4-minimal-must-keep-list)
+- [A.2 Rootless Docker and Subordinate UID/GID Ranges (subuid/subgid)](#a2-rootless-docker-and-subordinate-uidgid-ranges-subuidsubgid)
+- [What are UID/GID ranges?](#what-are-uidgid-ranges)
+- [Why “at least 65,536”?](#why-at-least-65536)
+- [How to check your current ranges](#how-to-check-your-current-ranges)
+- [How to set the ranges (Ubuntu)](#how-to-set-the-ranges-ubuntu)
+- [Common symptoms when this is missing or wrong](#common-symptoms-when-this-is-missing-or-wrong)
+- [Appendix B – Container Hardening Recommendations (Vault / Vault Agent / Postgres / pgAdmin)](#appendix-b--container-hardening-recommendations-vault--vault-agent--postgres--pgadmin)
+  - [B.1 Network and port exposure](#b1-network-and-port-exposure)
+  - [B.2 Drop privileges, reduce Linux capabilities, and prevent privilege escalation](#b2-drop-privileges-reduce-linux-capabilities-and-prevent-privilege-escalation)
+  - [B.3 Read-only root filesystem + tmpfs](#b3-read-only-root-filesystem--tmpfs)
+  - [B.4 Tighten service dependencies to avoid accidental Vault restarts](#b4-tighten-service-dependencies-to-avoid-accidental-vault-restarts)
+  - [B.5 Secrets hygiene](#b5-secrets-hygiene)
+  - [B.6 Image pinning and update discipline](#b6-image-pinning-and-update-discipline)
+  - [B.7 Vault-specific hardening (forward-looking)](#b7-vault-specific-hardening-forward-looking)
+
+
 ---
 
 ## 0. Repository File Structure
@@ -187,6 +234,96 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 ```
 
 ---
+
+## 0.1 Vault AppRole Authentication (Role ID and Secret ID)
+
+This project uses Vault **AppRole** auth for non-interactive services (for example, the postgres/pgadmin Vault Agent) to obtain a Vault token at runtime.
+
+Key concepts:
+
+- **role_id**: stable identifier for an AppRole (does not change unless the role is re-created).
+- **secret_id**: credential generated for the AppRole (you can rotate this as often as you want).
+- **login**: exchange `role_id + secret_id` for a Vault token via `auth/approle/login`.
+
+When the repository bootstrap scripts create an AppRole, they also persist the artifacts to the host so other scripts/containers can consume them:
+
+```text
+./container_data/vault/approle/<ROLE_NAME>/
+  role_id
+  secret_id
+```
+
+Example (postgres/pgadmin agent):
+
+```text
+./container_data/vault/approle/postgres_pgadmin_agent/
+  role_id
+  secret_id
+```
+
+### 0.1.1 Validate that an AppRole exists and retrieve the Role ID
+
+**Host-side (Vault CLI installed on host):**
+
+```bash
+export VAULT_ADDR="https://vault_production_node:8200"
+export VAULT_CACERT="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+
+# Use an admin token (root token during first-time init)
+export VAULT_TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token")"
+
+# List roles (optional) and read the role_id
+vault list auth/approle/role
+vault read -format=json auth/approle/role/postgres_pgadmin_agent/role-id
+```
+
+To write the `role_id` to the repo’s expected artifact location:
+
+```bash
+mkdir -p "$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agent"
+
+vault read -format=json auth/approle/role/postgres_pgadmin_agent/role-id   | jq -r '.data.role_id'   > "$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agent/role_id"
+
+chmod 600 "$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agent/role_id"
+```
+
+**Container-side (no Vault CLI installed on host):** See [0.2.2 Container-side notes (Vault CLI via `docker exec`)](#022-container-side-notes-vault-cli-via-docker-exec) and run the same `vault read .../role-id` inside the Vault container.
+
+### 0.1.2 Generate a new Secret ID
+
+```bash
+export VAULT_ADDR="https://vault_production_node:8200"
+export VAULT_CACERT="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+export VAULT_TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token")"
+
+vault write -format=json -f auth/approle/role/postgres_pgadmin_agent/secret-id   | jq -r '.data.secret_id'
+```
+
+To persist the newly generated `secret_id`:
+
+```bash
+mkdir -p "$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agent"
+
+vault write -format=json -f auth/approle/role/postgres_pgadmin_agent/secret-id   | jq -r '.data.secret_id'   > "$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agent/secret_id"
+
+chmod 600 "$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agent/secret_id"
+```
+
+### 0.1.3 Optional validation of the Role ID and Secret ID pair
+
+This is a quick sanity check that proves the role_id/secret_id pair can log in and mint a token.
+
+```bash
+export VAULT_ADDR="https://vault_production_node:8200"
+export VAULT_CACERT="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+
+ROLE_ID="$(cat "$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agent/role_id")"
+SECRET_ID="$(cat "$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agent/secret_id")"
+
+vault write -format=json auth/approle/login role_id="$ROLE_ID" secret_id="$SECRET_ID"   | jq -r '.auth.client_token'
+```
+
+If a token is returned, AppRole auth is functioning and the credentials are valid.
 
 ## 0.2 Conventions (recommended environment variables)
 
@@ -445,7 +582,7 @@ On your **developer machine**:
 ssh-copy-id -i ~/.ssh/id_ed25519.pub <USER>@<SERVER_HOSTNAME_OR_IP>
 ```
 
-Replace `<USER>' and `<SERVER_HOSTNAME_OR_IP>` with your actual admin username and server address.
+Replace `<USER>` and `<SERVER_HOSTNAME_OR_IP>` with your actual admin username and server address.
 
 If `ssh-copy-id` is not available, you can manually copy the public key:
 
@@ -473,7 +610,7 @@ If `ssh-copy-id` is not available, you can manually copy the public key:
 Test login from the developer machine:
 
 ```bash
-ssh <USER>>@<SERVER_HOSTNAME_OR_IP>
+ssh <USER>@<SERVER_HOSTNAME_OR_IP>
 ```
 
 You should be prompted for the **key passphrase** (if you set one), 
@@ -524,23 +661,20 @@ You should now have key-based access to both:
 - `<USER>@<SERVER_HOSTNAME_OR_IP>` (or your chosen admin user)
 - `developer_network_tools@<SERVER_HOSTNAME_OR_IP>`
 
-> **NOTE:**
-> - If you are unable to ssh to the development server with the key automatically, you can try altering
-your ssh configuration to use the key explicitely 
-> 
-```bash
-Linux / Mac example
+**NOTE:** If key-based SSH does not automatically select the correct identity, explicitly set it in your SSH client config.
 
-Add the following to your ssh config file
-network_tools.local is local to my development machine and is pointed to my VM via the /etc/hosts file, you may have it setup as something else.
+Example (`~/.ssh/config` on Linux/macOS):
 
-<USER>@<DEVICE NAME> % cat ~/.ssh/config
+```text
 Host network_tools network_tools.local
-    HostName network_tools.local
-    User developer_network_tools
-    IdentityFile ~/.ssh/id_ed25519
-    IdentitiesOnly yes
+  HostName network_tools.local
+  User developer_network_tools
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
 ```
+
+Replace the `Host` alias and `HostName` to match your environment (for example, if you mapped your VM name in `/etc/hosts`).
+
 
 #### 1.5.4 Harden the SSH Server Configuration
 
