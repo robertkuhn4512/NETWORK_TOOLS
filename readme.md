@@ -24,6 +24,10 @@ Later, this server will host:
 ## Table of Contents
 
 - [0. Repository File Structure](#0-repository-file-structure)  
+- [0.1 Vault AppRole Authentication (Role ID and Secret ID)](#01-vault-approle-authentication-role-id-and-secret-id)  
+  - [0.1.1 Validate that an AppRole exists and retrieve the Role ID](#011-validate-that-an-approle-exists-and-retrieve-the-role-id)  
+  - [0.1.2 Generate a new Secret ID](#012-generate-a-new-secret-id)  
+  - [0.1.3 Optional validation of the Role ID and Secret ID pair](#013-optional-validation-of-the-role-id-and-secret-id-pair)  
 - [1. System Preparation](#1-system-preparation)  
   - [1.1 Assumptions](#11-assumptions)  
   - [1.2 Update the Operating System](#12-update-the-operating-system)  
@@ -125,10 +129,16 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |   `-- cert.key
 |   |   |   |-- config
 |   |   |   |   |-- pg_hba.conf
-|   |   |   |   |-- postgres.conf
-|   |   |   |   `-- postgresql.conf
-|   |   |   `-- scripts
-|   |   |       `-- export_approle_from_vault_container.sh
+|   |   |   |   `-- postgres.conf
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           |-- pgadmin_password.ctmpl
+|   |   |           |-- postgres_db.ctmpl
+|   |   |           |-- postgres_password.ctmpl
+|   |   |           `-- postgres_user.ctmpl
 |   |   |-- routers
 |   |   `-- security
 |   |       `-- configuration_files
@@ -138,8 +148,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |               |   |-- postgres_pgadmin.env
 |   |               |   |-- root_token
 |   |               |   |-- root_token.json
-|   |               |   |-- seeded_secrets_all.json
-|   |               |   |-- seed_kv_spec.postgres_pgadmin.json
 |   |               |   `-- unseal_keys.json
 |   |               |-- certs
 |   |               |   |-- ca.crt
@@ -149,7 +157,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |               |   `-- cert.key
 |   |               |-- config
 |   |               |   |-- certs
-|   |               |   |-- postgres_pgadmin_agent.hcl
 |   |               |   |-- postgres_pgadmin_kv_read.hcl
 |   |               |   `-- vault_configuration_primary_node.hcl
 |   |               `-- Dockerfile
@@ -167,14 +174,12 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |-- container_data
 |   |-- postgres
 |   |   `-- data
-|   |       `-- pgdata  [error opening dir]
+|   |       `-- pgdata
 |   `-- vault
-|       |-- approle
-|       |   `-- postgres_pgadmin_agent
-|       |       |-- role_id
-|       |       `-- secret_id
 |       `-- data
 |           |-- logs
+|           |   |-- audit.log
+|           |   `-- vault.log
 |           |-- raft
 |           |   |-- raft.db
 |           |   `-- snapshots
@@ -182,14 +187,137 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |-- docker-compose.prod.yml
 |-- environment_variable_guide.md
 |-- frontend
-|-- how_to_videos
-|   |-- HOW_TO_3.2 Validate Certificates.mov
-|   |-- HOW_TO_3.3 Start Vault with Docker Compose.mov
-|   |-- HOW_TO_3.6 Initialize and Unseal Vault (First Run).mov
-|   |-- HOW_TO_3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh).mov
-|   `-- HOW_TO_3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh).mov
 `-- readme.md
 ```
+
+---
+
+## 0.1 Vault AppRole Authentication (Role ID and Secret ID)
+
+Several parts of this stack (especially **Vault Agent sidecars**) authenticate to Vault using **AppRole**. AppRole uses two inputs:
+
+- **Role ID** (`role_id`): a stable identifier for a named AppRole. It is not *by itself* sufficient to authenticate, but should still be handled carefully.
+- **Secret ID** (`secret_id`): a short-lived credential used together with the Role ID to obtain a Vault token. Treat this like a password.
+
+In this repo, the expected pattern is:
+
+- A **host-side** directory holds `role_id` and `secret_id` files, and is bind-mounted read-only into the Vault Agent container.
+- The Vault Agent uses those files to log in via `auth/approle/login` and render the required secrets into a shared volume.
+
+> For the scripted workflow that exports these files from the Vault container, see **Section 6.3.3** (“Host-side export script (role_id + secret_id)”).
+
+### 0.1.1 Validate that an AppRole exists and retrieve the Role ID
+
+You need a Vault token with sufficient capability to read the role (during bootstrap, this is typically your root token file under the repo bootstrap directory). In the commands below:
+
+- `ROLE_NAME` is the AppRole name (example used in this repo: `postgres_pgadmin_agent`).
+- `VAULT_CONTAINER` is your Vault container name (example: `vault_production_node`).
+- The commands run the Vault CLI **inside** the Vault container, which avoids requiring a Vault CLI install on the host.
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+umask 077
+
+VAULT_CONTAINER="vault_production_node"
+ROLE_NAME="postgres_pgadmin_agent"
+ROOT_TOKEN_FILE="./backend/app/security/configuration_files/vault/bootstrap/root_token"
+
+# Destination directory (host-side; NOT committed to git)
+APPROLE_DIR="./container_data/vault/approle/${ROLE_NAME}"
+mkdir -p "${APPROLE_DIR}"
+
+# 1) Confirm AppRole auth is enabled (one-time; safe if already enabled)
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat "${ROOT_TOKEN_FILE}")" \
+  -e VAULT_CACERT="/vault/certs/cert.crt" \
+  "${VAULT_CONTAINER}" \
+  sh -lc 'vault auth list | grep -q "^approle/" && echo "OK: approle enabled" || echo "MISSING: approle not enabled"'
+
+# 2) Confirm the role exists (lists roles; requires list capability on auth/approle/role)
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat "${ROOT_TOKEN_FILE}")" \
+  -e VAULT_CACERT="/vault/certs/cert.crt" \
+  "${VAULT_CONTAINER}" \
+  sh -lc 'vault list auth/approle/role || true'
+
+# 3) Read the role_id (this fails clearly if the role does not exist)
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat "${ROOT_TOKEN_FILE}")" \
+  -e VAULT_CACERT="/vault/certs/cert.crt" \
+  "${VAULT_CONTAINER}" \
+  sh -lc "vault read -field=role_id auth/approle/role/${ROLE_NAME}/role-id" \
+  > "${APPROLE_DIR}/role_id"
+
+chmod 600 "${APPROLE_DIR}/role_id"
+echo "Wrote: ${APPROLE_DIR}/role_id"
+```
+
+**Common outcomes:**
+
+- If the role is missing, the read typically returns an error like “no value found” or “permission denied”.
+- If you see “permission denied”, your token lacks access to `auth/approle/role/<ROLE_NAME>/role-id`. In that case, use the bootstrap root token (or a break-glass admin token) for this step.
+
+### 0.1.2 Generate a new Secret ID
+
+Generating a `secret_id` requires **write** capability on the role’s `secret-id` endpoint. Many AppRoles are configured with `secret_id_num_uses=1`; in that case, each Secret ID can be used only once and you should expect to regenerate it when rotating or troubleshooting.
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+umask 077
+
+VAULT_CONTAINER="vault_production_node"
+ROLE_NAME="postgres_pgadmin_agent"
+ROOT_TOKEN_FILE="./backend/app/security/configuration_files/vault/bootstrap/root_token"
+
+APPROLE_DIR="./container_data/vault/approle/${ROLE_NAME}"
+mkdir -p "${APPROLE_DIR}"
+
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat "${ROOT_TOKEN_FILE}")" \
+  -e VAULT_CACERT="/vault/certs/cert.crt" \
+  "${VAULT_CONTAINER}" \
+  sh -lc "vault write -f -field=secret_id auth/approle/role/${ROLE_NAME}/secret-id" \
+  > "${APPROLE_DIR}/secret_id"
+
+chmod 600 "${APPROLE_DIR}/secret_id"
+echo "Wrote: ${APPROLE_DIR}/secret_id"
+```
+
+**Notes:**
+
+- Treat `secret_id` as a secret. Do not print it to the terminal unless you are in a controlled debugging workflow.
+- The Secret ID is not recoverable later. If you lose it, generate a new one.
+
+### 0.1.3 Optional validation of the Role ID and Secret ID pair
+
+If you want to confirm the pair is valid, perform an AppRole login and confirm Vault returns a client token:
+
+```bash
+# Adjust if you used a different role name or Vault container name
+VAULT_CONTAINER="vault_production_node"
+ROLE_NAME="postgres_pgadmin_agent"
+APPROLE_DIR="./container_data/vault/approle/${ROLE_NAME}"
+
+ROLE_ID="$(cat "${APPROLE_DIR}/role_id")"
+SECRET_ID="$(cat "${APPROLE_DIR}/secret_id")"
+
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_CACERT="/vault/certs/cert.crt" \
+  "${VAULT_CONTAINER}" \
+  sh -lc "vault write -format=json auth/approle/login role_id='${ROLE_ID}' secret_id='${SECRET_ID}'"
+```
+
+From the JSON output, confirm:
+
+- `auth.client_token` is present (login succeeded)
+- `auth.policies` contains the expected policy for that role
+
+You can then test the returned token against one read path you expect the agent to be able to access (for example, the KV path it will render).
 
 ---
 
@@ -1742,6 +1870,22 @@ Notes:
 - By default, the script writes to `postgres` and `pgadmin` **without** a prefix (this matches the desired layout: `postgres`, not `bootstrap/postgres`).
 - If you explicitly want a prefix later, use `--vault-prefix "<prefix>"`.
 
+Rotation (long-term operations):
+
+- The same script supports rotating the **static** Postgres application password stored in Vault.
+- Rotation has two required steps:
+  1) Update Vault KV (so the agent will render the new value).
+  2) Update the password inside the running Postgres cluster (because `POSTGRES_*` init vars are only applied on first initialization).
+- Use `--mode rotate` to generate a new password and re-seed Vault. To also apply it to a running container, add `--apply-to-postgres`:
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh   --mode rotate   --vault-addr "https://vault_production_node:8200"   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"   --unseal-required 3   --prompt-token   --apply-to-postgres
+```
+
+- If you prefer to do the Postgres `ALTER ROLE` step manually (or if `--apply-to-postgres` fails), see **6.3.7**.
+
 Security and operational guidance:
 
 - These files contain plaintext credentials.
@@ -1814,11 +1958,11 @@ source "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/boots
 set +a
 ```
 
-You can then reference the exported variables when starting your postgres container(s). (Compose examples will be added when the postgres compose/service definition is finalized.)
+You can then reference the exported variables when starting one-off Postgres/pgAdmin containers (or for manual troubleshooting). In production, prefer the Vault Agent `*_FILE` pattern described in **6.3.5**.
 
 **Option B (preferred): pull from Vault at runtime**
 
-For production-like workflows, prefer fetching secrets from Vault during deployment/startup (or using an agent/injector pattern), rather than persisting them as `.env` files on disk.
+For production-like workflows, prefer fetching secrets from Vault at container start using the Vault Agent sidecar pattern (`*_FILE` env vars). This is implemented in `docker-compose.prod.yml`; see **6.3.5**.
 
 
 #### 4.3.1 Compose prerequisites
@@ -2030,7 +2174,11 @@ Postgres does **not** natively “connect to Vault” on startup. In Docker, you
    - This is easy to operate, but it places secrets back into `.env` (which you should treat as sensitive).
 
 Operational note:
-- These variables are only used by the Postgres image when initializing an **empty** data directory. If your Postgres volume already contains a database cluster, changing the values will not automatically rotate users/passwords.
+- `POSTGRES_DB(_FILE)`, `POSTGRES_USER(_FILE)`, and `POSTGRES_PASSWORD(_FILE)` are consumed by the official Postgres image **only when initializing a brand-new data directory** (no existing cluster under `PGDATA`).
+- After the cluster exists, changing Vault KV (or changing the rendered files) will **not** rotate the database user's password by itself.
+- Password rotation requires (a) `ALTER ROLE ... WITH PASSWORD ...` executed as a superuser inside Postgres, and (b) updating Vault KV so the rendered secret matches.
+- The bootstrap script supports this workflow via `--mode rotate` (and optionally `--apply-to-postgres`). See **4.1** and **6.3.7**.
+
 
 ## 5. pgAdmin
 
@@ -2247,14 +2395,28 @@ HCL
 Enable AppRole auth (one-time):
 
 ```bash
-docker exec -it       -e VAULT_ADDR="https://vault_production_node:8200"       -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"       -e VAULT_CACERT="/vault/certs/cert.crt"       vault_production_node       sh -lc 'vault auth enable approle || true'
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  -e VAULT_CACERT="/vault/certs/cert.crt" \
+  vault_production_node \
+  sh -lc 'vault auth enable approle || true'
 ```
 
 Create the role (tune TTLs and constraints as you prefer):
 
 ```bash
-docker exec -it       -e VAULT_ADDR="https://vault_production_node:8200"       -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"       -e VAULT_CACERT="/vault/certs/cert.crt"       vault_production_node       sh -lc '
-    vault write auth/approle/role/postgres-pgadmin           token_policies="postgres_pgadmin_read"           token_ttl="1h"           token_max_ttl="4h"           secret_id_ttl="24h"           secret_id_num_uses="1"
+docker exec -it \
+  -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  -e VAULT_CACERT="/vault/certs/cert.crt" \
+  vault_production_node sh -lc '
+    vault write auth/approle/role/postgres-pgadmin \
+      token_policies="postgres_pgadmin_read" \
+      token_ttl="1h" \
+      token_max_ttl="4h" \
+      secret_id_ttl="24h" \
+      secret_id_num_uses="1"
   '
 ```
 
@@ -2509,83 +2671,48 @@ Template examples (KV v2):
 
 ### 6.3.5 Docker Compose wiring (vault-agent + shared secrets volume)
 
-
-> **UPDATE (2025-12-23): Approach 2 is now implemented directly in `docker-compose.prod.yml`**
+> **UPDATE (2025-12-23): the Vault Agent + shared rendered-secrets volume is implemented directly in `docker-compose.prod.yml`.**
 >
-> The current production Compose file includes the Vault Agent service and shared rendered-secrets volume:
->
-> - `vault_agent_postgres_pgadmin` renders into `postgres_vault_rendered` (mounted inside the agent at `/vault/rendered`)
-> - `postgres_primary` mounts the same volume read-only at `/run/vault` and uses:
->   - `POSTGRES_DB_FILE=/run/vault/postgres_db`
->   - `POSTGRES_USER_FILE=/run/vault/postgres_user`
->   - `POSTGRES_PASSWORD_FILE=/run/vault/postgres_password`
-> - `pgadmin` mounts the same volume read-only at `/run/vault` and uses:
->   - `PGADMIN_DEFAULT_PASSWORD_FILE=/run/vault/pgadmin_password`
->
-> This is the “**always Vault**” posture: Postgres + pgAdmin do not rely on cleartext passwords in `.env` at runtime.
->
-> **Important:** If a container was created *before* you added the `/run/vault` mount (or you changed env vars), you must **recreate** it to pick up the new mounts/env (see Section 6.3.6).
+> Canonical names in this repo:
+> - Agent: `vault_agent_postgres_pgadmin`
+> - Render volume: `postgres_vault_rendered`
+> - Postgres: `postgres_primary`
+> - pgAdmin: `pgadmin`
 
+Key behaviors:
 
-This repo currently wires Postgres/pgAdmin via `.env` (see `docker-compose.prod.yml`). To support the Vault Agent pattern cleanly, use **one of these approaches**:
+- The agent authenticates to Vault (AppRole material bind-mounted read-only at `/vault/approle`) and renders these files into the shared volume (mounted in the agent at `/vault/rendered`):
+  - `postgres_db`
+  - `postgres_user`
+  - `postgres_password`
+  - `pgadmin_password`
 
-**Approach 1 (recommended): add an override compose file**
-- Keep `docker-compose.prod.yml` unchanged.
-- Create `docker-compose.postgres_vault.override.yml` that:
-  - Adds a `vault_agent_postgres_pgadmin` service.
-  - Adds a named volume (example: `postgres_vault_rendered`) mounted at `/run/vault` in Postgres and pgAdmin.
-  - Switches Postgres env to use `*_FILE` variables.
-  - Switches pgAdmin to use `PGADMIN_DEFAULT_PASSWORD_FILE`.
+- `postgres_primary` mounts the same volume read-only at `/run/vault` and uses file-based inputs:
+  - `POSTGRES_DB_FILE=/run/vault/postgres_db`
+  - `POSTGRES_USER_FILE=/run/vault/postgres_user`
+  - `POSTGRES_PASSWORD_FILE=/run/vault/postgres_password`
 
-Conceptual example (trimmed for clarity):
+- `pgadmin` mounts the same volume read-only at `/run/vault` and uses:
+  - `PGADMIN_DEFAULT_PASSWORD_FILE=/run/vault/pgadmin_password`
+
+This is the “**always Vault**” posture: Postgres + pgAdmin do not rely on cleartext passwords in `.env` at runtime.
+
+**Recommended hardening: agent healthcheck should verify all required rendered files**
+
+If you use `depends_on: condition: service_healthy` (as this repo does for `postgres_primary` and `pgadmin`), ensure the agent only reports “healthy” once **all** required files exist and are non-empty. Example:
 
 ```yaml
-services:
-  vault_agent_postgres_pgadmin:
-    image: hashicorp/vault:1.21.1
-    container_name: vault_agent_postgres_pgadmin
-    restart: unless-stopped
-    depends_on:
-      - vault_production_node
-    entrypoint: ["/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl"]
-    volumes:
-      - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
-      - ./backend/app/postgres/vault_agent/agent.hcl:/vault/agent/agent.hcl:ro
-      - ./backend/app/postgres/vault_agent/templates:/vault/templates:ro
-      - ./container_data/vault/approle/postgres-pgadmin:/vault/approle:ro
-      - postgres_vault_rendered:/vault/rendered
-
-  postgres_primary:
-    environment:
-      POSTGRES_DB_FILE: "/run/vault/postgres_db"
-      POSTGRES_USER_FILE: "/run/vault/postgres_user"
-      POSTGRES_PASSWORD_FILE: "/run/vault/postgres_password"
-    volumes:
-      - postgres_vault_rendered:/run/vault:ro
-    depends_on:
-      - vault_agent_postgres_pgadmin
-
-  pgadmin:
-    environment:
-      PGADMIN_DEFAULT_PASSWORD_FILE: "/run/vault/pgadmin_password"
-    volumes:
-      - postgres_vault_rendered:/run/vault:ro
-    depends_on:
-      - vault_agent_postgres_pgadmin
-
-volumes:
-  postgres_vault_rendered:
+healthcheck:
+  test: ["CMD-SHELL", "test -s /vault/rendered/postgres_db && test -s /vault/rendered/postgres_user && test -s /vault/rendered/postgres_password && test -s /vault/rendered/pgadmin_password" ]
+  interval: 5s
+  timeout: 3s
+  retries: 30
 ```
 
-Bring up with both files:
+Notes:
 
-```bash
-docker compose -f docker-compose.prod.yml -f docker-compose.postgres_vault.override.yml up -d
-```
-
-**Approach 2: modify `docker-compose.prod.yml` directly**
-- Suitable if you are comfortable committing the changes and keeping Vault Agent as the default.
-
+- **Important:** If a container was created *before* you added these mounts/envs, you must **recreate** it to pick up the new wiring (see **6.3.6**).
+- Legacy pattern: if you prefer keeping `docker-compose.prod.yml` unchanged, you can implement the same wiring in an override file; the repo no longer requires this.
 ### 6.3.6 Bring-up and verification
 
 
@@ -2633,6 +2760,43 @@ docker exec -it vault_production_node sh -lc '
 ./container_data/vault/approle/postgres_pgadmin_agent/role_id
 ./container_data/vault/approle/postgres_pgadmin_agent/secret_id
 ```
+
+> Manual fallback (if the export script did not run, or the files are missing):
+>
+> ```bash
+> umask 077
+>
+> VAULT_CONTAINER="vault_production_node"
+> ROLE_NAME="postgres_pgadmin_agent"   # repo default
+> # ROLE_NAME="postgres-pgadmin"       # older example
+>
+> ROOT_TOKEN_FILE="./backend/app/security/configuration_files/vault/bootstrap/root_token"
+> OUT_DIR="./container_data/vault/approle/${ROLE_NAME}"
+>
+> mkdir -p "$OUT_DIR"
+> chmod 700 "$OUT_DIR"
+>
+> # role_id is stable for a role (safe to re-read at any time)
+> docker exec -i \
+>   -e VAULT_ADDR="https://vault_production_node:8200" \
+>   -e VAULT_TOKEN="$(cat "$ROOT_TOKEN_FILE")" \
+>   -e VAULT_CACERT="/vault/certs/cert.crt" \
+>   "$VAULT_CONTAINER" \
+>   sh -lc "vault read -field=role_id auth/approle/role/${ROLE_NAME}/role-id" \
+>   > "$OUT_DIR/role_id"
+>
+> # secret_id is intended to be rotated (may be single-use depending on role settings)
+> docker exec -i \
+>   -e VAULT_ADDR="https://vault_production_node:8200" \
+>   -e VAULT_TOKEN="$(cat "$ROOT_TOKEN_FILE")" \
+>   -e VAULT_CACERT="/vault/certs/cert.crt" \
+>   "$VAULT_CONTAINER" \
+>   sh -lc "vault write -field=secret_id -f auth/approle/role/${ROLE_NAME}/secret-id" \
+>   > "$OUT_DIR/secret_id"
+>
+> chmod 600 "$OUT_DIR/role_id" "$OUT_DIR/secret_id"
+> ls -lah "$OUT_DIR"
+> ```
 
 5) Start the Vault Agent and wait for it to be healthy:
 
@@ -2757,23 +2921,56 @@ docker logs --tail 200 -f pgadmin
 
 ### 6.3.7 Rotation and operational notes
 
-- **Rotate the rendered secret files**
-  - Generate a new `secret_id` (see **6.3.3**) and restart the agent container.
-  - If you configured `remove_secret_id_file_after_reading=true`, the agent will remove the file after it reads it; your operational runbook should account for regenerating it.
+- **Rotate the rendered secret files (AppRole `secret_id`)**
+  - Generate a new `secret_id` (see **6.3.3**) and restart `vault_agent_postgres_pgadmin`.
+  - If you configured `remove_secret_id_file_after_reading=true` in `agent.hcl`, the agent will delete the `secret_id` file after reading it; your operational runbook must account for recreating it before restarts.
 
-- **Rotate the Postgres user password**
-  - Changing the KV value alone is not sufficient if the database cluster is already initialized.
-  - You must:
-    1) Update the password in Postgres:
+- **Rotate the Postgres application user password (static credential)**
+  - Important: updating Vault KV (or updating the rendered `/run/vault/postgres_password` file) does **not** rotate an already-initialized Postgres cluster. The password is stored inside Postgres.
+  - Rotation requires two coordinated actions:
+
+    1) **Change the password inside Postgres** (superuser action)
+
+       Preferred (scripted): run the bootstrap script in rotate mode and apply the change to the running container:
+
        ```bash
-       docker exec -it postgres_primary sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "ALTER USER \"$POSTGRES_USER\" WITH PASSWORD \"NEW_PASSWORD\";"'
+       cd "$HOME/NETWORK_TOOLS"
+
+       bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh          --mode rotate          --vault-addr "https://vault_production_node:8200"          --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"          --unseal-required 3          --prompt-token          --apply-to-postgres
        ```
-    2) Update Vault KV (`POSTGRES_PASSWORD`).
-    3) Restart clients that authenticate using that password (pgAdmin, apps, etc.).
+
+       Manual (if you prefer not to exec from the script):
+
+       ```bash
+       NEW_PASSWORD="paste_a_new_password_here"
+
+       APPUSER="$(docker exec -it postgres_primary sh -lc 'cat /run/vault/postgres_user' | tr -d '\r')"
+       DBNAME="$(docker exec -it postgres_primary sh -lc 'cat /run/vault/postgres_db' | tr -d '\r')"
+
+       docker exec -u postgres -it postgres_primary sh -lc          "psql -v ON_ERROR_STOP=1 -U postgres -d \"$DBNAME\" -c \"ALTER ROLE \\\"$APPUSER\\\" WITH PASSWORD '$NEW_PASSWORD';\""
+       ```
+
+       Notes:
+       - Restarting `postgres_primary` without the `ALTER ROLE` step will **not** change the password.
+       - This uses the local socket inside the container. Ensure your `pg_hba.conf` permits local superuser access.
+
+    2) **Update Vault KV** so the rendered secret matches the new database value  
+       If you used `--mode rotate`, the script already updated Vault. Otherwise:
+
+       ```bash
+       vault kv patch app_postgres_secrets/postgres POSTGRES_PASSWORD="$NEW_PASSWORD"
+       ```
+
+    3) **Restart or reload clients** that authenticate using that password (pgAdmin, backend apps, etc.).
+
+- **Rotate the pgAdmin default password (static credential)**
+  - `PGADMIN_DEFAULT_PASSWORD(_FILE)` is used only for initial admin account creation.
+  - To rotate it non-interactively, the simplest approach is to:
+    1) update Vault KV (`app_postgres_secrets/pgadmin`), and
+    2) recreate the `pgadmin` container so it re-initializes (or change the password from the UI).
 
 - **Prefer dynamic credentials for applications**
-  - When you are ready, move application authentication to Vault dynamic database credentials (see **6.4**). This reduces long-lived static passwords.
-
+  - When you are ready, move application authentication to Vault dynamic database credentials (see **6.4**). This avoids long-lived static passwords and simplifies rotation.
 ### 6.4 Option C – Advanced: Vault Database secrets engine (dynamic credentials)
 
 

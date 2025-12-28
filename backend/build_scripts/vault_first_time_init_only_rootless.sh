@@ -8,10 +8,24 @@
 #       2) Initialize Vault if not initialized
 #       3) Unseal Vault if sealed
 #
-#     This script intentionally does NOT:
-#       - Enable AppRole or any other auth method
+#   How to run:
+#     bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
+#       --vault-addr "https://vault_production_node:8200" \
+#       --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+#       --init-shares 5 --init-threshold 3
+#
+#     # Disable AppRole + policy bootstrap (optional):
+#     #   --no-setup-postgres-pgadmin-approle
+#
+#     Optional (first-time init convenience; postgres/pgAdmin Vault Agent):
+#       - Enable AppRole auth (if not already enabled) unless --no-setup-postgres-pgadmin-approle
+#       - Create a baseline ACL policy (default: postgres_pgadmin_read)
+#       - Create a baseline AppRole role bound to that policy (default: postgres_pgadmin_agent)
+#
+#     This script still intentionally does NOT:
 #       - Enable secrets engines (KV, etc.)
-#       - Create policies/roles, write secrets, or test AppRole logins
+#       - Seed/overwrite KV secrets (use the KV seed/bootstrap scripts)
+#       - Export role_id / secret_id files to the host (use export_approle_from_vault_container.sh)
 #
 #     Optional (recommended hardening):
 #       - Enable a file audit device writing to /vault/logs/audit.log (disable with --no-enable-audit)
@@ -71,6 +85,14 @@ Audit logging (recommended):
   --audit-description TEXT        Optional description for the audit device
   --audit-token-file PATH         Token file to use for audit enable/list (default: <root-token-file>)
 
+AppRole + ACL bootstrap (first-time convenience; postgres/pgAdmin Vault Agent):
+  --no-setup-postgres-pgadmin-approle   Skip enabling AppRole + creating the postgres/pgAdmin policy/role
+  --force-postgres-pgadmin-approle      Re-write the policy/role even if they already exist
+  --postgres-pgadmin-role-name NAME     Default: postgres_pgadmin_agent
+  --postgres-pgadmin-policy-name NAME   Default: postgres_pgadmin_read
+  --postgres-pgadmin-kv-mount NAME      Default: app_postgres_secrets
+  --postgres-pgadmin-kv-version 1|2     Default: 2
+
 Pretty output:
   --no-pretty-output              Disable pretty JSON formatting (writes unseal_keys.json compact)
   --no-print-artifact-contents    Do NOT print the contents of the key/token JSON files to the terminal
@@ -114,6 +136,19 @@ AUDIT_FILE_PATH="/vault/logs/audit.log"
 AUDIT_DESCRIPTION=""
 AUDIT_TOKEN_FILE=""
 
+# AppRole + ACL bootstrap (postgres/pgAdmin Vault Agent)
+SETUP_POSTGRES_PGADMIN_APPROLE=1
+FORCE_POSTGRES_PGADMIN_APPROLE=0
+POSTGRES_PGADMIN_ROLE_NAME="postgres_pgadmin_agent"
+POSTGRES_PGADMIN_POLICY_NAME="postgres_pgadmin_read"
+POSTGRES_PGADMIN_KV_MOUNT="app_postgres_secrets"
+POSTGRES_PGADMIN_KV_VERSION="2"
+POSTGRES_PGADMIN_TOKEN_TTL="1h"
+POSTGRES_PGADMIN_TOKEN_MAX_TTL="4h"
+POSTGRES_PGADMIN_SECRET_ID_TTL="24h"
+POSTGRES_PGADMIN_SECRET_ID_NUM_USES="1"
+POSTGRES_PGADMIN_SETUP_DONE=0
+
 # -------------------- Parser helpers --------------------
 _require_val() { [[ -n "${2-}" && "${2:0:1}" != "-" ]] || { echo "ERROR: Missing value for $1" >&2; exit 2; }; }
 _set_opt() {
@@ -156,6 +191,17 @@ while [[ $# -gt 0 ]]; do
                                            if _set_opt --audit-description "$1" "${2-}" AUDIT_DESCRIPTION; then shift 1; else shift 2; fi ;;
     --audit-token-file|--audit-token-file=*)
                                            if _set_opt --audit-token-file "$1" "${2-}" AUDIT_TOKEN_FILE; then shift 1; else shift 2; fi ;;
+
+    --no-setup-postgres-pgadmin-approle)     SETUP_POSTGRES_PGADMIN_APPROLE=0; shift ;;
+    --force-postgres-pgadmin-approle)        FORCE_POSTGRES_PGADMIN_APPROLE=1; shift ;;
+    --postgres-pgadmin-role-name|--postgres-pgadmin-role-name=*)
+                                             if _set_opt --postgres-pgadmin-role-name "$1" "${2-}" POSTGRES_PGADMIN_ROLE_NAME; then shift 1; else shift 2; fi ;;
+    --postgres-pgadmin-policy-name|--postgres-pgadmin-policy-name=*)
+                                             if _set_opt --postgres-pgadmin-policy-name "$1" "${2-}" POSTGRES_PGADMIN_POLICY_NAME; then shift 1; else shift 2; fi ;;
+    --postgres-pgadmin-kv-mount|--postgres-pgadmin-kv-mount=*)
+                                             if _set_opt --postgres-pgadmin-kv-mount "$1" "${2-}" POSTGRES_PGADMIN_KV_MOUNT; then shift 1; else shift 2; fi ;;
+    --postgres-pgadmin-kv-version|--postgres-pgadmin-kv-version=*)
+                                             if _set_opt --postgres-pgadmin-kv-version "$1" "${2-}" POSTGRES_PGADMIN_KV_VERSION; then shift 1; else shift 2; fi ;;
     --no-pretty-output)                    PRETTY_OUTPUT=0; shift ;;
     --no-print-artifact-contents)         PRINT_ARTIFACT_CONTENTS=0; shift ;;
 
@@ -170,6 +216,13 @@ done
 [[ -n "$VAULT_ADDR" ]] || { echo "ERROR: --vault-addr is required" >&2; exit 2; }
 
 VAULT_ADDR="${VAULT_ADDR%/}"
+
+if (( SETUP_POSTGRES_PGADMIN_APPROLE )); then
+  if [[ "$POSTGRES_PGADMIN_KV_VERSION" != "1" && "$POSTGRES_PGADMIN_KV_VERSION" != "2" ]]; then
+    echo "ERROR: --postgres-pgadmin-kv-version must be 1 or 2 (got: $POSTGRES_PGADMIN_KV_VERSION)" >&2
+    exit 2
+  fi
+fi
 AUDIT_PATH="${AUDIT_PATH%/}"
 COMPOSE_FILE="${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
 
@@ -413,6 +466,126 @@ enable_file_audit_if_needed() {
 }
 
 
+
+setup_postgres_pgadmin_approle_if_needed() {
+  (( SETUP_POSTGRES_PGADMIN_APPROLE )) || { log "Postgres/pgAdmin AppRole bootstrap disabled (--no-setup-postgres-pgadmin-approle)."; return 0; }
+
+  # Root token is required for sys/auth + sys/policy + AppRole role management.
+  if [[ ! -f "$ROOT_TOKEN_FILE" ]]; then
+    log "WARN: Root token file not found ($ROOT_TOKEN_FILE). Skipping Postgres/pgAdmin AppRole bootstrap."
+    return 0
+  fi
+
+  local token=""
+  token="$(cat "$ROOT_TOKEN_FILE" 2>/dev/null || true)"
+  token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+  # Fallbacks (in case the plain file was written but read failed for any reason)
+  if [[ -z "$token" && -f "$ROOT_TOKEN_JSON_FILE" ]]; then
+    token="$(jq -r '.root_token // empty' "$ROOT_TOKEN_JSON_FILE" 2>/dev/null | head -n1 | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  fi
+  if [[ -z "$token" && -f "$UNSEAL_KEYS_FILE" ]]; then
+    token="$(jq -r '.root_token // empty' "$UNSEAL_KEYS_FILE" 2>/dev/null | head -n1 | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  fi
+
+  if [[ -z "$token" ]]; then
+    log "WARN: Root token could not be read (empty/unreadable). Checked: $ROOT_TOKEN_FILE, $ROOT_TOKEN_JSON_FILE, $UNSEAL_KEYS_FILE. Skipping Postgres/pgAdmin AppRole bootstrap."
+    return 0
+  fi
+
+  # Vault must be unsealed for authenticated sys/auth operations.
+  request_public GET "/v1/sys/seal-status"
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "seal-status read failed before AppRole bootstrap (${HTTP_CODE}): ${RESP_JSON}"
+  if [[ "$(jq -r '.sealed' <<<"$RESP_JSON")" == "true" ]]; then
+    log "WARN: Vault is sealed; skipping Postgres/pgAdmin AppRole bootstrap."
+    return 0
+  fi
+
+  # KV policy path differs between v1 and v2.
+  local kv_prefix
+  if [[ "$POSTGRES_PGADMIN_KV_VERSION" == "2" ]]; then
+    kv_prefix="${POSTGRES_PGADMIN_KV_MOUNT}/data"
+  else
+    kv_prefix="${POSTGRES_PGADMIN_KV_MOUNT}"
+  fi
+
+  local policy_hcl
+  policy_hcl="$(cat <<HCL
+path "${kv_prefix}/postgres" {
+  capabilities = ["read"]
+}
+
+path "${kv_prefix}/pgadmin" {
+  capabilities = ["read"]
+}
+HCL
+)"
+
+  # 1) Ensure ACL policy exists (or force re-write).
+  local need_policy=0
+  request_authed "$token" GET "/v1/sys/policy/${POSTGRES_PGADMIN_POLICY_NAME}"
+  if [[ "$HTTP_CODE" == "404" ]]; then
+    need_policy=1
+  elif [[ "$HTTP_CODE" =~ ^2 ]]; then
+    need_policy=0
+  else
+    die "policy read failed (${HTTP_CODE}): ${RESP_JSON}"
+  fi
+
+  if (( FORCE_POSTGRES_PGADMIN_APPROLE )) || (( need_policy )); then
+    local policy_body
+    policy_body="$(jq -n --arg pol "$policy_hcl" '{policy:$pol}')"
+    request_authed "$token" PUT "/v1/sys/policy/${POSTGRES_PGADMIN_POLICY_NAME}" "$policy_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "policy write failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Ensured ACL policy: ${POSTGRES_PGADMIN_POLICY_NAME}"
+  else
+    log "ACL policy already exists: ${POSTGRES_PGADMIN_POLICY_NAME}"
+  fi
+
+  # 2) Ensure AppRole auth method is enabled at approle/.
+  request_authed "$token" GET "/v1/sys/auth"
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "sys/auth read failed (${HTTP_CODE}): ${RESP_JSON}"
+
+  if jq -e '.data["approle/"]? // empty' <<<"$RESP_JSON" >/dev/null 2>&1; then
+    log "Auth method already enabled: approle/"
+  else
+    local auth_body
+    auth_body="$(jq -n --arg t "approle" --arg d "AppRole auth (bootstrap)" '{type:$t, description:$d}')"
+    request_authed "$token" POST "/v1/sys/auth/approle" "$auth_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "approle auth enable failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Enabled auth method: approle/"
+  fi
+
+  # 3) Ensure AppRole role exists (or force re-write).
+  local need_role=0
+  request_authed "$token" GET "/v1/auth/approle/role/${POSTGRES_PGADMIN_ROLE_NAME}/role-id"
+  if [[ "$HTTP_CODE" == "404" ]]; then
+    need_role=1
+  elif [[ "$HTTP_CODE" =~ ^2 ]]; then
+    need_role=0
+  else
+    die "approle role-id read failed (${HTTP_CODE}): ${RESP_JSON}"
+  fi
+
+  if (( FORCE_POSTGRES_PGADMIN_APPROLE )) || (( need_role )); then
+    local role_body
+    role_body="$(jq -n \
+      --arg pol "${POSTGRES_PGADMIN_POLICY_NAME}" \
+      --arg token_ttl "${POSTGRES_PGADMIN_TOKEN_TTL}" \
+      --arg token_max_ttl "${POSTGRES_PGADMIN_TOKEN_MAX_TTL}" \
+      --arg secret_id_ttl "${POSTGRES_PGADMIN_SECRET_ID_TTL}" \
+      --argjson secret_id_num_uses "${POSTGRES_PGADMIN_SECRET_ID_NUM_USES}" \
+      '{token_policies:[$pol], token_ttl:$token_ttl, token_max_ttl:$token_max_ttl, secret_id_ttl:$secret_id_ttl, secret_id_num_uses:$secret_id_num_uses}')"
+
+    request_authed "$token" POST "/v1/auth/approle/role/${POSTGRES_PGADMIN_ROLE_NAME}" "$role_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "approle role write failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Ensured AppRole role: ${POSTGRES_PGADMIN_ROLE_NAME} (policy: ${POSTGRES_PGADMIN_POLICY_NAME})"
+  else
+    log "AppRole role already exists: ${POSTGRES_PGADMIN_ROLE_NAME}"
+  fi
+
+  POSTGRES_PGADMIN_SETUP_DONE=1
+}
 compose_up() {
   [[ -f "$COMPOSE_FILE" ]] || die "Compose file missing: $COMPOSE_FILE"
   local -a cmd=(docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d)
@@ -590,6 +763,7 @@ main() {
   init_if_needed
   unseal_if_needed
   enable_file_audit_if_needed
+  setup_postgres_pgadmin_approle_if_needed
   print_bootstrap_artifacts_instructions
   print_bootstrap_artifacts_contents
 
@@ -608,6 +782,11 @@ main() {
     --argjson enable_audit "$ENABLE_AUDIT" \
     --arg audit_path "$AUDIT_PATH" \
     --arg audit_file_path "$AUDIT_FILE_PATH" \
+    --arg postgres_pgadmin_role_name "$POSTGRES_PGADMIN_ROLE_NAME" \
+    --arg postgres_pgadmin_policy_name "$POSTGRES_PGADMIN_POLICY_NAME" \
+    --argjson postgres_pgadmin_setup_done "$POSTGRES_PGADMIN_SETUP_DONE" \
+    --argjson postgres_pgadmin_setup_enabled "$SETUP_POSTGRES_PGADMIN_APPROLE" \
+    --argjson postgres_pgadmin_setup_force "$FORCE_POSTGRES_PGADMIN_APPROLE" \
     '{
       vault_addr: $vault_addr,
       compose: { project: $compose_project, file: $compose_file, service: $service_name },
@@ -618,6 +797,13 @@ main() {
         root_token_json: $root_token_json_file
       },
       pretty_output: ($pretty_output == 1),
+      postgres_pgadmin_approle_bootstrap: {
+        enabled: ($postgres_pgadmin_setup_enabled == 1),
+        force: ($postgres_pgadmin_setup_force == 1),
+        setup_done: ($postgres_pgadmin_setup_done == 1),
+        role_name: $postgres_pgadmin_role_name,
+        policy_name: $postgres_pgadmin_policy_name
+      },
       print_artifact_contents: ($print_artifact_contents == 1),
       audit: { enabled: ($enable_audit == 1), path: $audit_path, file_path: $audit_file_path },
       initialized: true,
