@@ -3,6 +3,8 @@ name: network_tools
 volumes:
   postgres_certs:
   postgres_vault_rendered:
+  keycloak_data:
+  keycloak_vault_rendered:
 
 services:
   # From the project root (~/NETWORK_TOOLS) to start all containers
@@ -28,7 +30,7 @@ services:
     env_file:
       - .env      # Populate any important production environment variables here.
                   # See the file environment_variable_guide.md for information on what variables to populate
-    # Rootless: publish ports instead of host networking
+                  # Rootless: publish ports instead of host networking
     ports:
       - "8200:8200"
       - "8201:8201"   # There is no need to publish this port unless you are running multiple nodes and they
@@ -37,17 +39,12 @@ services:
     expose:
       - "8200"
       - "8201"
-
     cap_drop:
       - ALL
     cap_add:
       - IPC_LOCK  # required for memory locking
     security_opt:
       - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-      - /run:rw,noexec,nosuid,size=64m
     # Resource guardrails (tune to your host)
     pids_limit: 256
     ulimits:
@@ -66,6 +63,15 @@ services:
       # Data/logs (must be writable by the container user)
       - ./container_data/vault/data:/vault/data
       - ./container_data/vault/data/logs:/vault/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /run:rw,noexec,nosuid,size=64m
     environment:
       VAULT_DISABLE_MLOCK: "true"                                                          # Prefer enabling mlock; if you cannot, keep it true and harden host swap settings.
       VAULT_UI: "true"
@@ -84,11 +90,7 @@ services:
                                                                                             # VAULT_LOG_LEVEL: "info" for production use
       #VAULT_LOG_LEVEL: "info"
       VAULT_RAFT_NODE_ID: "Node1"                                                           # If you ever change this and reboot a node in an existing cluster you will have issues
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"                                                                                       # So it's better to pick a name and keep it
+                                                                                            # So it's better to pick a name and keep it
     entrypoint: ["/bin/sh","-lc","exec vault server -config=/vault/config/config.hcl"]
 
   # docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin
@@ -97,12 +99,13 @@ services:
     image: hashicorp/vault:1.21.1
     container_name: vault_agent_postgres_pgadmin
     restart: unless-stopped
-
     depends_on:
       - vault_production_node
-
     entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
-
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
     volumes:
       # Trust bundle for Vault TLS (prefer CA if available)
       - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
@@ -116,12 +119,123 @@ services:
 
       # Render target (shared)
       - postgres_vault_rendered:/vault/rendered
-
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     healthcheck:
       test: [ "CMD-SHELL", "test -s /vault/rendered/postgres_db && test -s /vault/rendered/postgres_user && test -s /vault/rendered/postgres_password && test -s /vault/rendered/pgadmin_password" ]
       interval: 5s
       timeout: 3s
       retries: 30
+
+  # docker compose -f docker-compose.prod.yml up -d vault_agent_keycloak
+
+  vault_agent_keycloak:
+    image: hashicorp/vault:1.21.1
+    container_name: vault_agent_keycloak
+    restart: unless-stopped
+    depends_on:
+      - vault_production_node
+    entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /run:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
+      - ./backend/app/keycloak/vault_agent/agent.hcl:/vault/agent/agent.hcl:ro
+      - ./backend/app/keycloak/vault_agent/templates:/vault/templates:ro
+      - ./container_data/vault/approle/keycloak_agent:/vault/approle:ro
+      - keycloak_vault_rendered:/vault/rendered
+    healthcheck:
+      test: [ "CMD-SHELL", "test -s /vault/rendered/keycloak.env && test -s /vault/rendered/.vault-token && test -s /vault/rendered/keycloak_tls.crt && test -s /vault/rendered/keycloak_tls.key" ]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  # docker compose -f docker-compose.prod.yml up -d keycloak
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.7
+    container_name: keycloak
+    restart: unless-stopped
+    depends_on:
+      - vault_agent_keycloak
+      - postgres_primary
+    # Publish only the HTTPS listener
+    ports:
+      - "8443:8443"
+
+    # Security posture
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Keycloak runs as uid 1000, gid 0 in the official image (helps with volume ownership planning)
+    user: "1000:0"  #
+
+    volumes:
+      # Persist Keycloak runtime data (transaction logs, etc.)
+      - keycloak_data:/opt/keycloak/data
+
+      # Trust the Postgres CA (so we can use sslmode verify-ca / verify-full)
+      - postgres_certs:/etc/postgres/certs:ro
+
+      # Vault-rendered material (read-only inside keycloak)
+      - keycloak_vault_rendered:/run/vault:ro
+
+    entrypoint: [ "/bin/sh","-lc" ]
+    command: >
+      set -eu;
+      # Wait for Vault agent to render
+      while [ ! -s /run/vault/kc_db_url ] ||
+            [ ! -s /run/vault/kc_db_username ] ||
+            [ ! -s /run/vault/kc_db_password ] ||
+            [ ! -s /run/vault/kc_bootstrap_admin_username ] ||
+            [ ! -s /run/vault/kc_bootstrap_admin_password ] ||
+            [ ! -s /run/vault/kc_tls.crt ] ||
+            [ ! -s /run/vault/kc_tls.key ]; do
+        echo "Waiting for Vault rendered Keycloak material...";
+        sleep 1;
+      done;
+      
+      export KC_DB="postgres";
+      export KC_DB_URL="$(cat /run/vault/kc_db_url)";
+      export KC_DB_USERNAME="$(cat /run/vault/kc_db_username)";
+      export KC_DB_PASSWORD="$(cat /run/vault/kc_db_password)";
+      
+      export KC_BOOTSTRAP_ADMIN_USERNAME="$(cat /run/vault/kc_bootstrap_admin_username)";
+      export KC_BOOTSTRAP_ADMIN_PASSWORD="$(cat /run/vault/kc_bootstrap_admin_password)";
+      
+      # Production TLS (Keycloak supports PEM via these env vars)
+      export KC_HTTPS_CERTIFICATE_FILE="/run/vault/kc_tls.crt";
+      export KC_HTTPS_CERTIFICATE_KEY_FILE="/run/vault/kc_tls.key";
+      
+      # Recommended production toggles
+      export KC_HEALTH_ENABLED="true";
+      export KC_METRICS_ENABLED="true";
+      
+      # If behind a reverse proxy doing TLS termination, you would instead set KC_HTTP_ENABLED=true and KC_PROXY=edge.
+      # For “Keycloak terminates TLS itself”, keep HTTP disabled.
+      export KC_HTTP_ENABLED="false";
+      
+      exec /opt/keycloak/bin/kc.sh start;
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   # docker compose -f docker-compose.prod.yml up -d postgres_certs_init
 
@@ -133,6 +247,14 @@ services:
     volumes:
       - ./backend/app/postgres/certs:/src:ro
       - postgres_certs:/dest
+    tmpfs:
+      - /tmp
+      - /run
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     entrypoint:
       - /bin/sh
       - -lc
@@ -155,19 +277,16 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-
     depends_on:
       postgres_certs_init:
         condition: service_completed_successfully
       vault_agent_postgres_pgadmin:
         condition: service_healthy
-
     environment:
       POSTGRES_DB_FILE: "/run/vault/postgres_db"
       POSTGRES_USER_FILE: "/run/vault/postgres_user"
       POSTGRES_PASSWORD_FILE: "/run/vault/postgres_password"
       PGDATA: "${PGDATA:-/var/lib/postgres/data/pgdata}"
-
     volumes:
       - ./container_data/postgres/data:/var/lib/postgres/data
       - ./backend/app/postgres/config/postgres.conf:/etc/postgres/postgres.conf:ro
@@ -176,12 +295,15 @@ services:
 
       # rendered secrets from vault agent
       - postgres_vault_rendered:/run/vault:ro
-
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     command: >
       postgres
       -c config_file=/etc/postgres/postgres.conf
       -c hba_file=/etc/postgres/pg_hba.conf
-
     ports:
       - "5432:5432"
 
@@ -191,23 +313,23 @@ services:
     image: dpage/pgadmin4:9.11
     container_name: pgadmin
     restart: unless-stopped
-
     depends_on:
       vault_agent_postgres_pgadmin:
         condition: service_healthy
       postgres_primary:
         condition: service_started
-
     env_file:
       - .env
-
     environment:
       PGDATA: "/var/lib/postgres/data/pgdata"
       PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
       PGADMIN_DEFAULT_PASSWORD_FILE: "/run/vault/pgadmin_password"
-
     volumes:
       - postgres_vault_rendered:/run/vault:ro
-
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     ports:
       - "8081:80"
