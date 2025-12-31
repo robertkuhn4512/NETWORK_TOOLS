@@ -139,25 +139,27 @@ services:
     depends_on:
       - vault_production_node
     entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
-    read_only: true
+    #read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-      - /run:rw,noexec,nosuid,size=64m
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+      - /tmp
+      - /run
     volumes:
       - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
       - ./backend/app/keycloak/vault_agent/agent.hcl:/vault/agent/agent.hcl:ro
       - ./backend/app/keycloak/vault_agent/templates:/vault/templates:ro
       - ./container_data/vault/approle/keycloak_agent:/vault/approle:ro
       - keycloak_vault_rendered:/vault/rendered
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     healthcheck:
-      test: [ "CMD-SHELL", "test -s /vault/rendered/keycloak.env && test -s /vault/rendered/.vault-token && test -s /vault/rendered/keycloak_tls.crt && test -s /vault/rendered/keycloak_tls.key" ]
+      test: [ "CMD-SHELL", "test -s /vault/rendered/keycloak.env" ]
       interval: 5s
       timeout: 3s
-      retries: 60
+      retries: 30
+
 
   # docker compose -f docker-compose.prod.yml up -d keycloak
 
@@ -166,71 +168,17 @@ services:
     container_name: keycloak
     restart: unless-stopped
     depends_on:
-      - vault_agent_keycloak
-      - postgres_primary
-    # Publish only the HTTPS listener
-    ports:
-      - "8443:8443"
-
-    # Security posture
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /run
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-
-    # Keycloak runs as uid 1000, gid 0 in the official image (helps with volume ownership planning)
-    user: "1000:0"  #
-
+      vault_agent_keycloak:
+        condition: service_healthy
+      postgres_primary:
+        condition: service_started
     volumes:
-      # Persist Keycloak runtime data (transaction logs, etc.)
-      - keycloak_data:/opt/keycloak/data
-
-      # Trust the Postgres CA (so we can use sslmode verify-ca / verify-full)
-      - postgres_certs:/etc/postgres/certs:ro
-
-      # Vault-rendered material (read-only inside keycloak)
       - keycloak_vault_rendered:/run/vault:ro
-
-    entrypoint: [ "/bin/sh","-lc" ]
-    command: >
-      set -eu;
-      # Wait for Vault agent to render
-      while [ ! -s /run/vault/kc_db_url ] ||
-            [ ! -s /run/vault/kc_db_username ] ||
-            [ ! -s /run/vault/kc_db_password ] ||
-            [ ! -s /run/vault/kc_bootstrap_admin_username ] ||
-            [ ! -s /run/vault/kc_bootstrap_admin_password ] ||
-            [ ! -s /run/vault/kc_tls.crt ] ||
-            [ ! -s /run/vault/kc_tls.key ]; do
-        echo "Waiting for Vault rendered Keycloak material...";
-        sleep 1;
-      done;
-      
-      export KC_DB="postgres";
-      export KC_DB_URL="$(cat /run/vault/kc_db_url)";
-      export KC_DB_USERNAME="$(cat /run/vault/kc_db_username)";
-      export KC_DB_PASSWORD="$(cat /run/vault/kc_db_password)";
-      
-      export KC_BOOTSTRAP_ADMIN_USERNAME="$(cat /run/vault/kc_bootstrap_admin_username)";
-      export KC_BOOTSTRAP_ADMIN_PASSWORD="$(cat /run/vault/kc_bootstrap_admin_password)";
-      
-      # Production TLS (Keycloak supports PEM via these env vars)
-      export KC_HTTPS_CERTIFICATE_FILE="/run/vault/kc_tls.crt";
-      export KC_HTTPS_CERTIFICATE_KEY_FILE="/run/vault/kc_tls.key";
-      
-      # Recommended production toggles
-      export KC_HEALTH_ENABLED="true";
-      export KC_METRICS_ENABLED="true";
-      
-      # If behind a reverse proxy doing TLS termination, you would instead set KC_HTTP_ENABLED=true and KC_PROXY=edge.
-      # For “Keycloak terminates TLS itself”, keep HTTP disabled.
-      export KC_HTTP_ENABLED="false";
-      
-      exec /opt/keycloak/bin/kc.sh start;
+      - ./backend/app/keycloak/bin/keycloak_entrypoint_from_vault.sh:/opt/keycloak/bin/keycloak_entrypoint_from_vault.sh:ro
+    entrypoint: [ "/opt/keycloak/bin/keycloak_entrypoint_from_vault.sh" ]
+    command: [ "start" ]
+    ports:
+      - "8080:8080"
     logging:
       driver: json-file
       options:

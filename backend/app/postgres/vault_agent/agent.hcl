@@ -18,7 +18,7 @@ auto_auth {
 
   sink "file" {
     config = {
-      path = "/run/vault/.vault-token"
+      path = "/vault/rendered/.vault-token"
     }
   }
 }

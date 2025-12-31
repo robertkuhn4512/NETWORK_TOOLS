@@ -1,3 +1,0 @@
-{{- with secret "app_postgres_secrets/data/keycloak_postgres_ca" -}}
-{{ .Data.data.ca_crt_pem }}
-{{- end -}}
