@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# export_approle_from_vault_container.sh
+# postgress_approle_setup.sh
 #
 # Notes / How to run:
 #   1) Ensure Vault is running (example):
@@ -13,8 +13,8 @@
 #      If neither file exists, the script will securely prompt you (input hidden).
 #
 #   3) Run:
-#        chmod +x ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
-#        ROLE_NAME=postgres_pgadmin_agent ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+#        chmod +x ./backend/build_scripts/postgress_approle_setup.sh
+#        ROLE_NAME=postgres_pgadmin_agent ./backend/build_scripts/postgress_approle_setup.sh
 #
 # What this script does:
 #   - Executes *all* Vault CLI operations via docker exec into: vault_production_node
@@ -30,7 +30,7 @@
 # Optional env vars:
 #   VAULT_CONTAINER=vault_production_node          (default: vault_production_node)
 #   ROLE_NAME=postgres_pgadmin_agent              (default: postgres_pgadmin_agent)
-#   OUT_DIR=./container_data/vault/approle/<ROLE_NAME>
+#   OUT_DIR=<repo>/container_data/vault/approle/<ROLE_NAME>
 #   ROTATE_SECRET_ID=1                            (default: 1; set 0 to keep existing secret_id if present)
 #
 #   # TLS behavior for the in-container Vault CLI:
@@ -49,18 +49,19 @@
 #     - Set VAULT_SKIP_VERIFY_IN_CONTAINER=1 (not recommended, but available).
 
 set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd -P)}"
 
 VAULT_CONTAINER="${VAULT_CONTAINER:-vault_production_node}"
 ROLE_NAME="${ROLE_NAME:-postgres_pgadmin_agent}"
-OUT_DIR="${OUT_DIR:-./container_data/vault/approle/${ROLE_NAME}}"
+OUT_DIR="${OUT_DIR:-${REPO_ROOT}/container_data/vault/approle/${ROLE_NAME}}"
 ROTATE_SECRET_ID="${ROTATE_SECRET_ID:-1}"
 
 VAULT_ADDR_IN_CONTAINER="${VAULT_ADDR_IN_CONTAINER:-https://vault_production_node:8200}"
 VAULT_CACERT_IN_CONTAINER="${VAULT_CACERT_IN_CONTAINER:-/vault/certs/cert.crt}"
 VAULT_SKIP_VERIFY_IN_CONTAINER="${VAULT_SKIP_VERIFY_IN_CONTAINER:-0}"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-BOOTSTRAP_DIR_DEFAULT="${SCRIPT_DIR}/../../security/configuration_files/vault/bootstrap"
+BOOTSTRAP_DIR_DEFAULT="${REPO_ROOT}/backend/app/security/configuration_files/vault/bootstrap"
 ROOT_TOKEN_FILE="${ROOT_TOKEN_FILE:-${BOOTSTRAP_DIR_DEFAULT}/root_token}"
 ROOT_TOKEN_JSON="${ROOT_TOKEN_JSON:-${BOOTSTRAP_DIR_DEFAULT}/root_token.json}"
 
@@ -141,6 +142,15 @@ vault_in_container() {
   docker exec "${exec_env[@]}" "${VAULT_CONTAINER}" vault "$@"
 }
 
+# Temp files must be global (EXIT trap runs after locals are out of scope, and set -u would error)
+tmp_role_id=""
+tmp_secret_id=""
+cleanup() {
+  [[ -n "${tmp_role_id:-}" ]] && rm -f -- "${tmp_role_id}" || true
+  [[ -n "${tmp_secret_id:-}" ]] && rm -f -- "${tmp_secret_id}" || true
+}
+trap cleanup EXIT
+
 main() {
   if ! container_running; then
     echo "ERROR: Vault container '${VAULT_CONTAINER}' is not running." >&2
@@ -154,11 +164,8 @@ main() {
   umask 077
   mkdir -p "${OUT_DIR}"
   chmod 700 "${OUT_DIR}"
-
-  local tmp_role_id tmp_secret_id
   tmp_role_id="$(mktemp)"
   tmp_secret_id="$(mktemp)"
-  trap 'rm -f "${tmp_role_id}" "${tmp_secret_id}"' EXIT
 
   # Verify Vault is reachable and unsealed (best-effort; gives better errors)
   if command -v jq >/dev/null 2>&1; then
