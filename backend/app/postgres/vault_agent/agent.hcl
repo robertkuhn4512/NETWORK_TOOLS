@@ -46,3 +46,9 @@ template {
   destination = "/vault/rendered/pgadmin_password"
   perms       = "0444"
 }
+
+template {
+  source      = "/vault/templates/servers.json.ctmpl"
+  destination = "/vault/rendered/servers.json"
+  perms       = "0644"
+}
