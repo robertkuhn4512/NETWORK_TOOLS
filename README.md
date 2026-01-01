@@ -12,10 +12,18 @@ Required Steps
 - [4.3 Use with Docker Compose](./README.full.md#43-use-with-docker-compose)
 - [7.2.1 TLS material (local certs → Vault KV)](./README.full.md#721-tls-material-local-certs-vault-kv)
 - [7.3.3 Host-side export script (role_id + secret_id)](./README.full.md#733-host-side-export-script-role_id-secret_id)
+- [4.3.3 Start postgres_primary](./README.full.md#433-start-postgres_primary)
+
+Run these commands to bring up the containers one set at a time
+Test connectivity to each of them when they are up via the generated credentials
+to ensure they were wired in correctly at boot. Otherwise you may need to rebuild each container
+
+docker compose -f docker-compose.prod.yml up -d postgres_primary
+docker compose -f docker-compose.prod.yml up -d pgadmin
+docker compose -f docker-compose.prod.yml up -d keycloak
 
   - [4.3.1 Compose prerequisites](./README.full.md#431-compose-prerequisites)
   - [4.3.2 Initialize the Postgres certs volume](./README.full.md#432-initialize-the-postgres-certs-volume)
-  - [4.3.3 Start postgres_primary](./README.full.md#433-start-postgres_primary)
   - [4.3.4 Verify and connect](./README.full.md#434-verify-and-connect)
   - [4.3.5 Troubleshooting](./README.full.md#435-troubleshooting)
   - [4.4 Startup credential options (choose one)](./README.full.md#44-startup-credential-options-choose-one)

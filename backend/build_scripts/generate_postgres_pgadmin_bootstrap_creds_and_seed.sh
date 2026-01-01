@@ -133,9 +133,18 @@ PREFER_VAULT=1
 # Apply options
 POSTGRES_CONTAINER="postgres_primary"
 POSTGRES_ADMIN_DB="postgres"
+# Postgres admin credentials for apply-to-postgres.
+# If not provided explicitly, the script will try to read them from:
+#   1) /run/vault/postgres_user and /run/vault/postgres_password inside the Postgres container, else
+#   2) the resolved POSTGRES_USER/POSTGRES_PASSWORD values (from local bootstrap artifacts or Vault).
+POSTGRES_ADMIN_USER=""
+POSTGRES_ADMIN_PASSWORD=""
+POSTGRES_ADMIN_CREDS_SOURCE=""
 AUTO_START_POSTGRES=1
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.prod.yml"
 WAIT_POSTGRES_SECONDS=180
+# How long to wait for /run/vault/* Postgres credentials to appear inside the container when applying.
+WAIT_VAULT_CREDS_SECONDS=30
 
 PRINT=0
 PRINT_SECRETS=0
@@ -214,6 +223,9 @@ Apply to Postgres:
   --apply-to-postgres
   --postgres-container <name>
   --postgres-admin-db <name>
+  --postgres-admin-user <name>                 (optional override)
+  --postgres-admin-password <value>             (optional override; avoid on shared shells)
+  --wait-vault-credentials-seconds <n>          (default 30)
   --compose-file <path>
   --no-auto-start-postgres
   --wait-postgres-seconds <n>
@@ -284,6 +296,9 @@ while [[ $# -gt 0 ]]; do
     --apply-to-postgres) APPLY_TO_POSTGRES=1; shift 1;;
     --postgres-container) POSTGRES_CONTAINER="${2:-}"; shift 2;;
     --postgres-admin-db) POSTGRES_ADMIN_DB="${2:-}"; shift 2;;
+    --postgres-admin-user) POSTGRES_ADMIN_USER="${2:-}"; shift 2;;
+    --postgres-admin-password) POSTGRES_ADMIN_PASSWORD="${2:-}"; shift 2;;
+    --wait-vault-credentials-seconds) WAIT_VAULT_CREDS_SECONDS="${2:-}"; shift 2;;
     --compose-file) COMPOSE_FILE="${2:-}"; shift 2;;
     --no-auto-start-postgres) AUTO_START_POSTGRES=0; shift 1;;
     --wait-postgres-seconds) WAIT_POSTGRES_SECONDS="${2:-}"; shift 2;;
@@ -1067,6 +1082,79 @@ wait_for_postgres_ready() {
   done
 }
 
+read_container_file_trimmed() {
+  # Usage: read_container_file_trimmed <container> <path>
+  # Tries as 'postgres' first, then as 'root' (in case /run/vault is root-owned).
+  local c="$1"
+  local p="$2"
+  local v=""
+
+  v="$(docker exec -u postgres "${c}" sh -lc "cat '${p}' 2>/dev/null" | tr -d '\r' | head -n 1 || true)"
+  if [[ -z "${v}" ]]; then
+    v="$(docker exec -u root "${c}" sh -lc "cat '${p}' 2>/dev/null" | tr -d '\r' | head -n 1 || true)"
+  fi
+  printf '%s' "${v}"
+}
+
+wait_for_container_vault_creds() {
+  # Usage: wait_for_container_vault_creds <container> <seconds>
+  local c="$1"
+  local seconds="$2"
+  local start now
+  start="$(date +%s)"
+  while true; do
+    if docker exec -u root "${c}" sh -lc 'test -s /run/vault/postgres_user -a -s /run/vault/postgres_password' >/dev/null 2>&1; then
+      return 0
+    fi
+    now="$(date +%s)"
+    if (( now - start >= seconds )); then
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+resolve_postgres_admin_creds() {
+  # Resolves POSTGRES_ADMIN_USER / POSTGRES_ADMIN_PASSWORD.
+  # Priority:
+  #   1) Explicit overrides (CLI/env): POSTGRES_ADMIN_USER + POSTGRES_ADMIN_PASSWORD
+  #   2) /run/vault/postgres_user + /run/vault/postgres_password inside the container (if present)
+  #   3) Resolved POSTGRES_USER + POSTGRES_PASSWORD in this script
+  local wait_seconds="${1:-${WAIT_VAULT_CREDS_SECONDS}}"
+
+  if [[ -n "${POSTGRES_ADMIN_USER}" && -n "${POSTGRES_ADMIN_PASSWORD}" ]]; then
+    POSTGRES_ADMIN_CREDS_SOURCE="override"
+    return 0
+  fi
+
+  # Attempt container /run/vault creds if the container exists
+  if docker inspect "${POSTGRES_CONTAINER}" >/dev/null 2>&1; then
+    # If a Vault agent is expected, wait briefly for rendered files to appear.
+    wait_for_container_vault_creds "${POSTGRES_CONTAINER}" "${wait_seconds}" >/dev/null 2>&1 || true
+
+    local c_user c_pass
+    c_user="$(read_container_file_trimmed "${POSTGRES_CONTAINER}" "/run/vault/postgres_user")"
+    c_pass="$(read_container_file_trimmed "${POSTGRES_CONTAINER}" "/run/vault/postgres_password")"
+
+    if [[ -n "${c_user}" && -n "${c_pass}" ]]; then
+      POSTGRES_ADMIN_USER="${c_user}"
+      POSTGRES_ADMIN_PASSWORD="${c_pass}"
+      POSTGRES_ADMIN_CREDS_SOURCE="/run/vault"
+      return 0
+    fi
+  fi
+
+  # Fallback to locally-resolved values (from local env artifacts, Vault load, or generated values)
+  if [[ -n "${POSTGRES_USER}" && -n "${POSTGRES_PASSWORD}" ]]; then
+    POSTGRES_ADMIN_USER="${POSTGRES_USER}"
+    POSTGRES_ADMIN_PASSWORD="${POSTGRES_PASSWORD}"
+    POSTGRES_ADMIN_CREDS_SOURCE="resolved-vars"
+    return 0
+  fi
+
+  err "Unable to resolve Postgres admin credentials. Ensure bootstrap artifacts exist (${ENV_FILE}) or that /run/vault/postgres_user and /run/vault/postgres_password are present in ${POSTGRES_CONTAINER}."
+}
+
 if [[ "${APPLY_TO_POSTGRES}" -eq 1 ]]; then
   need_cmd docker
 
@@ -1103,9 +1191,13 @@ if [[ "${APPLY_TO_POSTGRES}" -eq 1 ]]; then
 
   log "Waiting for Postgres readiness (up to ${WAIT_POSTGRES_SECONDS}s)..."
   wait_for_postgres_ready "${WAIT_POSTGRES_SECONDS}" || err "Postgres not ready within ${WAIT_POSTGRES_SECONDS}s"
+  resolve_postgres_admin_creds "${WAIT_VAULT_CREDS_SECONDS}"
+  log "Using Postgres admin credentials: user=${POSTGRES_ADMIN_USER} (source=${POSTGRES_ADMIN_CREDS_SOURCE})"
 
   docker exec -i -u postgres \
     -e POSTGRES_ADMIN_DB="${POSTGRES_ADMIN_DB}" \
+    -e ADMIN_USER="${POSTGRES_ADMIN_USER}" \
+    -e ADMIN_PASS="${POSTGRES_ADMIN_PASSWORD}" \
     -e NT_DB="${POSTGRES_DB}" \
     -e NT_USER="${POSTGRES_USER}" \
     -e NT_PASS="${POSTGRES_PASSWORD}" \
@@ -1117,50 +1209,62 @@ if [[ "${APPLY_TO_POSTGRES}" -eq 1 ]]; then
     "${POSTGRES_CONTAINER}" bash -s -- <<'EOS'
 set -euo pipefail
 
+# DB authentication (non-interactive)
+ADMIN_USER="${ADMIN_USER:?missing ADMIN_USER}"
+ADMIN_PASS="${ADMIN_PASS:-}"
+[[ -n "${ADMIN_PASS}" ]] && export PGPASSWORD="${ADMIN_PASS}"
+
 apply_role_and_db() {
   local dbname="$1"
   local username="$2"
   local password="$3"
   local admin_db="${POSTGRES_ADMIN_DB}"
 
-  psql -v ON_ERROR_STOP=1 --username=postgres --dbname="${admin_db}" \
-    -v dbname="${dbname}" -v username="${username}" -v password="${password}" <<'SQL'
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'username') THEN
-    EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', :'username', :'password');
-  ELSE
-    EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'username', :'password');
-  END IF;
-END$$;
+  # NOTE:
+  #   psql variable substitution does not occur inside dollar-quoted strings (e.g., DO $$ ... $$).
+  #   Use plain SQL + \gexec for idempotent creation with proper quoting via format(%I/%L).
+  psql -v ON_ERROR_STOP=1 --username="${ADMIN_USER}" --dbname="${admin_db}" \
+    --set=db_name="${dbname}" --set=role_name="${username}" --set=role_pass="${password}" <<'SQL'
+-- Create role if missing
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L;', :'role_name', :'role_pass')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role_name')
+\gexec
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'dbname') THEN
-    EXECUTE format('CREATE DATABASE %I OWNER %I ENCODING ''UTF8''', :'dbname', :'username');
-  END IF;
-END$$;
+-- Ensure password is set/updated (idempotent)
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L;', :'role_name', :'role_pass')
+\gexec
 
-ALTER DATABASE :"dbname" OWNER TO :"username";
-GRANT ALL PRIVILEGES ON DATABASE :"dbname" TO :"username";
+-- Create database if missing
+SELECT format('CREATE DATABASE %I OWNER %I ENCODING ''UTF8'';', :'db_name', :'role_name')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db_name')
+\gexec
+
+-- Ensure ownership and privileges
+SELECT format('ALTER DATABASE %I OWNER TO %I;', :'db_name', :'role_name')
+\gexec
+
+SELECT format('GRANT ALL PRIVILEGES ON DATABASE %I TO %I;', :'db_name', :'role_name')
+\gexec
 SQL
 }
+
 
 apply_schema() {
   local dbname="$1"
   local schema="$2"
   local username="$3"
 
-  psql -v ON_ERROR_STOP=1 --username=postgres --dbname="${dbname}" \
-    -v schema="${schema}" -v username="${username}" <<'SQL'
-DO $$
-BEGIN
-  EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION %I', :'schema', :'username');
-END$$;
+  # See note above: avoid DO $$ blocks to allow psql variable substitution.
+  psql -v ON_ERROR_STOP=1 --username="${ADMIN_USER}" --dbname="${dbname}" \
+    --set=schema_name="${schema}" --set=role_name="${username}" <<'SQL'
+SELECT format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION %I;', :'schema_name', :'role_name')
+\gexec
 
-GRANT ALL ON SCHEMA :"schema" TO :"username";
+SELECT format('GRANT ALL ON SCHEMA %I TO %I;', :'schema_name', :'role_name')
+\gexec
 SQL
 }
+
 
 apply_role_and_db "${NT_DB}" "${NT_USER}" "${NT_PASS}"
 echo "INFO: Ensured network_tools role/db exist: user=${NT_USER} db=${NT_DB}"

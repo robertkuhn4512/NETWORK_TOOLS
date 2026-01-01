@@ -2908,7 +2908,13 @@ Recommended “sync/apply” command (does **not** re-seed Vault):
 ```bash
 cd "$HOME/NETWORK_TOOLS"
 
-bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh   --vault-addr "https://vault_production_node:8200"   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"   --unseal-required 3   --no-seed   --apply-to-postgres
+bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --unseal-required 3 \
+  --no-seed \
+  --apply-to-postgres
+
 ```
 
 Operational notes:

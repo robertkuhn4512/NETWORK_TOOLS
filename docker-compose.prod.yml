@@ -187,7 +187,8 @@ services:
       KC_HTTPS_CERTIFICATE_FILE: "/run/vault/tls/server.crt"
       KC_HTTPS_CERTIFICATE_KEY_FILE: "/run/vault/tls/server.key"
     ports:
-      - "8080:8080"
+      - "8080:8080" # Expose if you want http for testing (Needs to be enabled in the env variables)
+      - "8443:8443"
     logging:
       driver: json-file
       options:
@@ -249,9 +250,6 @@ services:
       - postgres_certs:/etc/postgres/certs:ro
       - ./backend/app/postgres/config/postgres.conf:/etc/postgres/postgres.conf:ro
       - ./backend/app/postgres/config/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
-      - ./backend/app/postgres/certs/cert.crt:/etc/postgres/certs/server.crt:ro
-      - ./backend/app/postgres/certs/cert.key:/etc/postgres/certs/server.key:ro
-      - ./backend/app/postgres/certs/ca.crt:/etc/postgres/certs/ca.crt:ro
 
       # rendered secrets from vault agent
       - postgres_vault_rendered:/run/vault:ro
