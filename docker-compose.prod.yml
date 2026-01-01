@@ -129,7 +129,7 @@ services:
         max-size: "50m"
         max-file: "5"
     healthcheck:
-      test: [ "CMD-SHELL", "test -s /vault/rendered/postgres_db && test -s /vault/rendered/postgres_user && test -s /vault/rendered/postgres_password && test -s /vault/rendered/pgadmin_password" ]
+      test: [ "CMD-SHELL", "test -s /vault/rendered/postgres_db && test -s /vault/rendered/postgres_user && test -s /vault/rendered/postgres_password && test -s /vault/rendered/pgadmin_password && test -s /vault/rendered/servers.json" ]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -282,6 +282,11 @@ services:
       PGDATA: "/var/lib/postgres/data/pgdata"
       PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
       PGADMIN_DEFAULT_PASSWORD_FILE: "/run/vault/pgadmin_password"
+      PGADMIN_SERVER_JSON_FILE: "/run/vault/servers.json"
+      PGADMIN_REPLACE_SERVERS_ON_STARTUP: "True"
+      PGADMIN_CONFIG_ENABLE_SERVER_PASS_EXEC_CMD: "True" # This "Should" be disabled if you are using multiple user logins to
+                                                         # Access postgres as this will configure access to the postgres server with
+                                                         # The root account. For now, i'm leaving it enabled for testing.
     volumes:
       - postgres_vault_rendered:/run/vault:ro
     logging:
@@ -289,5 +294,16 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+    healthcheck:
+      test: [ "CMD-SHELL",
+        "test -s /vault/rendered/postgres_db \
+         && test -s /vault/rendered/postgres_user \
+         && test -s /vault/rendered/postgres_password \
+         && test -s /vault/rendered/pgadmin_password \
+         && test -s /vault/rendered/servers.json"
+      ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
     ports:
       - "8081:80"

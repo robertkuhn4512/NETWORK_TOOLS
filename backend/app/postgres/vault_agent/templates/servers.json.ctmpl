@@ -1,0 +1,20 @@
+{
+    "Servers": {
+        "1": {
+            "Name": "network_tools (postgres_primary)",
+            "Group": "Network Tools",
+            "Host": "postgres_primary",
+            "Port": 5432,
+            "MaintenanceDB": "{{ with secret "app_postgres_secrets/data/postgres" }}{{ .Data.data.POSTGRES_DB }}{{ end }}",
+            "Username": "{{ with secret "app_postgres_secrets/data/postgres" }}{{ .Data.data.POSTGRES_USER }}{{ end }}",
+            "SSLMode": "require",
+            "PasswordExecCommand": "cat /run/vault/postgres_password",
+            "PasswordExecExpiration": 60,
+            "ConnectionParameters": {
+                "sslmode": "require",
+                "connect_timeout": 10
+            },
+            "Shared": true
+        }
+    }
+}
