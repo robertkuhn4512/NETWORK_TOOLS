@@ -184,8 +184,6 @@ NETWORK_TOOLS
 |   |   |-- keycloak
 |   |   |   |-- bin
 |   |   |   |   `-- keycloak_entrypoint_from_vault.sh
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       |-- keycloak_agent_policy.hcl
@@ -199,8 +197,6 @@ NETWORK_TOOLS
 |   |   |   |-- config
 |   |   |   |   |-- pg_hba.conf
 |   |   |   |   `-- postgres.conf
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       `-- templates
@@ -227,6 +223,7 @@ NETWORK_TOOLS
 |   |   |   |-- seed_kv_spec.example.json (I haven't decided if i'm keeping these. I need to test them more and possibly rewrite them
 |   |   |   `-- seed_kv_spec.GUIDE.md
 |   |   |-- keycloak_approle_setup.sh
+|   |   |-- postgress_approle_setup.sh
 |   |   |-- startover_scripts
 |   |   |   `-- reset_network_tools_docker.sh
 |   |   |-- vault_first_time_init_only_rootless.sh
@@ -1090,8 +1087,6 @@ running Docker (see Section 3.4).
     |   |   |-- keycloak
     |   |   |   |-- bin
     |   |   |   |   `-- keycloak_entrypoint_from_vault.sh
-    |   |   |   |-- scripts
-    |   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
     |   |   |   `-- vault_agent
     |   |   |       |-- agent.hcl
     |   |   |       |-- keycloak_agent_policy.hcl
@@ -1105,8 +1100,6 @@ running Docker (see Section 3.4).
     |   |   |   |-- config
     |   |   |   |   |-- pg_hba.conf
     |   |   |   |   `-- postgres.conf
-    |   |   |   |-- scripts
-    |   |   |   |   `-- export_approle_from_vault_container.sh
     |   |   |   `-- vault_agent
     |   |   |       |-- agent.hcl
     |   |   |       `-- templates
@@ -1139,6 +1132,7 @@ running Docker (see Section 3.4).
     |   |   |   |-- seed_kv_spec.example.json
     |   |   |   `-- seed_kv_spec.GUIDE.md
     |   |   |-- keycloak_approle_setup.sh
+    |   |   |-- postgress_approle_setup.sh
     |   |   |-- startover_scripts
     |   |   |   `-- reset_network_tools_docker.sh
     |   |   |-- vault_first_time_init_only_rootless.sh
@@ -1502,8 +1496,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- keycloak
 |   |   |   |-- bin
 |   |   |   |   `-- keycloak_entrypoint_from_vault.sh
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       |-- keycloak_agent_policy.hcl
@@ -1517,8 +1509,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |-- config
 |   |   |   |   |-- pg_hba.conf
 |   |   |   |   `-- postgres.conf
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       `-- templates
@@ -1555,6 +1545,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
 |   |   |-- keycloak_approle_setup.sh
+|   |   |-- postgress_approle_setup.sh
 |   |   |-- startover_scripts
 |   |   |   `-- reset_network_tools_docker.sh
 |   |   |-- vault_first_time_init_only_rootless.sh
@@ -2328,8 +2319,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- keycloak
 |   |   |   |-- bin
 |   |   |   |   `-- keycloak_entrypoint_from_vault.sh
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       |-- keycloak_agent_policy.hcl
@@ -2343,8 +2332,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |-- config
 |   |   |   |   |-- pg_hba.conf
 |   |   |   |   `-- postgres.conf
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       `-- templates
@@ -2385,6 +2372,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
 |   |   |-- keycloak_approle_setup.sh
+|   |   |-- postgress_approle_setup.sh
 |   |   |-- startover_scripts
 |   |   |   `-- reset_network_tools_docker.sh
 |   |   |-- vault_first_time_init_only_rootless.sh
@@ -2572,8 +2560,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- keycloak
 |   |   |   |-- bin
 |   |   |   |   `-- keycloak_entrypoint_from_vault.sh
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       |-- keycloak_agent_policy.hcl
@@ -2592,8 +2578,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |-- config
 |   |   |   |   |-- pg_hba.conf
 |   |   |   |   `-- postgres.conf
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       `-- templates
@@ -2634,6 +2618,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
 |   |   |-- keycloak_approle_setup.sh
+|   |   |-- postgress_approle_setup.sh
 |   |   |-- startover_scripts
 |   |   |   `-- reset_network_tools_docker.sh
 |   |   |-- vault_first_time_init_only_rootless.sh
@@ -3316,34 +3301,55 @@ This section provides two options:
 > Note: Host paths (for example, `./container_data/...`) do not exist inside the Vault container.  
 > When you run Vault commands via `docker exec`, you must write the output to host files from the host shell.
 
-#### 6.3.3.1 Recommended: use the repo export script
+#### 6.3.3.1 Recommended: use the repo AppRole bootstrap script (build_scripts)
 
-If your repo includes `./backend/app/postgres/scripts/export_approle_from_vault_container.sh`, use it to export the artifacts:
+The legacy export scripts have been removed. Use the build-script version instead:
+
+- `./backend/build_scripts/postgress_approle_setup.sh`
+
+This script runs the Vault CLI **inside** the Vault container and writes the AppRole artifacts to the host:
+
+```text
+./container_data/vault/approle/<ROLE_NAME>/
+  role_id
+  secret_id
+```
+
+Key behaviors:
+
+- Defaults: `VAULT_CONTAINER=vault_production_node`, `ROLE_NAME=postgres_pgadmin_agent`
+- Reads the Vault admin token from:
+  - `./backend/app/security/configuration_files/vault/bootstrap/root_token`, or
+  - `./backend/app/security/configuration_files/vault/bootstrap/root_token.json` (expects `.root_token`)
+- If neither token file exists, it securely prompts for a token (input hidden).
+- Rotates `secret_id` by default (`ROTATE_SECRET_ID=1`). Set `ROTATE_SECRET_ID=0` to keep the existing `secret_id`.
 
 ```bash
 cd "$HOME/NETWORK_TOOLS"
-chmod +x ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+chmod +x ./backend/build_scripts/postgress_approle_setup.sh
 
-# Defaults: VAULT_CONTAINER=vault_production_node, ROLE_NAME=postgres_pgadmin_agent
-./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+# Default behavior (recommended):
+# - exports role_id
+# - rotates secret_id
+./backend/build_scripts/postgress_approle_setup.sh
 
-# Override the role name if needed:
-ROLE_NAME="postgres_pgadmin_agent" ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+# Override the role name (rare):
+ROLE_NAME="postgres_pgadmin_agent" ./backend/build_scripts/postgress_approle_setup.sh
 
-# If you do NOT want to rotate secret_id on every run:
-ROTATE_SECRET_ID=0 ./backend/app/postgres/scripts/export_approle_from_vault_container.sh
+# Do NOT rotate secret_id (keep current secret_id if present):
+ROTATE_SECRET_ID=0 ./backend/build_scripts/postgress_approle_setup.sh
 
-# Verify outputs
-ls -lah ./container_data/vault/approle/postgres_pgadmin_agent/
+# Custom output directory (optional):
+OUT_DIR="$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agent"   ./backend/build_scripts/postgress_approle_setup.sh
 ```
 
-Operational notes:
+If the Vault Agent is logging **`no known role ID`**, re-run the script above and confirm the following files exist on the host and are readable by the container bind mount:
 
-- The script should read the admin token from `./backend/app/security/configuration_files/vault/bootstrap/root_token` (or `root_token.json`).
-- The script must run `vault` commands inside the Vault container (it should not require the Vault CLI on the host).
-- Use `umask 077` and `chmod 600` on the artifact files.
+- `./container_data/vault/approle/postgres_pgadmin_agent/role_id`
+- `./container_data/vault/approle/postgres_pgadmin_agent/secret_id`
 
 #### 6.3.3.2 Manual commands (fully expanded; no script)
+
 
 ```bash
 set -euo pipefail
@@ -4109,8 +4115,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |   |-- ca.srl
 |   |   |   |   |-- cert.crt
 |   |   |   |   `-- cert.key
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       |-- keycloak_agent_policy.hcl
@@ -4129,8 +4133,6 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |-- config
 |   |   |   |   |-- pg_hba.conf
 |   |   |   |   `-- postgres.conf
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       `-- templates
@@ -4171,6 +4173,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
 |   |   |-- keycloak_approle_setup.sh
+|   |   |-- postgress_approle_setup.sh
 |   |   |-- startover_scripts
 |   |   |   `-- reset_network_tools_docker.sh
 |   |   |-- vault_first_time_init_only_rootless.sh
@@ -4303,8 +4306,6 @@ bash ./backend/build_scripts/keycloak_approle_setup.sh \
 |   |   |   |   |-- ca.srl
 |   |   |   |   |-- cert.crt
 |   |   |   |   `-- cert.key
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       |-- keycloak_agent_policy.hcl
@@ -4323,8 +4324,6 @@ bash ./backend/build_scripts/keycloak_approle_setup.sh \
 |   |   |   |-- config
 |   |   |   |   |-- pg_hba.conf
 |   |   |   |   `-- postgres.conf
-|   |   |   |-- scripts
-|   |   |   |   `-- export_approle_from_vault_container.sh
 |   |   |   `-- vault_agent
 |   |   |       |-- agent.hcl
 |   |   |       `-- templates
@@ -4365,6 +4364,7 @@ bash ./backend/build_scripts/keycloak_approle_setup.sh \
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
 |   |   |-- keycloak_approle_setup.sh
+|   |   |-- postgress_approle_setup.sh
 |   |   |-- startover_scripts
 |   |   |   `-- reset_network_tools_docker.sh
 |   |   |-- vault_first_time_init_only_rootless.sh
