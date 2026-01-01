@@ -290,7 +290,7 @@ ROLE_DIR="$HOME/NETWORK_TOOLS/container_data/vault/approle/postgres_pgadmin_agen
 # Vault container context
 VAULT_ADDR="https://vault_production_node:8200"
 VAULT_CONTAINER="vault_production_node"
-VAULT_CACERT_CONTAINER="/vault/certs/ca.crt"
+VAULT_CACERT_CONTAINER="/vault/certs/cert.crt"
 
 # Admin token (root token during first-time init)
 VAULT_TOKEN="$(cat "$BOOTSTRAP_DIR/root_token")"
@@ -1356,6 +1356,128 @@ bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
   --init-threshold 3
 ```
 
+Expected output from the vault init script below for comparison.
+
+```bash
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ cd "$HOME/NETWORK_TOOLS"
+bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --init-shares 5 \
+  --init-threshold 3
+INFO: Starting Vault container: docker compose -p network_tools -f /home/developer_network_tools/NETWORK_TOOLS/docker-compose.prod.yml up -d vault_production_node
+[+] up 2/2
+ ✔ Network network_tools_default   Created                                                                                                                                                                                       0.0s 
+ ✔ Container vault_production_node Created                                                                                                                                                                                       0.1s 
+INFO: Waiting for Vault endpoint: https://vault_production_node:8200
+INFO: Vault not initialized; initializing (shares=5, threshold=3)…
+INFO: Init complete. Wrote (0600):
+INFO:   Unseal keys JSON     : /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json
+INFO:   Root token (plain)   : /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token
+INFO:   Root token (JSON)    : /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json
+INFO: Unsealing Vault using 3 key(s)…
+INFO: Vault unsealed.
+INFO: Enabling file audit device at path 'file/' -> /vault/logs/audit.log
+INFO: Audit device enabled successfully.
+INFO: Ensured ACL policy: postgres_pgadmin_read
+INFO: Enabled auth method: approle/
+INFO: Ensured AppRole role: postgres_pgadmin_agent (policy: postgres_pgadmin_read)
+
+============================================================
+VAULT BOOTSTRAP ARTIFACTS (SENSITIVE) - DOWNLOAD THEN REMOVE
+============================================================
+Bootstrap directory:
+  /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap
+
+Files written/used by this script:
+  - /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json  (exists; perms/owner: 600 developer_network_tools:developer_network_tools)
+  - /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token  (exists; perms/owner: 600 developer_network_tools:developer_network_tools)
+  - /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json  (exists; perms/owner: 600 developer_network_tools:developer_network_tools)
+
+IMPORTANT:
+  - This script is configured to print key/token JSON contents to the terminal by default.
+    Use --no-print-artifact-contents to suppress that output.
+  1) Download these files to a secure location (password manager / offline vault / secure storage).
+  2) Do NOT commit these files to Git.
+  3) After you have securely stored them, delete them from this server.
+
+Example download (from your workstation):
+  scp -p <user>@<server>:'/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json' .
+  scp -p <user>@<server>:'/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token' .
+  scp -p <user>@<server>:'/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json' .
+
+Example removal (run on this server AFTER downloading):
+  rm -f '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json' '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token' '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json'
+
+If you want a stronger delete (optional; not always effective on all storage):
+  shred -u '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json' '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token' '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json'
+
+
+============================================================
+BOOTSTRAP FILE CONTENTS (HIGHLY SENSITIVE) - TERMINAL OUTPUT
+============================================================
+WARNING: The contents below include unseal keys and root token.
+Do NOT paste this output into tickets, chat, or logs.
+============================================================
+
+----- /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json -----
+{
+  "keys": [
+    "6a25353dc991c0d743a1bb5f0d11f11fb4e6f9a65646c093a4e46e2aca78db6ed9",
+    "436e62004ddfcfbe69ee60de5f7275d04bf4caa95bae89435d4501273817c3a48b",
+    "3514f5c6e49850bdd1f3f9b885af60207756a79aab245b6ca5138ba51e84c024a8",
+    "95accca297de7f6fd9d545845eb33ca5ba371a9e34b724ff75719cabfb5e368786",
+    "13e27fd7fc783143a6d6c19d990949a6c7ef0d456d261cfcd046c75c065f63c338"
+  ],
+  "keys_base64": [
+    "aiU1PcmRwNdDobtfDRHxH7Tm+aZWRsCTpORuKsp4227Z",
+    "Q25iAE3fz75p7mDeX3J10Ev0yqlbrolDXUUBJzgXw6SL",
+    "NRT1xuSYUL3R8/m4ha9gIHdWp5qrJFtspROLpR6EwCSo",
+    "lazMopfef2/Z1UWEXrM8pbo3Gp40tyT/dXGcq/teNoeG",
+    "E+J/1/x4MUOm1sGdmQlJpsfvDUVtJhz80EbHXAZfY8M4"
+  ],
+  "root_token": "hvs.zeGCweGZR0du66ONKG32enpy"
+}
+
+----- /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json -----
+{
+  "root_token": "hvs.zeGCweGZR0du66ONKG32enpy"
+}
+
+{
+  "vault_addr": "https://vault_production_node:8200",
+  "compose": {
+    "project": "network_tools",
+    "file": "/home/developer_network_tools/NETWORK_TOOLS/docker-compose.prod.yml",
+    "service": "vault_production_node"
+  },
+  "bootstrap_dir": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap",
+  "files": {
+    "unseal_keys_json": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json",
+    "root_token": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token",
+    "root_token_json": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json"
+  },
+  "pretty_output": true,
+  "postgres_pgadmin_approle_bootstrap": {
+    "enabled": true,
+    "force": false,
+    "setup_done": true,
+    "role_name": "postgres_pgadmin_agent",
+    "policy_name": "postgres_pgadmin_read"
+  },
+  "print_artifact_contents": true,
+  "audit": {
+    "enabled": true,
+    "path": "file",
+    "file_path": "/vault/logs/audit.log"
+  },
+  "initialized": true,
+  "unsealed": true
+}
+```
+
+
+
 4) If you omit `--ca-cert`, the script will:
 
 - Try the system trust store first (no `-k`)
@@ -1366,20 +1488,29 @@ bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
   --vault-addr "https://vault_production_node:8200"
 ```
 
-#### 3.6.2 Bootstrap Artifacts (Download Then Remove)
+#### 3.6.2 Bootstrap Artifacts (Download Then Remove AFTER every container is brought up and initialized)
 
 By default, the init/unseal script writes bootstrap artifacts here:
 
 ```text
-$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/
-  - unseal_keys.json
-  - root_token
-  - root_token.json
-  
-And your file structure will look similar to 
+Your directory structure should now resemble below
 
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
+.
 |-- backend
 |   |-- app
+|   |   |-- keycloak
+|   |   |   |-- bin
+|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       |-- keycloak_agent_policy.hcl
+|   |   |       `-- templates
+|   |   |           |-- keycloak.env.ctmpl
+|   |   |           |-- keycloak_tls.crt.ctmpl
+|   |   |           `-- keycloak_tls.key.ctmpl
 |   |   |-- mariadb_queries
 |   |   |-- postgres
 |   |   |   |-- certs
@@ -1400,9 +1531,51 @@ And your file structure will look similar to
 |   |       `-- configuration_files
 |   |           `-- vault
 |   |               |-- bootstrap
-|   |               |   |-- root_token <- NEW - Be sure to remove this file after initial setup is complete and store somewhere safely
-|   |               |   |-- root_token.json <- NEW - Be sure to remove this file after initial setup is complete and store somewhere safely
-|   |               |   `-- unseal_keys.json <- NEW - Be sure to remove this file after initial setup is complete and store somewhere safely
+|   |               |   |-- root_token <-- NEW (Download and save somewhere offline or online in a secure location AFTER all bootstrapping is completed)
+|   |               |   |-- root_token.json <-- NEW (Download and save somewhere offline or online in a secure location AFTER all bootstrapping is completed)
+|   |               |   `-- unseal_keys.json <-- NEW (Download and save somewhere offline or online in a secure location AFTER all bootstrapping is completed)
+|   |               |-- certs
+|   |               |   |-- ca.crt
+|   |               |   |-- ca.key
+|   |               |   |-- ca.srl
+|   |               |   |-- cert.crt
+|   |               |   `-- cert.key
+|   |               |-- config
+|   |               |   |-- certs
+|   |               |   |-- keycloak_kv_read.hcl
+|   |               |   |-- postgres_pgadmin_kv_read.hcl
+|   |               |   `-- vault_configuration_primary_node.hcl
+|   |               `-- Dockerfile
+|   |-- build_scripts
+|   |   |-- generate_local_keycloak_certs.sh
+|   |   |-- generate_local_postgres_certs.sh
+|   |   |-- generate_local_vault_certs.sh
+|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- guides
+|   |   |   |-- seed_kv_spec.example.json
+|   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- keycloak_approle_setup.sh
+|   |   |-- startover_scripts
+|   |   |   `-- reset_network_tools_docker.sh
+|   |   |-- vault_first_time_init_only_rootless.sh
+|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+|   `-- nginx
+|-- container_data
+|   `-- vault
+|       `-- data
+|           |-- logs
+|           |   `-- audit.log <-- NEW Vault log file mapped to the Host OS Mount
+|           |-- raft
+|           |   |-- raft.db <-- NEW Vault raft database. This is where your secrets are stored
+|           |   `-- snapshots
+|           `-- vault.db
+|-- docker-compose.prod.yml
+|-- environment_variable_guide.md
+|-- frontend
+|-- how_to_videos
+|-- README.full.md
+`-- README.md
 ```
 
 These files are **credentials**. Treat them as highly sensitive.
@@ -1525,6 +1698,7 @@ For production, avoid shipping a “dev CA” and avoid `-k` entirely. Typical p
 ### 3.8 Vault Unseal and KV Seeding Bootstrap Scripts
 
 This repo intentionally keeps **two** seeding approaches so you have more than one option:
+These can be used to create custom seed files. Or you can manually enter them into vault. Dealers choice.
 
 - **Single-mount seeder**: `./backend/build_scripts/vault_unseal_kv_seed_bootstrap_rootless.sh`  
   Best for the common case: unseal Vault (if needed), optionally create **one** KV mount, then seed **one JSON input** into that mount.
@@ -2083,6 +2257,9 @@ This section documents how we generate and store **initial postgres bootstrap cr
 **Run as the same non-root user that runs rootless Docker** (e.g., `developer_network_tools`) from the repo root:
 
 ```bash
+Exclude the '--prompt-token' if you left the root token files in the bootstrap directory 
+as this script will default to looking there first on an initial install and setup.
+
 cd "$HOME/NETWORK_TOOLS"
 
 bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
@@ -2090,6 +2267,198 @@ bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
   --unseal-required 3 \
   --prompt-token
+```
+
+```bash
+Example output without the '--prompt-token' flag
+
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --unseal-required 3
+WARN: Keycloak TLS material not found; skipping keycloak_tls seeding.
+INFO: Wrote credential artifacts:
+INFO:   ENV:  /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/postgres_pgadmin.env
+INFO:   JSON: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/postgres_pgadmin_credentials.json
+INFO:   SPEC: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seed_kv_spec.postgres_pgadmin.json
+INFO: 
+INFO: Seeding Vault from generated spec...
+INFO:   VAULT_ADDR: https://vault_production_node:8200
+INFO:   Seed script: /home/developer_network_tools/NETWORK_TOOLS/backend/build_scripts/vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+INFO:   CA cert:    /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt
+INFO: Vault address: https://vault_production_node:8200
+INFO: Bootstrap dir: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap
+INFO: Spec file: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seed_kv_spec.postgres_pgadmin.json
+INFO: Unseal keys file: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json
+INFO: CA cert: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt
+INFO: Vault is already unsealed. Skipping unseal.
+INFO: Spec mounts: 1
+INFO: --- Mount [0]: app_postgres_secrets (version=2) ---
+INFO: Enabled KV v2 at app_postgres_secrets/
+INFO: wrote -> app_postgres_secrets/postgres
+INFO: wrote -> app_postgres_secrets/pgadmin
+INFO: wrote -> app_postgres_secrets/keycloak_postgres
+INFO: wrote -> app_postgres_secrets/keycloak_bootstrap
+INFO: wrote -> app_postgres_secrets/keycloak_runtime
+INFO: Mount app_postgres_secrets: seed complete. success=5 failed=0
+INFO: Wrote consolidated secrets artifact:
+      /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_all.json
+INFO: (Not printing secrets; use --print-secrets to print.)
+INFO: Recommended next steps:
+  1) Securely download required artifacts (examples):
+     scp -p <user>@<server>:"/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_all.json" .
+     scp -p <user>@<server>:"/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" .
+     scp -p <user>@<server>:"/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token" .
+     scp -p <user>@<server>:"/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json" .
+  2) After verifying downloads, remove sensitive files from the server:
+     rm -f "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_all.json" "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token" "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json"
+INFO: Done.
+INFO: Vault seeding completed.
+INFO: Done.
+
+```
+
+```text
+Your file structure should look similar to below.
+
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
+.
+|-- backend
+|   |-- app
+|   |   |-- keycloak
+|   |   |   |-- bin
+|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       |-- keycloak_agent_policy.hcl
+|   |   |       `-- templates
+|   |   |           |-- keycloak.env.ctmpl
+|   |   |           |-- keycloak_tls.crt.ctmpl
+|   |   |           `-- keycloak_tls.key.ctmpl
+|   |   |-- mariadb_queries
+|   |   |-- postgres
+|   |   |   |-- certs
+|   |   |   |-- config
+|   |   |   |   |-- pg_hba.conf
+|   |   |   |   `-- postgres.conf
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           |-- pgadmin_password.ctmpl
+|   |   |           |-- postgres_db.ctmpl
+|   |   |           |-- postgres_password.ctmpl
+|   |   |           `-- postgres_user.ctmpl
+|   |   |-- routers
+|   |   `-- security
+|   |       `-- configuration_files
+|   |           `-- vault
+|   |               |-- bootstrap
+|   |               |   |-- postgres_pgadmin_credentials.json <-- NEW Generated for bootstrap use for the other containers
+|   |               |   |-- postgres_pgadmin.env <-- NEW Generated for bootstrap use for the other containers
+|   |               |   |-- root_token
+|   |               |   |-- root_token.json
+|   |               |   |-- seeded_secrets_all.json <-- NEW Generated for bootstrap use for the other containers
+|   |               |   |-- seed_kv_spec.postgres_pgadmin.json <-- NEW Generated for bootstrap use for the other containers
+|   |               |   `-- unseal_keys.json
+|   |               |-- certs
+|   |               |   |-- ca.crt
+|   |               |   |-- ca.key
+|   |               |   |-- ca.srl
+|   |               |   |-- cert.crt
+|   |               |   `-- cert.key
+|   |               |-- config
+|   |               |   |-- certs
+|   |               |   |-- keycloak_kv_read.hcl
+|   |               |   |-- postgres_pgadmin_kv_read.hcl
+|   |               |   `-- vault_configuration_primary_node.hcl
+|   |               `-- Dockerfile
+|   |-- build_scripts
+|   |   |-- generate_local_keycloak_certs.sh
+|   |   |-- generate_local_postgres_certs.sh
+|   |   |-- generate_local_vault_certs.sh
+|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- guides
+|   |   |   |-- seed_kv_spec.example.json
+|   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- keycloak_approle_setup.sh
+|   |   |-- startover_scripts
+|   |   |   `-- reset_network_tools_docker.sh
+|   |   |-- vault_first_time_init_only_rootless.sh
+|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+|   `-- nginx
+|-- container_data
+|   `-- vault
+|       `-- data
+|           |-- logs
+|           |   `-- audit.log
+|           |-- raft
+|           |   |-- raft.db
+|           |   `-- snapshots
+|           `-- vault.db
+|-- docker-compose.prod.yml
+|-- environment_variable_guide.md
+|-- frontend
+|-- how_to_videos
+|   |-- HOW_TO_3.2 Validate Certificates.mov
+|   |-- HOW_TO_3.3 Start Vault with Docker Compose.mov
+|   |-- HOW_TO_3.6 Initialize and Unseal Vault (First Run).mov
+|   |-- HOW_TO_3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh).mov
+|   `-- HOW_TO_3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh).mov
+|-- README.full.md
+`-- README.md
+```
+
+```text
+Example secrets that have been auto generated and seeded into vault
+
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ cat ./backend/app/security/configuration_files/vault/bootstrap/seed_kv_spec.postgres_pgadmin.json
+{
+  "mounts": [
+    {
+      "mount": "app_postgres_secrets",
+      "version": 2,
+      "secrets": {
+        "postgres": {
+          "POSTGRES_DB": "network_tools",
+          "POSTGRES_USER": "network_tools_user",
+          "POSTGRES_PASSWORD": "l8iJmim6SQGLDILfKJgGUvckyK16PL_bO03AVpMWYI4"
+        },
+        "pgadmin": {
+          "PGADMIN_DEFAULT_EMAIL": "admin@example.com",
+          "PGADMIN_DEFAULT_PASSWORD": "wYrip91EtXhSn3XihLB23Z_LckULaIjlIukpYA0hoIk"
+        },
+        "keycloak_postgres": {
+          "KC_DB": "postgres",
+          "KC_DB_URL_HOST": "postgres_primary",
+          "KC_DB_URL_PORT": "5432",
+          "KC_DB_URL_DATABASE": "keycloak",
+          "KC_DB_USERNAME": "keycloak",
+          "KC_DB_PASSWORD": "-eQZOS4Dp0Ts2a9BpUXf6hPuweEGjUdmgSTpGpoHiFw",
+          "KC_DB_SCHEMA": "keycloak"
+        },
+        "keycloak_bootstrap": {
+          "KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
+          "KC_BOOTSTRAP_ADMIN_PASSWORD": "nx6a6NmP4LGtnSRteTrAX46VAyY4OfDF0ANNGxpucg0"
+        },
+        "keycloak_runtime": {
+          "KC_HOSTNAME": "keycloak",
+          "KC_HOSTNAME_STRICT": "true",
+          "KC_HTTP_ENABLED": "false",
+          "KC_HTTPS_PORT": "8443",
+          "KC_HEALTH_ENABLED": "true",
+          "KC_METRICS_ENABLED": "true",
+          "KC_HTTP_MANAGEMENT_PORT": "9000",
+          "KC_HTTP_MANAGEMENT_SCHEME": "http"
+        }
+      }
+    }
+  ]
+}
 ```
 
 What the script does:
@@ -2129,7 +2498,16 @@ Rotation (long-term operations):
 ```bash
 cd "$HOME/NETWORK_TOOLS"
 
-bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh   --mode rotate   --vault-addr "https://vault_production_node:8200"   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"   --unseal-required 3   --prompt-token   --apply-to-postgres
+VAULT_ADDR="https://vault_production_node:8200"
+VAULT_CA_CERT="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+
+bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+  --mode rotate \
+  --vault-addr "$VAULT_ADDR" \
+  --ca-cert "$VAULT_CA_CERT" \
+  --unseal-required 3 \
+  --prompt-token \
+  --apply-to-postgres
 ```
 
 - If you prefer to do the Postgres `ALTER ROLE` step manually (or if `--apply-to-postgres` fails), see **6.3.7**.
@@ -2185,6 +2563,108 @@ If Postgres TLS is enabled (the default in this repo), make sure the Postgres ce
 cd "$HOME/NETWORK_TOOLS"
 bash ./backend/build_scripts/generate_local_postgres_certs.sh
 ```
+
+```bash
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
+.
+|-- backend
+|   |-- app
+|   |   |-- keycloak
+|   |   |   |-- bin
+|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       |-- keycloak_agent_policy.hcl
+|   |   |       `-- templates
+|   |   |           |-- keycloak.env.ctmpl
+|   |   |           |-- keycloak_tls.crt.ctmpl
+|   |   |           `-- keycloak_tls.key.ctmpl
+|   |   |-- mariadb_queries
+|   |   |-- postgres
+|   |   |   |-- certs
+|   |   |   |   |-- ca.crt
+|   |   |   |   |-- ca.key <- NEW - Can be removed to safe storage
+|   |   |   |   |-- ca.srl <- NEW - Can be removed to safe storage
+|   |   |   |   |-- cert.crt
+|   |   |   |   `-- cert.key
+|   |   |   |-- config
+|   |   |   |   |-- pg_hba.conf
+|   |   |   |   `-- postgres.conf
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           |-- pgadmin_password.ctmpl
+|   |   |           |-- postgres_db.ctmpl
+|   |   |           |-- postgres_password.ctmpl
+|   |   |           `-- postgres_user.ctmpl
+|   |   |-- routers
+|   |   `-- security
+|   |       `-- configuration_files
+|   |           `-- vault
+|   |               |-- bootstrap
+|   |               |   |-- postgres_pgadmin_credentials.json
+|   |               |   |-- postgres_pgadmin.env
+|   |               |   |-- root_token
+|   |               |   |-- root_token.json
+|   |               |   |-- seeded_secrets_all.json
+|   |               |   |-- seed_kv_spec.postgres_pgadmin.json
+|   |               |   `-- unseal_keys.json
+|   |               |-- certs
+|   |               |   |-- ca.crt <- NEW
+|   |               |   |-- ca.key <- NEW - Can be removed to safe storage
+|   |               |   |-- ca.srl <- NEW - Can be removed to safe storage
+|   |               |   |-- cert.crt <- NEW
+|   |               |   `-- cert.key <- NEW
+|   |               |-- config
+|   |               |   |-- certs
+|   |               |   |-- keycloak_kv_read.hcl
+|   |               |   |-- postgres_pgadmin_kv_read.hcl
+|   |               |   `-- vault_configuration_primary_node.hcl
+|   |               `-- Dockerfile
+|   |-- build_scripts
+|   |   |-- generate_local_keycloak_certs.sh
+|   |   |-- generate_local_postgres_certs.sh
+|   |   |-- generate_local_vault_certs.sh
+|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- guides
+|   |   |   |-- seed_kv_spec.example.json
+|   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- keycloak_approle_setup.sh
+|   |   |-- startover_scripts
+|   |   |   `-- reset_network_tools_docker.sh
+|   |   |-- vault_first_time_init_only_rootless.sh
+|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+|   `-- nginx
+|-- container_data
+|   `-- vault
+|       |-- approle
+|       |   `-- postgres_pgadmin_agent
+|       `-- data
+|           |-- logs
+|           |   `-- audit.log
+|           |-- raft
+|           |   |-- raft.db
+|           |   `-- snapshots
+|           `-- vault.db
+|-- docker-compose.prod.yml
+|-- environment_variable_guide.md
+|-- frontend
+|-- how_to_videos
+|   |-- HOW_TO_3.2 Validate Certificates.mov
+|   |-- HOW_TO_3.3 Start Vault with Docker Compose.mov
+|   |-- HOW_TO_3.6 Initialize and Unseal Vault (First Run).mov
+|   |-- HOW_TO_3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh).mov
+|   `-- HOW_TO_3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh).mov
+|-- README.full.md
+`-- README.md
+
+```
+
 
 Verify the expected cert files were created (these are the files mounted into the Postgres container):
 
@@ -3608,11 +4088,118 @@ Recommended workflow:
 
 ```bash
 cd "$HOME/NETWORK_TOOLS"
-
+HERE!
 # Generates backend/app/keycloak/certs/{server.crt,server.key,ca.crt}
-bash ./backend/app/keycloak/certs/generate_local_keycloak_certs.sh
+bash ./backend/build_scripts/generate_local_keycloak_certs.sh
 ```
 
+```bash
+Your file structure should look similar to this now. 
+
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
+.
+|-- backend
+|   |-- app
+|   |   |-- keycloak
+|   |   |   |-- bin
+|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+|   |   |   |-- certs
+|   |   |   |   |-- ca.crt
+|   |   |   |   |-- ca.key
+|   |   |   |   |-- ca.srl
+|   |   |   |   |-- cert.crt
+|   |   |   |   `-- cert.key
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       |-- keycloak_agent_policy.hcl
+|   |   |       `-- templates
+|   |   |           |-- keycloak.env.ctmpl
+|   |   |           |-- keycloak_tls.crt.ctmpl
+|   |   |           `-- keycloak_tls.key.ctmpl
+|   |   |-- mariadb_queries
+|   |   |-- postgres
+|   |   |   |-- certs
+|   |   |   |   |-- ca.crt
+|   |   |   |   |-- ca.key
+|   |   |   |   |-- ca.srl
+|   |   |   |   |-- cert.crt
+|   |   |   |   `-- cert.key
+|   |   |   |-- config
+|   |   |   |   |-- pg_hba.conf
+|   |   |   |   `-- postgres.conf
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           |-- pgadmin_password.ctmpl
+|   |   |           |-- postgres_db.ctmpl
+|   |   |           |-- postgres_password.ctmpl
+|   |   |           `-- postgres_user.ctmpl
+|   |   |-- routers
+|   |   `-- security
+|   |       `-- configuration_files
+|   |           `-- vault
+|   |               |-- bootstrap
+|   |               |   |-- postgres_pgadmin_credentials.json
+|   |               |   |-- postgres_pgadmin.env
+|   |               |   |-- root_token
+|   |               |   |-- root_token.json
+|   |               |   |-- seeded_secrets_all.json
+|   |               |   |-- seed_kv_spec.postgres_pgadmin.json
+|   |               |   `-- unseal_keys.json
+|   |               |-- certs
+|   |               |   |-- ca.crt
+|   |               |   |-- ca.key
+|   |               |   |-- ca.srl
+|   |               |   |-- cert.crt
+|   |               |   `-- cert.key
+|   |               |-- config
+|   |               |   |-- certs
+|   |               |   |-- keycloak_kv_read.hcl
+|   |               |   |-- postgres_pgadmin_kv_read.hcl
+|   |               |   `-- vault_configuration_primary_node.hcl
+|   |               `-- Dockerfile
+|   |-- build_scripts
+|   |   |-- generate_local_keycloak_certs.sh
+|   |   |-- generate_local_postgres_certs.sh
+|   |   |-- generate_local_vault_certs.sh
+|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- guides
+|   |   |   |-- seed_kv_spec.example.json
+|   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- keycloak_approle_setup.sh
+|   |   |-- startover_scripts
+|   |   |   `-- reset_network_tools_docker.sh
+|   |   |-- vault_first_time_init_only_rootless.sh
+|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+|   `-- nginx
+|-- container_data
+|   `-- vault
+|       |-- approle
+|       |   `-- postgres_pgadmin_agent
+|       `-- data
+|           |-- logs
+|           |   `-- audit.log
+|           |-- raft
+|           |   |-- raft.db
+|           |   `-- snapshots
+|           `-- vault.db
+|-- docker-compose.prod.yml
+|-- environment_variable_guide.md
+|-- frontend
+|-- how_to_videos
+|   |-- HOW_TO_3.2 Validate Certificates.mov
+|   |-- HOW_TO_3.3 Start Vault with Docker Compose.mov
+|   |-- HOW_TO_3.6 Initialize and Unseal Vault (First Run).mov
+|   |-- HOW_TO_3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh).mov
+|   `-- HOW_TO_3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh).mov
+|-- README.full.md
+`-- README.md
+```
 2) Seed those files into Vault (encode as base64 to preserve newlines safely):
 
 ```bash
@@ -3702,6 +4289,113 @@ Recommended: use the repo script:
 ```bash
 bash ./backend/build_scripts/keycloak_approle_setup.sh \
   --ca-cert "./backend/app/security/configuration_files/vault/certs/ca.crt"
+```
+
+```bash
+|-- backend
+|   |-- app
+|   |   |-- keycloak
+|   |   |   |-- bin
+|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+|   |   |   |-- certs
+|   |   |   |   |-- ca.crt
+|   |   |   |   |-- ca.key
+|   |   |   |   |-- ca.srl
+|   |   |   |   |-- cert.crt
+|   |   |   |   `-- cert.key
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       |-- keycloak_agent_policy.hcl
+|   |   |       `-- templates
+|   |   |           |-- keycloak.env.ctmpl
+|   |   |           |-- keycloak_tls.crt.ctmpl
+|   |   |           `-- keycloak_tls.key.ctmpl
+|   |   |-- mariadb_queries
+|   |   |-- postgres
+|   |   |   |-- certs
+|   |   |   |   |-- ca.crt
+|   |   |   |   |-- ca.key
+|   |   |   |   |-- ca.srl
+|   |   |   |   |-- cert.crt
+|   |   |   |   `-- cert.key
+|   |   |   |-- config
+|   |   |   |   |-- pg_hba.conf
+|   |   |   |   `-- postgres.conf
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           |-- pgadmin_password.ctmpl
+|   |   |           |-- postgres_db.ctmpl
+|   |   |           |-- postgres_password.ctmpl
+|   |   |           `-- postgres_user.ctmpl
+|   |   |-- routers
+|   |   `-- security
+|   |       `-- configuration_files
+|   |           `-- vault
+|   |               |-- bootstrap
+|   |               |   |-- postgres_pgadmin_credentials.json
+|   |               |   |-- postgres_pgadmin.env
+|   |               |   |-- root_token
+|   |               |   |-- root_token.json
+|   |               |   |-- seeded_secrets_all.json
+|   |               |   |-- seed_kv_spec.postgres_pgadmin.json
+|   |               |   `-- unseal_keys.json
+|   |               |-- certs
+|   |               |   |-- ca.crt
+|   |               |   |-- ca.key
+|   |               |   |-- ca.srl
+|   |               |   |-- cert.crt
+|   |               |   `-- cert.key
+|   |               |-- config
+|   |               |   |-- certs
+|   |               |   |-- keycloak_kv_read.hcl
+|   |               |   |-- postgres_pgadmin_kv_read.hcl
+|   |               |   `-- vault_configuration_primary_node.hcl
+|   |               `-- Dockerfile
+|   |-- build_scripts
+|   |   |-- generate_local_keycloak_certs.sh
+|   |   |-- generate_local_postgres_certs.sh
+|   |   |-- generate_local_vault_certs.sh
+|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- guides
+|   |   |   |-- seed_kv_spec.example.json
+|   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- keycloak_approle_setup.sh
+|   |   |-- startover_scripts
+|   |   |   `-- reset_network_tools_docker.sh
+|   |   |-- vault_first_time_init_only_rootless.sh
+|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+|   `-- nginx
+|-- container_data
+|   `-- vault
+|       |-- approle
+|       |   |-- keycloak_agent
+|       |   |   |-- role_id <-- NEW
+|       |   |   `-- secret_id <-- NEW
+|       |   `-- postgres_pgadmin_agent
+|       `-- data
+|           |-- logs
+|           |   `-- audit.log
+|           |-- raft
+|           |   |-- raft.db
+|           |   `-- snapshots
+|           `-- vault.db
+|-- docker-compose.prod.yml
+|-- environment_variable_guide.md
+|-- frontend
+|-- how_to_videos
+|   |-- HOW_TO_3.2 Validate Certificates.mov
+|   |-- HOW_TO_3.3 Start Vault with Docker Compose.mov
+|   |-- HOW_TO_3.6 Initialize and Unseal Vault (First Run).mov
+|   |-- HOW_TO_3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh).mov
+|   `-- HOW_TO_3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh).mov
+|-- README.full.md
+`-- README.md
 ```
 
 Validate the files:
