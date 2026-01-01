@@ -32,6 +32,7 @@ auto_auth {
   sink "file" {
     config = {
       path = "/vault/rendered/.vault-token"
+      mode = 0400
     }
   }
 }
@@ -40,4 +41,18 @@ template {
   source      = "/vault/templates/keycloak.env.ctmpl"
   destination = "/vault/rendered/keycloak.env"
   perms       = "0444"
+}
+
+template {
+  source      = "/vault/templates/keycloak_tls.crt.ctmpl"
+  destination = "/vault/rendered/tls/server.crt"
+  create_dest_dirs = true
+  perms       = "0644"
+}
+
+template {
+  source      = "/vault/templates/keycloak_tls.key.ctmpl"
+  destination = "/vault/rendered/tls/server.key"
+  create_dest_dirs = true
+  perms       = "0644"
 }

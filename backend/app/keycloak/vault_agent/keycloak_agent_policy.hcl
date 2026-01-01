@@ -25,6 +25,14 @@ path "app_postgres_secrets/data/keycloak_runtime" {
   capabilities = ["read"]
 }
 
+path "app_postgres_secrets/data/keycloak_tls" {
+  capabilities = ["read"]
+}
+
+path "app_postgres_secrets/metadata/keycloak_tls" {
+  capabilities = ["list", "read"]
+}
+
 path "app_postgres_secrets/metadata/keycloak_bootstrap" {
   capabilities = ["list", "read"]
 }

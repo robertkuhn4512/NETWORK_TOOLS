@@ -1,0 +1,4 @@
+{{- with secret "app_postgres_secrets/data/keycloak_tls" -}}
+{{- $b64 := index .Data.data "KC_HTTPS_CERTIFICATE_PEM_B64" -}}
+{{- if $b64 -}}{{ $b64 | base64Decode }}{{- end -}}
+{{- end -}}

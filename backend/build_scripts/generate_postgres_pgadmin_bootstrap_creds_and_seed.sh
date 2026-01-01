@@ -82,6 +82,21 @@ KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD=""
 # Keycloak runtime (hostname / server settings) — stored in Vault at: keycloak_runtime
 INCLUDE_KEYCLOAK_RUNTIME=1
 
+# Keycloak TLS material (cert/key/CA) — stored in Vault at: keycloak_tls
+# - This script stores TLS material as BASE64 (single-line) to avoid newline/quoting issues.
+# - By default, this does NOT store the CA private key (ca.key). Keep CA key offline/admin-only.
+INCLUDE_KEYCLOAK_TLS=1
+KEYCLOAK_TLS_REQUIRED=0
+KEYCLOAK_TLS_DIR="${ROOT_DIR}/backend/app/keycloak/certs"
+KEYCLOAK_TLS_CERT_FILE="cert.crt"
+KEYCLOAK_TLS_KEY_FILE="cert.key"
+KEYCLOAK_TLS_CA_FILE="ca.crt"
+
+# Populated at runtime (base64 PEM)
+KEYCLOAK_TLS_CERT_PEM_B64=""
+KEYCLOAK_TLS_KEY_PEM_B64=""
+KEYCLOAK_TLS_CA_PEM_B64=""
+
 #This will need to change or be updated in the TLS certs if / when it's on a normal FQDN
 KEYCLOAK_HOSTNAME="keycloak"
 KEYCLOAK_HOSTNAME_STRICT="true"
@@ -175,6 +190,16 @@ Keycloak (Postgres-backed):
   --keycloak-management-port <port>
   --keycloak-management-scheme <http|https>
 
+
+# TLS material (Vault: keycloak_tls)
+# Stores PEM files as base64 (single line): cert.crt, cert.key, ca.crt
+--no-keycloak-tls               Skip seeding Keycloak TLS material
+--keycloak-tls-required         Fail if TLS files are missing and Vault has no TLS values
+--keycloak-tls-dir <dir>        Default: $HOME/NETWORK_TOOLS/backend/app/keycloak/certs
+--keycloak-tls-cert-file <fn>   Default: cert.crt
+--keycloak-tls-key-file <fn>    Default: cert.key
+--keycloak-tls-ca-file <fn>     Default: ca.crt
+
 Vault / seeding:
   --vault-addr <url>
   --ca-cert <path>
@@ -238,6 +263,14 @@ while [[ $# -gt 0 ]]; do
     --keycloak-management-port) KEYCLOAK_HTTP_MANAGEMENT_PORT="${2:-}"; shift 2;;
     --keycloak-management-scheme) KEYCLOAK_HTTP_MANAGEMENT_SCHEME="${2:-}"; shift 2;;
 
+
+    --no-keycloak-tls) INCLUDE_KEYCLOAK_TLS=0; shift 1;;
+    --keycloak-tls-required) KEYCLOAK_TLS_REQUIRED=1; shift 1;;
+    --keycloak-tls-dir) KEYCLOAK_TLS_DIR="${2:-}"; shift 2;;
+    --keycloak-tls-cert-file) KEYCLOAK_TLS_CERT_FILE="${2:-}"; shift 2;;
+    --keycloak-tls-key-file) KEYCLOAK_TLS_KEY_FILE="${2:-}"; shift 2;;
+    --keycloak-tls-ca-file) KEYCLOAK_TLS_CA_FILE="${2:-}"; shift 2;;
+
     --vault-addr) VAULT_ADDR="${2:-}"; shift 2;;
     --ca-cert) CA_CERT="${2:-}"; shift 2;;
     --tls-skip-verify) TLS_SKIP_VERIFY=1; shift 1;;
@@ -286,6 +319,26 @@ gen_urlsafe() {
     return 0
   fi
   err "Need openssl or base64 to generate random strings."
+}
+
+b64_file_single_line() {
+  # Base64-encode a file to a single line (no trailing newline).
+  # Prefer openssl -A, otherwise base64 + strip newlines.
+  local f="$1"
+  [[ -f "${f}" ]] || return 1
+
+  if command -v openssl >/dev/null 2>&1; then
+    openssl base64 -A -in "${f}" 2>/dev/null || true
+    return 0
+  fi
+
+  if command -v base64 >/dev/null 2>&1; then
+    base64 < "${f}" | tr -d '
+'
+    return 0
+  fi
+
+  return 2
 }
 
 strip_quotes() {
@@ -424,6 +477,33 @@ load_from_local_env_if_present() {
     fi
   fi
 
+  return 0
+}
+
+load_keycloak_tls_from_local_files_if_present() {
+  # Loads Keycloak TLS PEM material from files and stores as base64 (single line).
+  # Requires: cert + key. CA is optional.
+  [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]] || return 1
+  [[ "${INCLUDE_KEYCLOAK_TLS}" -eq 1 ]] || return 1
+
+  local dir="${KEYCLOAK_TLS_DIR}"
+  local crt="${dir%/}/${KEYCLOAK_TLS_CERT_FILE}"
+  local key="${dir%/}/${KEYCLOAK_TLS_KEY_FILE}"
+  local ca="${dir%/}/${KEYCLOAK_TLS_CA_FILE}"
+
+  [[ -f "${crt}" ]] || return 1
+  [[ -f "${key}" ]] || return 1
+
+  KEYCLOAK_TLS_CERT_PEM_B64="$(b64_file_single_line "${crt}" || true)"
+  KEYCLOAK_TLS_KEY_PEM_B64="$(b64_file_single_line "${key}" || true)"
+
+  if [[ -f "${ca}" ]]; then
+    KEYCLOAK_TLS_CA_PEM_B64="$(b64_file_single_line "${ca}" || true)"
+  else
+    KEYCLOAK_TLS_CA_PEM_B64=""
+  fi
+
+  [[ -n "${KEYCLOAK_TLS_CERT_PEM_B64}" && -n "${KEYCLOAK_TLS_KEY_PEM_B64}" ]] || return 2
   return 0
 }
 
@@ -581,6 +661,39 @@ vault_try_load_keycloak_extras_from_vault() {
 
   return 0
 }
+vault_try_load_keycloak_tls_from_vault() {
+  # Attempts to load Keycloak TLS (base64 PEM) from Vault path: keycloak_tls
+  # Expected keys:
+  #   - KC_HTTPS_CERTIFICATE_PEM_B64
+  #   - KC_HTTPS_CERTIFICATE_KEY_PEM_B64
+  #   - KC_HTTPS_CA_CERT_PEM_B64 (optional)
+  [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]] || return 0
+  [[ "${INCLUDE_KEYCLOAK_TLS}" -eq 1 ]] || return 0
+
+  vault_token_acquire_if_needed || return 1
+
+  local tls_path data
+  tls_path="$(prefixed_path keycloak_tls)"
+
+  # If the secret doesn't exist yet, kv2 read returns non-zero; treat that as "not present".
+  data="$(vault_kv2_get_data_json "${VAULT_MOUNT}" "${tls_path}" 2>/dev/null || true)"
+  [[ -n "${data}" ]] || return 0
+
+  local crt key ca
+  crt="$(jq -r '.KC_HTTPS_CERTIFICATE_PEM_B64 // ""' <<<"${data}")"
+  key="$(jq -r '.KC_HTTPS_CERTIFICATE_KEY_PEM_B64 // ""' <<<"${data}")"
+  ca="$(jq -r '.KC_HTTPS_CA_CERT_PEM_B64 // ""' <<<"${data}")"
+
+  if [[ -n "${crt}" && -n "${key}" ]]; then
+    KEYCLOAK_TLS_CERT_PEM_B64="${crt}"
+    KEYCLOAK_TLS_KEY_PEM_B64="${key}"
+    KEYCLOAK_TLS_CA_PEM_B64="${ca}"
+    log "Using existing Vault secret for Keycloak TLS: ${VAULT_MOUNT}/${tls_path}"
+  fi
+
+  return 0
+}
+
 
 # -----------------------------------------------------------------------------
 # Resolve credentials
@@ -601,6 +714,7 @@ fi
 # Even if local artifacts were loaded, Keycloak runtime/bootstrap may still live only in Vault.
 if [[ "${MODE}" == "generate" && "${PREFER_VAULT}" -eq 1 && "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
   vault_try_load_keycloak_extras_from_vault || true
+  vault_try_load_keycloak_tls_from_vault || true
 fi
 
 # Generate missing values (or new ones on rotate)
@@ -659,6 +773,26 @@ if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
 fi
 
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Keycloak TLS (optional)
+# -----------------------------------------------------------------------------
+KEYCLOAK_TLS_PRESENT=0
+if [[ "${INCLUDE_KEYCLOAK}" -eq 1 && "${INCLUDE_KEYCLOAK_TLS}" -eq 1 ]]; then
+  # Prefer local files if present (so generate_local_keycloak_certs.sh output can be seeded).
+  if load_keycloak_tls_from_local_files_if_present; then
+    KEYCLOAK_TLS_PRESENT=1
+    log "Loaded Keycloak TLS material from local files: ${KEYCLOAK_TLS_DIR}"
+  elif [[ -n "${KEYCLOAK_TLS_CERT_PEM_B64}" && -n "${KEYCLOAK_TLS_KEY_PEM_B64}" ]]; then
+    KEYCLOAK_TLS_PRESENT=1
+    log "Keycloak TLS material is available from Vault: ${VAULT_MOUNT}/$(prefixed_path keycloak_tls)"
+  else
+    if [[ "${KEYCLOAK_TLS_REQUIRED}" -eq 1 ]]; then
+      err "Keycloak TLS required but not found. Expected files: ${KEYCLOAK_TLS_DIR}/{${KEYCLOAK_TLS_CERT_FILE},${KEYCLOAK_TLS_KEY_FILE}} or existing Vault secret ${VAULT_MOUNT}/$(prefixed_path keycloak_tls)"
+    fi
+    warn "Keycloak TLS material not found; skipping keycloak_tls seeding."
+  fi
+fi
+
 # Write artifacts (env/json/spec) — no python; use jq to build JSON
 # -----------------------------------------------------------------------------
 cat > "${ENV_FILE}" <<EOF
@@ -715,7 +849,7 @@ fi
 
 # Credentials JSON
 if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
-  jq -n     --arg generated_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"     --arg vault_mount "${VAULT_MOUNT}"     --arg vault_prefix "${VAULT_PREFIX}"     --arg POSTGRES_DB "${POSTGRES_DB}"     --arg POSTGRES_USER "${POSTGRES_USER}"     --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"     --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"     --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"     --arg KC_DB "postgres"     --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}"     --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}"     --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}"     --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}"     --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}"     --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}"     --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}"     --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}"     --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}"     --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}"     --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}"     --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}"     --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}"     --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}"     --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}"     --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}"     '{
+  jq -n     --arg generated_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"     --arg vault_mount "${VAULT_MOUNT}"     --arg vault_prefix "${VAULT_PREFIX}"     --arg POSTGRES_DB "${POSTGRES_DB}"     --arg POSTGRES_USER "${POSTGRES_USER}"     --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"     --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"     --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"     --arg KC_DB "postgres"     --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}"     --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}"     --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}"     --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}"     --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}"     --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}"     --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}"     --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}"     --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}"     --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}"     --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}"     --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}"     --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}"     --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}"     --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}"     --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}"     --arg KEYCLOAK_TLS_PRESENT "${KEYCLOAK_TLS_PRESENT}"     --arg KC_HTTPS_CERTIFICATE_PEM_B64 "${KEYCLOAK_TLS_CERT_PEM_B64}"     --arg KC_HTTPS_CERTIFICATE_KEY_PEM_B64 "${KEYCLOAK_TLS_KEY_PEM_B64}"     --arg KC_HTTPS_CA_CERT_PEM_B64 "${KEYCLOAK_TLS_CA_PEM_B64}"     '{
       generated_at_utc: $generated_at_utc,
       vault: { mount: $vault_mount, prefix: $vault_prefix },
       postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
@@ -742,7 +876,12 @@ if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
         KC_METRICS_ENABLED: $KC_METRICS_ENABLED,
         KC_HTTP_MANAGEMENT_PORT: $KC_HTTP_MANAGEMENT_PORT,
         KC_HTTP_MANAGEMENT_SCHEME: $KC_HTTP_MANAGEMENT_SCHEME
-      }
+      },
+      keycloak_tls: (if $KEYCLOAK_TLS_PRESENT == "1" then {
+        KC_HTTPS_CERTIFICATE_PEM_B64: $KC_HTTPS_CERTIFICATE_PEM_B64,
+        KC_HTTPS_CERTIFICATE_KEY_PEM_B64: $KC_HTTPS_CERTIFICATE_KEY_PEM_B64,
+        KC_HTTPS_CA_CERT_PEM_B64: $KC_HTTPS_CA_CERT_PEM_B64
+      } else null end)
     }' > "${JSON_FILE}"
 else
   jq -n     --arg generated_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"     --arg vault_mount "${VAULT_MOUNT}"     --arg vault_prefix "${VAULT_PREFIX}"     --arg POSTGRES_DB "${POSTGRES_DB}"     --arg POSTGRES_USER "${POSTGRES_USER}"     --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"     --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"     --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"     '{
@@ -753,13 +892,13 @@ else
     }' > "${JSON_FILE}"
 fi
 
-export INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME
+export INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
 # Seed spec JSON (KV v2)
 # Structure required by vault_unseal_multi_kv_seed_bootstrap_rootless.sh:
 # { mounts: [ { mount, version, prefix?, secrets: {...} } ] }
 if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
   if [[ -n "${VAULT_PREFIX}" ]]; then
-    jq -n       --arg mount "${VAULT_MOUNT}"       --arg prefix "${VAULT_PREFIX}"       --arg POSTGRES_DB "${POSTGRES_DB}"       --arg POSTGRES_USER "${POSTGRES_USER}"       --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"       --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"       --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"       --arg KC_DB "postgres"       --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}"       --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}"       --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}"       --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}"       --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}"       --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}"       --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}"       --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}"       --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}"       --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}"       --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}"       --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}"       --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}"       --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}"       --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}"       --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}"       '{
+    jq -n       --arg mount "${VAULT_MOUNT}"       --arg prefix "${VAULT_PREFIX}"       --arg POSTGRES_DB "${POSTGRES_DB}"       --arg POSTGRES_USER "${POSTGRES_USER}"       --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"       --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"       --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"       --arg KC_DB "postgres"       --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}"       --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}"       --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}"       --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}"       --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}"       --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}"       --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}"       --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}"       --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}"       --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}"       --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}"       --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}"       --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}"       --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}"       --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}"       --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}"       --arg KC_HTTPS_CERTIFICATE_PEM_B64 "${KEYCLOAK_TLS_CERT_PEM_B64}"       --arg KC_HTTPS_CERTIFICATE_KEY_PEM_B64 "${KEYCLOAK_TLS_KEY_PEM_B64}"       --arg KC_HTTPS_CA_CERT_PEM_B64 "${KEYCLOAK_TLS_CA_PEM_B64}"       '{
         mounts: [
           {
             mount: $mount,
@@ -776,12 +915,13 @@ if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
               + (if env.INCLUDE_KEYCLOAK_RUNTIME == "1" then { keycloak_runtime: { KC_HOSTNAME: $KC_HOSTNAME, KC_HOSTNAME_STRICT: $KC_HOSTNAME_STRICT, KC_HTTP_ENABLED: $KC_HTTP_ENABLED, KC_HTTPS_PORT: $KC_HTTPS_PORT,
                                                                                  KC_HEALTH_ENABLED: $KC_HEALTH_ENABLED, KC_METRICS_ENABLED: $KC_METRICS_ENABLED, KC_HTTP_MANAGEMENT_PORT: $KC_HTTP_MANAGEMENT_PORT,
                                                                                  KC_HTTP_MANAGEMENT_SCHEME: $KC_HTTP_MANAGEMENT_SCHEME } } else {} end)
+              + (if env.KEYCLOAK_TLS_PRESENT == "1" then { keycloak_tls: { KC_HTTPS_CERTIFICATE_PEM_B64: $KC_HTTPS_CERTIFICATE_PEM_B64, KC_HTTPS_CERTIFICATE_KEY_PEM_B64: $KC_HTTPS_CERTIFICATE_KEY_PEM_B64, KC_HTTPS_CA_CERT_PEM_B64: $KC_HTTPS_CA_CERT_PEM_B64 } } else {} end)
             )
           }
         ]
       }' > "${SPEC_FILE}"
   else
-    jq -n       --arg mount "${VAULT_MOUNT}"       --arg POSTGRES_DB "${POSTGRES_DB}"       --arg POSTGRES_USER "${POSTGRES_USER}"       --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"       --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"       --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"       --arg KC_DB "postgres"       --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}"       --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}"       --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}"       --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}"       --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}"       --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}"       --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}"       --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}"       --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}"       --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}"       --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}"       --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}"       --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}"       --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}"       --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}"       --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}"       '{
+    jq -n       --arg mount "${VAULT_MOUNT}"       --arg POSTGRES_DB "${POSTGRES_DB}"       --arg POSTGRES_USER "${POSTGRES_USER}"       --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"       --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"       --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"       --arg KC_DB "postgres"       --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}"       --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}"       --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}"       --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}"       --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}"       --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}"       --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}"       --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}"       --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}"       --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}"       --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}"       --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}"       --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}"       --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}"       --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}"       --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}"       --arg KC_HTTPS_CERTIFICATE_PEM_B64 "${KEYCLOAK_TLS_CERT_PEM_B64}"       --arg KC_HTTPS_CERTIFICATE_KEY_PEM_B64 "${KEYCLOAK_TLS_KEY_PEM_B64}"       --arg KC_HTTPS_CA_CERT_PEM_B64 "${KEYCLOAK_TLS_CA_PEM_B64}"       '{
         mounts: [
           {
             mount: $mount,
@@ -797,6 +937,7 @@ if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
               + (if env.INCLUDE_KEYCLOAK_RUNTIME == "1" then { keycloak_runtime: { KC_HOSTNAME: $KC_HOSTNAME, KC_HOSTNAME_STRICT: $KC_HOSTNAME_STRICT, KC_HTTP_ENABLED: $KC_HTTP_ENABLED, KC_HTTPS_PORT: $KC_HTTPS_PORT,
                                                                                  KC_HEALTH_ENABLED: $KC_HEALTH_ENABLED, KC_METRICS_ENABLED: $KC_METRICS_ENABLED, KC_HTTP_MANAGEMENT_PORT: $KC_HTTP_MANAGEMENT_PORT,
                                                                                  KC_HTTP_MANAGEMENT_SCHEME: $KC_HTTP_MANAGEMENT_SCHEME } } else {} end)
+              + (if env.KEYCLOAK_TLS_PRESENT == "1" then { keycloak_tls: { KC_HTTPS_CERTIFICATE_PEM_B64: $KC_HTTPS_CERTIFICATE_PEM_B64, KC_HTTPS_CERTIFICATE_KEY_PEM_B64: $KC_HTTPS_CERTIFICATE_KEY_PEM_B64, KC_HTTPS_CA_CERT_PEM_B64: $KC_HTTPS_CA_CERT_PEM_B64 } } else {} end)
             )
           }
         ]

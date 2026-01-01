@@ -4,20 +4,21 @@ This document describes how to prepare a fresh **Ubuntu ARM** server (running in
 
 Initial focus:
 
+- Rootless Docker for running these services under a non-privileged account
 - Basic system preparation
 - Fixing a common slow `sudo` issue
 - Creating a dedicated development user and code root
 - Setting up SSH keys
-- Hardening SSH access (while keeping a safe fallback)
+- Hardening SSH access (while keeping a safe fallback
+- postgres
+- HashiCorp Vault
+- Keycloak
 
 Later, this server will host:
 
 - FastAPI applications
-- MariaDB
-- postgres
-- HashiCorp Vault
-- Keycloak
-- Rootless Docker for running these services under a non-privileged account
+
+
 
 ---
 
@@ -94,6 +95,8 @@ Later, this server will host:
     - [4.3.4 Verify and connect](#434-verify-and-connect)
     - [4.3.5 Troubleshooting](#435-troubleshooting)
   - [4.4 Startup credential options (choose one)](#44-startup-credential-options-choose-one)
+  - [4.5 Apply Vault credentials to an existing Postgres cluster](#45-apply-vault-credentials-to-an-existing-postgres-cluster)
+  - [4.6 Rotation runbook (static credentials)](#46-rotation-runbook-static-credentials)
 - [5. pgAdmin](#5-pgadmin)
   - [5.1 Bootstrap credentials (generate + seed)](#51-bootstrap-credentials-generate--seed)
   - [5.2 Retrieve credentials from Vault](#52-retrieve-credentials-from-vault)
@@ -125,6 +128,20 @@ Later, this server will host:
     - [6.4.5 Create a Vault role that defines how dynamic users are created](#645-create-a-vault-role-that-defines-how-dynamic-users-are-created)
     - [6.4.6 Fetch credentials and validate](#646-fetch-credentials-and-validate)
     - [6.4.7 Rotation (future-facing)](#647-rotation-future-facing)
+- [7. Keycloak Vault Integration Bootstrapping](#7-keycloak-vault-integration-bootstrapping)
+  - [7.1 Vault KV paths and required keys](#71-vault-kv-paths-and-required-keys)
+  - [7.2 Seeding Keycloak secrets into Vault](#72-seeding-keycloak-secrets-into-vault)
+  - [7.3 Vault Agent sidecar for Keycloak](#73-vault-agent-sidecar-for-keycloak)
+    - [7.3.1 Create a least-privilege Vault policy](#731-create-a-least-privilege-vault-policy)
+    - [7.3.2 Create an AppRole for the Keycloak agent](#732-create-an-approle-for-the-keycloak-agent)
+    - [7.3.3 Host-side export script (role_id + secret_id)](#733-host-side-export-script-role_id--secret_id)
+    - [7.3.4 Vault Agent config + template](#734-vault-agent-config--template)
+    - [7.3.5 Docker Compose wiring](#735-docker-compose-wiring)
+    - [7.3.6 Bring-up and verification](#736-bring-up-and-verification)
+    - [7.3.7 Troubleshooting](#737-troubleshooting)
+    - [7.3.8 Rotation and operational notes](#738-rotation-and-operational-notes)
+  - [7.4 Keycloak hardening notes](#74-keycloak-hardening-notes)
+
 - [Appendix A – Certificate Management](#appendix-a--certificate-management)
   - [A.1 Vault TLS Certificates – What to Keep and Where](#a1-vault-tls-certificates--what-to-keep-and-where)
     - [1. Files That Must Be Treated as Secrets](#1-files-that-must-be-treated-as-secrets)
@@ -147,28 +164,38 @@ Later, this server will host:
   - [B.7 Vault-specific hardening (forward-looking)](#b7-vault-specific-hardening-forward-looking)
 
 
+
+- [8. Lessons learned and common issues](#8-lessons-learned-and-common-issues)
+  - [8.1 Vault Agent sidecar gotchas](#81-vault-agent-sidecar-gotchas)
+  - [8.2 Template and rendering pitfalls](#82-template-and-rendering-pitfalls)
+  - [8.3 Container entrypoint and permissions pitfalls](#83-container-entrypoint-and-permissions-pitfalls)
+  - [8.4 Postgres credential drift and how to fix it](#84-postgres-credential-drift-and-how-to-fix-it)
 ---
 
 ## 0. Repository File Structure
 
-Use this section to document the repository layout on the server. The easiest way to keep it current is to run
-`tree` at the project root and paste the output into the fenced block below.
-
-> Suggested command: `tree -a -L 8`
-
 ```text
-developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
-.
+Base Directory Structure - This is what you should start with prior to running any scripts.
+
+developer_network_tools@networktoolsvm:~$ tree NETWORK_TOOLS --charset ascii
+NETWORK_TOOLS
 |-- backend
 |   |-- app
+|   |   |-- keycloak
+|   |   |   |-- bin
+|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+|   |   |   |-- scripts
+|   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       |-- keycloak_agent_policy.hcl
+|   |   |       `-- templates
+|   |   |           |-- keycloak.env.ctmpl
+|   |   |           |-- keycloak_tls.crt.ctmpl
+|   |   |           `-- keycloak_tls.key.ctmpl
 |   |   |-- mariadb_queries
 |   |   |-- postgres
 |   |   |   |-- certs
-|   |   |   |   |-- ca.crt
-|   |   |   |   |-- ca.key
-|   |   |   |   |-- ca.srl
-|   |   |   |   |-- cert.crt
-|   |   |   |   `-- cert.key
 |   |   |   |-- config
 |   |   |   |   |-- pg_hba.conf
 |   |   |   |   `-- postgres.conf
@@ -185,55 +212,37 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   `-- security
 |   |       `-- configuration_files
 |   |           `-- vault
-|   |               |-- bootstrap
-|   |               |   |-- postgres_pgadmin_credentials.json
-|   |               |   |-- postgres_pgadmin.env
-|   |               |   |-- root_token
-|   |               |   |-- root_token.json
-|   |               |   `-- unseal_keys.json
-|   |               |-- certs
-|   |               |   |-- ca.crt
-|   |               |   |-- ca.key
-|   |               |   |-- ca.srl
-|   |               |   |-- cert.crt
-|   |               |   `-- cert.key
 |   |               |-- config
 |   |               |   |-- certs
+|   |               |   |-- keycloak_kv_read.hcl
 |   |               |   |-- postgres_pgadmin_kv_read.hcl
 |   |               |   `-- vault_configuration_primary_node.hcl
 |   |               `-- Dockerfile
 |   |-- build_scripts
+|   |   |-- generate_local_keycloak_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
 |   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
 |   |   |-- guides
-|   |   |   |-- seed_kv_spec.example.json
+|   |   |   |-- seed_kv_spec.example.json (I haven't decided if i'm keeping these. I need to test them more and possibly rewrite them
 |   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- keycloak_approle_setup.sh
+|   |   |-- startover_scripts
+|   |   |   `-- reset_network_tools_docker.sh
 |   |   |-- vault_first_time_init_only_rootless.sh
 |   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
 |   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
 |   `-- nginx
-|-- container_data
-|   |-- postgres
-|   |   `-- data
-|   |       `-- pgdata
-|   `-- vault
-|       `-- data
-|           |-- logs
-|           |   |-- audit.log
-|           |   `-- vault.log
-|           |-- raft
-|           |   |-- raft.db
-|           |   `-- snapshots
-|           `-- vault.db
 |-- docker-compose.prod.yml
 |-- environment_variable_guide.md
 |-- frontend
+|-- how_to_videos (TODO: Add updated how to Videos
+|
 `-- readme.md
+
 ```
 
 ---
-
 ## 0.1 Vault AppRole Authentication (Role ID and Secret ID)
 
 This project uses Vault **AppRole** auth for non-interactive services (for example, the Postgres/pgAdmin Vault Agent) to obtain a Vault token at runtime.
@@ -463,7 +472,7 @@ Many setup/validation commands below run the Vault CLI **inside** the Vault cont
   - Use a **non-root user** for day-to-day work and development.
   - Restrict SSH to **key-based authentication**.
   - Run **rootless Docker** under a dedicated development account.
-  - Host **MariaDB**, **postgres**, **Vault**, and **Keycloak** in containers later.
+  - Host **postgres**, **Vault**, and **Keycloak** in containers later.
 
 > **Note:** For commands prefixed with `sudo`, run them from your normal user.  
 > If you are logged in as `root`, you can omit `sudo`.
@@ -1060,6 +1069,7 @@ running Docker (see Section 3.4).
    sudo apt update
    sudo apt install -y openssl
    ```
+<span id="vault-bootstrap-create-local-certs"></span>Run the certificate generator (developer user):
 
 2. Run the certificate generator (developer user):
 
@@ -1073,33 +1083,79 @@ running Docker (see Section 3.4).
 >The following files created.
 
    ```bash
-   |-- backend
-   |   |-- app
-   |   |   |-- mariadb_queries
-   |   |   |-- postgres
-   |   |   |   |-- certs
-   |   |   |   |-- config
-   |   |   |   |   |-- pg_hba.conf
-   |   |   |   |   `-- postgres.conf
-   |   |   |   |-- scripts
-   |   |   |   |   `-- export_approle_from_vault_container.sh
-   |   |   |   `-- vault_agent
-   |   |   |       |-- agent.hcl
-   |   |   |       `-- templates
-   |   |   |           |-- pgadmin_password.ctmpl
-   |   |   |           |-- postgres_db.ctmpl
-   |   |   |           |-- postgres_password.ctmpl
-   |   |   |           `-- postgres_user.ctmpl
-   |   |   |-- routers
-   |   |   `-- security
-   |   |       `-- configuration_files
-   |   |           `-- vault
-   |   |               |-- certs
-   |   |               |   |-- ca.crt <- NEW
-   |   |               |   |-- ca.key <- NEW - Can be removed to safe storage
-   |   |               |   |-- ca.srl <- NEW - Can be removed to safe storage
-   |   |               |   |-- cert.crt <- NEW
-   |   |               |   `-- cert.key <- NEW
+   developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
+    .
+    |-- backend
+    |   |-- app
+    |   |   |-- keycloak
+    |   |   |   |-- bin
+    |   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+    |   |   |   |-- scripts
+    |   |   |   |   `-- export_approle_from_vault_keycloak_container.sh
+    |   |   |   `-- vault_agent
+    |   |   |       |-- agent.hcl
+    |   |   |       |-- keycloak_agent_policy.hcl
+    |   |   |       `-- templates
+    |   |   |           |-- keycloak.env.ctmpl
+    |   |   |           |-- keycloak_tls.crt.ctmpl
+    |   |   |           `-- keycloak_tls.key.ctmpl
+    |   |   |-- mariadb_queries
+    |   |   |-- postgres
+    |   |   |   |-- certs
+    |   |   |   |-- config
+    |   |   |   |   |-- pg_hba.conf
+    |   |   |   |   `-- postgres.conf
+    |   |   |   |-- scripts
+    |   |   |   |   `-- export_approle_from_vault_container.sh
+    |   |   |   `-- vault_agent
+    |   |   |       |-- agent.hcl
+    |   |   |       `-- templates
+    |   |   |           |-- pgadmin_password.ctmpl
+    |   |   |           |-- postgres_db.ctmpl
+    |   |   |           |-- postgres_password.ctmpl
+    |   |   |           `-- postgres_user.ctmpl
+    |   |   |-- routers
+    |   |   `-- security
+    |   |       `-- configuration_files
+    |   |           `-- vault
+    |   |               |-- certs
+    |   |               |   |-- ca.crt <- NEW
+    |   |               |   |-- ca.key <- NEW - Can be removed to safe storage
+    |   |               |   |-- ca.srl <- NEW - Can be removed to safe storage
+    |   |               |   |-- cert.crt <- NEW
+    |   |               |   `-- cert.key <- NEW
+    |   |               |-- config
+    |   |               |   |-- certs
+    |   |               |   |-- keycloak_kv_read.hcl
+    |   |               |   |-- postgres_pgadmin_kv_read.hcl
+    |   |               |   `-- vault_configuration_primary_node.hcl
+    |   |               `-- Dockerfile
+    |   |-- build_scripts
+    |   |   |-- generate_local_keycloak_certs.sh
+    |   |   |-- generate_local_postgres_certs.sh
+    |   |   |-- generate_local_vault_certs.sh
+    |   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+    |   |   |-- guides
+    |   |   |   |-- seed_kv_spec.example.json
+    |   |   |   `-- seed_kv_spec.GUIDE.md
+    |   |   |-- keycloak_approle_setup.sh
+    |   |   |-- startover_scripts
+    |   |   |   `-- reset_network_tools_docker.sh
+    |   |   |-- vault_first_time_init_only_rootless.sh
+    |   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+    |   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+    |   `-- nginx
+    |-- docker-compose.prod.yml
+    |-- environment_variable_guide.md
+    |-- frontend
+    |-- how_to_videos
+    |   |-- HOW_TO_3.2 Validate Certificates.mov
+    |   |-- HOW_TO_3.3 Start Vault with Docker Compose.mov
+    |   |-- HOW_TO_3.6 Initialize and Unseal Vault (First Run).mov
+    |   |-- HOW_TO_3.8.3 Single-Mount Seeder (vault_unseal_kv_seed_bootstrap_rootless.sh).mov
+    |   `-- HOW_TO_3.8.4 Multi-Mount Seeder (vault_unseal_multi_kv_seed_bootstrap_rootless.sh).mov
+    |-- README.full.md
+    `-- README.md
    ```
 
 3. Confirm expected outputs exist:
@@ -1139,6 +1195,25 @@ else
   # Best-effort fallback (may fail if CERT is a fullchain)
   openssl verify -CAfile "$CA" "$CERT" || true
 fi
+
+See below for the expected output you should see. 
+Your output may vary a bit depending on how your server is setup.
+
+(LOCAL CERTIFICATES BEING USED)
+
+Key is valid
+subject=CN = vault_production_node
+issuer=CN = NETWORK_TOOLS Local Vault CA
+notBefore=Jan  1 03:13:33 2026 GMT
+notAfter=Apr  5 03:13:33 2028 GMT
+SHA2-256(stdin)= 4148080bacac7a147981ef2d6e0608dc135d1685fffb4da16748fbd0300e6193
+SHA2-256(stdin)= 4148080bacac7a147981ef2d6e0608dc135d1685fffb4da16748fbd0300e6193
+            X509v3 Subject Alternative Name: 
+                DNS:vault_production_node, IP Address:172.16.99.130
+            X509v3 Subject Key Identifier: 
+/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/cert.crt: OK
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ 
+
 ```
 
 ### 3.3 Start Vault with Docker Compose
@@ -2353,6 +2428,65 @@ Operational note:
 - The bootstrap script supports this workflow via `--mode rotate` (and optionally `--apply-to-postgres`). See **4.1** and **6.3.7**.
 
 
+
+### 4.5 Apply Vault credentials to an existing Postgres cluster
+
+Use this when **secrets already exist** (local bootstrap file and/or Vault), but the Postgres data directory has already been initialized and you need to **create/align roles and databases** inside the running cluster.
+
+Key points:
+
+- `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` are only consumed by the Postgres image **on first initialization** (when the data directory is empty).
+- After that, changing env values (or Vault values) does **not** change users/passwords inside Postgres; you must apply changes with SQL (for example, `ALTER ROLE ... WITH PASSWORD ...`).
+
+Recommended “sync/apply” command (does **not** re-seed Vault):
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh   --vault-addr "https://vault_production_node:8200"   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"   --unseal-required 3   --no-seed   --apply-to-postgres
+```
+
+Operational notes:
+
+- By default, `--apply-to-postgres` will try to bring up `postgres_primary` (via Compose) if it is not already running, then wait for it to accept connections.
+- If you want to manage Postgres startup yourself, add `--no-auto-start-postgres`.
+- If Postgres is slow to start (first init, fsync, etc.), increase `--wait-postgres-seconds`.
+
+### 4.6 Rotation runbook (static credentials)
+
+This repo currently uses **static** database credentials stored in Vault KV (as opposed to Vault’s database secrets engine issuing dynamic, leased credentials). Static creds are simple, but rotation must be handled intentionally.
+
+Rotation always has two parts:
+
+1) **Rotate in Vault** so the new value is the source of truth (and so Vault Agent sidecars render the updated secret).
+2) **Rotate in Postgres** so the role password in the cluster matches Vault.
+
+Rotate + apply in one workflow (recommended):
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh   --vault-addr "https://vault_production_node:8200"   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"   --unseal-required 3   --mode rotate   --apply-to-postgres
+```
+
+What this accomplishes:
+
+- Generates new passwords (unless you explicitly pass values).
+- Writes updated values to Vault KV (unless `--no-seed`).
+- Updates Postgres roles/databases to match the new Vault values.
+
+After rotation:
+
+- Restart dependent services (pgAdmin, Keycloak, application backends) so they pick up the new rendered credentials.
+- If using Vault Agent sidecars, confirm the rendered files have changed before restarting application containers.
+
+If you want to rotate only a subset:
+
+- Prefer `--mode rotate` plus explicit values for the passwords you want to rotate, and reuse existing values for everything else.
+- Use `--no-keycloak` / `--no-keycloak-bootstrap` / `--no-keycloak-runtime` (as applicable) when you want to avoid updating Keycloak-related secrets.
+
+
+
 ## 5. pgAdmin
 
 This section documents the bootstrap credential(s) used by **pgAdmin** and how they are stored alongside the postgres credentials.
@@ -2732,29 +2866,49 @@ Operational notes:
 #### 6.3.3.2 Manual commands (fully expanded; no script)
 
 ```bash
+set -euo pipefail
+
 cd "$HOME/NETWORK_TOOLS"
 umask 077
 
+# --- Vault container/CLI context ------------------------------------------------
 VAULT_CONTAINER="vault_production_node"
 VAULT_ADDR="https://vault_production_node:8200"
 VAULT_CACERT_CONTAINER="/vault/certs/ca.crt"
 
+# --- AppRole -------------------------------------------------------------------
 ROLE_NAME="postgres_pgadmin_agent"
 
+# --- Bootstrap token (host) ----------------------------------------------------
 BOOTSTRAP_DIR="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap"
 VAULT_TOKEN="$(cat "$BOOTSTRAP_DIR/root_token")"
 
+# --- Output directory (host) ---------------------------------------------------
 OUT_DIR="$HOME/NETWORK_TOOLS/container_data/vault/approle/${ROLE_NAME}"
 mkdir -p "$OUT_DIR"
 
-# role_id -> host file
-docker exec   -e VAULT_ADDR="$VAULT_ADDR"   -e VAULT_CACERT="$VAULT_CACERT_CONTAINER"   -e VAULT_TOKEN="$VAULT_TOKEN"   "$VAULT_CONTAINER"   vault read -format=json "auth/approle/role/${ROLE_NAME}/role-id"   | jq -r '.data.role_id' > "$OUT_DIR/role_id"
+# --- Fetch role_id -> host file ------------------------------------------------
+docker exec \
+  -e VAULT_ADDR="$VAULT_ADDR" \
+  -e VAULT_CACERT="$VAULT_CACERT_CONTAINER" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  "$VAULT_CONTAINER" \
+  vault read -format=json "auth/approle/role/${ROLE_NAME}/role-id" \
+| jq -r '.data.role_id' > "$OUT_DIR/role_id"
 
-# secret_id -> host file
-docker exec   -e VAULT_ADDR="$VAULT_ADDR"   -e VAULT_CACERT="$VAULT_CACERT_CONTAINER"   -e VAULT_TOKEN="$VAULT_TOKEN"   "$VAULT_CONTAINER"   vault write -format=json -f "auth/approle/role/${ROLE_NAME}/secret-id"   | jq -r '.data.secret_id' > "$OUT_DIR/secret_id"
+# --- Generate secret_id -> host file ------------------------------------------
+docker exec \
+  -e VAULT_ADDR="$VAULT_ADDR" \
+  -e VAULT_CACERT="$VAULT_CACERT_CONTAINER" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  "$VAULT_CONTAINER" \
+  vault write -format=json -f "auth/approle/role/${ROLE_NAME}/secret-id" \
+| jq -r '.data.secret_id' > "$OUT_DIR/secret_id"
 
+# --- Lock down permissions and show results -----------------------------------
 chmod 600 "$OUT_DIR/role_id" "$OUT_DIR/secret_id"
 ls -lah "$OUT_DIR"
+
 ```
 
 Operational notes:
@@ -3018,6 +3172,28 @@ docker compose -f docker-compose.prod.yml up -d --no-deps --no-recreate pgadmin
 
 - Your templates directory is not mounted, or the filename in `agent.hcl` does not match the template file on disk.
 - Confirm the mount and paths:
+
+**C) Vault Agent: `error creating file sink: ... open /run/vault/.vault-token.tmp... no such file or directory`**
+
+- Cause: the sink directory does not exist (Vault Agent does not create it), or it is not writable.
+- Fix (recommended): set the sink path to a directory that always exists and is writable in a hardened container, e.g. `/tmp/.vault-token` (with `tmpfs: ["/tmp"]`).
+- Fix (alternative): pre-create the directory in the container entrypoint before starting the agent:
+
+```sh
+mkdir -p /run/vault
+exec vault agent -config=/vault/agent/agent.hcl
+```
+
+**D) Vault Agent: `error getting path or data from method: error="no known role ID"`**
+
+- Cause: `role_id` is missing/empty in the mounted AppRole directory, or the agent is pointed at the wrong path.
+- Confirm from inside the agent container:
+
+```bash
+docker exec -it vault_agent_postgres_pgadmin sh -lc 'ls -lah /vault/approle && sed -n "1,2p" /vault/approle/role_id'
+```
+
+- If the file is missing, re-run the host-side export step (see **6.3.3**) to regenerate `role_id` and `secret_id`.
 
 ```bash
 docker exec -it vault_agent_postgres_pgadmin sh -lc '
@@ -3299,6 +3475,418 @@ High-level steps (outline):
 4) Update your apps to request credentials from Vault at runtime.
 
 When you adopt this, keep the initial bootstrap password in Vault as a break-glass/admin secret, but prefer dynamic roles for day-to-day service auth.
+
+
+## 7. Keycloak Vault Integration Bootstrapping
+
+This section mirrors the Postgres/pgAdmin pattern in **6.3** (Vault Agent renders secrets to a shared volume), but adapts it for Keycloak’s configuration model.
+
+Keycloak is **not** expected to talk to Vault directly. Instead:
+
+- A **Vault Agent** container authenticates with **AppRole**, reads KV secrets, and renders a file.
+- The **Keycloak container** reads that rendered output at startup (via an entrypoint wrapper script).
+
+### 7.1 Vault KV paths and required keys
+
+This repo assumes KV v2 mounted at `app_postgres_secrets`, and the following **existing** paths (you confirmed these are the canonical locations):
+
+- `app_postgres_secrets/keycloak_postgres`  
+  Database connection settings for Keycloak (schema/user/password/host/port/database).
+
+- `app_postgres_secrets/keycloak_bootstrap`  
+  Bootstrap admin credentials for first startup (or controlled re-bootstrap).
+
+- `app_postgres_secrets/keycloak_runtime`  
+  Runtime settings such as hostname/proxy mode/listeners/observability flags.
+
+- `app_postgres_secrets/keycloak_tls`  
+  TLS material for Keycloak (server certificate and private key). This repo stores PEM values as **base64 strings** in Vault and decodes them in Vault Agent templates.
+
+For KV v2, the Vault API paths used by the agent include `/data/` (example: `app_postgres_secrets/data/keycloak_postgres`).
+
+Minimum recommended keys per path:
+
+**A) `app_postgres_secrets/keycloak_postgres`**
+
+- `KC_DB` (recommended: `postgres`)
+- `KC_DB_URL_HOST` (example: `postgres_primary`)
+- `KC_DB_URL_PORT` (example: `5432`)
+- `KC_DB_URL_DATABASE` (example: `keycloak`)
+- `KC_DB_USERNAME` (example: `keycloak`)
+- `KC_DB_PASSWORD` (random, high-entropy)
+- `KC_DB_SCHEMA` (example: `keycloak`)
+
+**B) `app_postgres_secrets/keycloak_bootstrap`**
+
+- `KC_BOOTSTRAP_ADMIN_USERNAME` (example: `admin`)
+- `KC_BOOTSTRAP_ADMIN_PASSWORD` (random, high-entropy)
+
+**C) `app_postgres_secrets/keycloak_runtime`** (optional keys; only set what you need)
+
+- `KC_HOSTNAME` (example: `keycloak.yourdomain.edu`)
+- `KC_HOSTNAME_STRICT` (`true` or `false`)
+- `KC_PROXY_HEADERS` (typical values depend on your L7 proxy; confirm in Keycloak docs)
+- `KC_HTTP_ENABLED` (`true` or `false`)
+- `KC_HTTPS_PORT` (example: `8443` when exposing 8443)
+- `KC_HEALTH_ENABLED` (`true` or `false`)
+- `KC_METRICS_ENABLED` (`true` or `false`)
+- `KC_LOG_LEVEL` (example: `INFO`)
+
+`keycloak_tls` (TLS material, base64-encoded PEM):
+
+- `KC_HTTPS_CERTIFICATE_PEM_B64` (base64 of the server certificate PEM)
+- `KC_HTTPS_CERTIFICATE_KEY_PEM_B64` (base64 of the server private key PEM)
+
+### 7.2 Seeding Keycloak secrets into Vault
+
+You can seed Keycloak secrets either via the repo seeding workflow (recommended), or via direct `vault kv put` commands.
+
+Manual seeding examples (from the host, using `docker exec` into the Vault container):
+
+```bash
+# DB config
+docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  vault_production_node \
+  vault kv put app_postgres_secrets/keycloak_postgres \
+    KC_DB="postgres" \
+    KC_DB_URL_HOST="postgres_primary" \
+    KC_DB_URL_PORT="5432" \
+    KC_DB_URL_DATABASE="keycloak" \
+    KC_DB_USERNAME="keycloak" \
+    KC_DB_PASSWORD="<REDACTED>" \
+    KC_DB_SCHEMA="keycloak"
+
+# Bootstrap admin (treat as sensitive; rotate after first use)
+docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  vault_production_node \
+  vault kv put app_postgres_secrets/keycloak_bootstrap \
+    KC_BOOTSTRAP_ADMIN_USERNAME="admin" \
+    KC_BOOTSTRAP_ADMIN_PASSWORD="<REDACTED>"
+
+# Runtime knobs
+docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  vault_production_node \
+  vault kv put app_postgres_secrets/keycloak_runtime \
+    KC_HOSTNAME="keycloak.yourdomain.edu" \
+    KC_HOSTNAME_STRICT="true" \
+    KC_HTTP_ENABLED="false" \
+    KC_HTTPS_PORT="8443" \
+    KC_HEALTH_ENABLED="true" \
+    KC_METRICS_ENABLED="true" \
+    KC_LOG_LEVEL="INFO"
+```
+
+Validation (KV v2):
+
+```bash
+docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  vault_production_node \
+  vault kv get -format=json app_postgres_secrets/keycloak_postgres | jq -r '.data.data'
+```
+
+
+#### 7.2.1 TLS material (local certs → Vault KV)
+
+If you run Keycloak in production mode with HTTPS enabled (`KC_HTTP_ENABLED="false"`), you must provide Keycloak with a certificate and private key.
+
+This repo’s Vault Agent templates expect **base64-encoded PEM** values stored in Vault:
+
+- `KC_HTTPS_CERTIFICATE_PEM_B64`
+- `KC_HTTPS_CERTIFICATE_KEY_PEM_B64`
+
+Recommended workflow:
+
+1) Generate local Keycloak TLS material (repo-managed files):
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+# Generates backend/app/keycloak/certs/{server.crt,server.key,ca.crt}
+bash ./backend/app/keycloak/certs/generate_local_keycloak_certs.sh
+```
+
+2) Seed those files into Vault (encode as base64 to preserve newlines safely):
+
+```bash
+cd "$HOME/NETWORK_TOOLS"
+
+CERT_B64="$(base64 -w0 ./backend/app/keycloak/certs/server.crt)"
+KEY_B64="$(base64 -w0 ./backend/app/keycloak/certs/server.key)"
+
+docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv put app_postgres_secrets/keycloak_tls     KC_HTTPS_CERTIFICATE_PEM_B64="$CERT_B64"     KC_HTTPS_CERTIFICATE_KEY_PEM_B64="$KEY_B64"
+```
+
+3) Verify:
+
+```bash
+docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv get app_postgres_secrets/keycloak_tls
+```
+
+Vault Agent will decode and render:
+
+- `/run/vault/tls/server.crt`
+- `/run/vault/tls/server.key`
+
+
+
+### 7.3 Vault Agent sidecar for Keycloak
+
+The Keycloak Vault Agent follows the same primitives as Postgres/pgAdmin:
+
+1) Least-privilege policy
+2) AppRole bound to that policy
+3) Host-side export of `role_id` + `secret_id`
+4) Agent renders `/run/vault/keycloak.env` (mounted as a shared volume)
+
+#### 7.3.1 Create a least-privilege Vault policy
+
+Create a dedicated policy (example name: `keycloak_agent`) that grants **read-only** access to the three KV paths:
+
+```hcl
+# keycloak_agent_policy.hcl
+path "auth/token/lookup-self" { capabilities = ["read"] }
+path "auth/token/renew-self"  { capabilities = ["update"] }
+
+path "app_postgres_secrets/data/keycloak_postgres"   { capabilities = ["read"] }
+path "app_postgres_secrets/data/keycloak_bootstrap" { capabilities = ["read"] }
+path "app_postgres_secrets/data/keycloak_runtime"   { capabilities = ["read"] }
+
+# Optional metadata access for troubleshooting
+path "app_postgres_secrets/metadata/keycloak_postgres"   { capabilities = ["list","read"] }
+path "app_postgres_secrets/metadata/keycloak_bootstrap" { capabilities = ["list","read"] }
+path "app_postgres_secrets/metadata/keycloak_runtime"   { capabilities = ["list","read"] }
+```
+
+Apply it:
+
+```bash
+docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  vault_production_node \
+  vault policy write keycloak_agent /vault/policies/keycloak_agent_policy.hcl
+```
+
+#### 7.3.2 Create an AppRole for the Keycloak agent
+
+```bash
+docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  vault_production_node \
+  vault write auth/approle/role/keycloak_agent \
+    token_policies="keycloak_agent" \
+    token_ttl="20m" token_max_ttl="60m" \
+    secret_id_ttl="24h" secret_id_num_uses=1
+```
+
+#### 7.3.3 Host-side export script (role_id + secret_id)
+
+Standardize on the same host artifact pattern used elsewhere:
+
+- Host directory: `./container_data/vault/approle/keycloak_agent/`
+- Files:
+  - `role_id`
+  - `secret_id`
+
+Recommended: use the repo script:
+
+```bash
+bash ./backend/build_scripts/keycloak_approle_setup.sh \
+  --ca-cert "./backend/app/security/configuration_files/vault/certs/ca.crt"
+```
+
+Validate the files:
+
+```bash
+ls -lah ./container_data/vault/approle/keycloak_agent
+sed -n "1,2p" ./container_data/vault/approle/keycloak_agent/role_id
+sed -n "1,2p" ./container_data/vault/approle/keycloak_agent/secret_id
+```
+
+#### 7.3.4 Vault Agent config + template
+
+Recommended directory layout:
+
+```
+backend/app/keycloak/vault_agent/
+  agent.hcl
+  templates/
+    keycloak.env.ctmpl
+```
+
+Key guidance based on observed failures:
+
+- Vault Agent templates do **not** support Sprig’s `default` function. Use `or`, `if`, and `with`.
+- Avoid `%!q(<nil>)` output by guarding optional values (only emit lines when keys exist).
+- Prefer the token sink under `/tmp` (tmpfs) to avoid `/run/vault` directory issues.
+
+Template destination:
+
+- Agent writes: `/vault/rendered/keycloak.env`
+- Keycloak container mounts the same volume at: `/run/vault/keycloak.env`
+
+#### 7.3.5 Docker Compose wiring
+
+High-level compose requirements:
+
+- A named volume (example): `keycloak_vault_rendered`
+- `vault_agent_keycloak` mounts it at `/vault/rendered`
+- `keycloak` mounts it read-only at `/run/vault`
+
+A minimal (representative) pattern:
+
+```yaml
+volumes:
+  keycloak_vault_rendered:
+
+services:
+  vault_agent_keycloak:
+    image: hashicorp/vault:1.21.1
+    container_name: vault_agent_keycloak
+    restart: unless-stopped
+    depends_on:
+      - vault_production_node
+    entrypoint: ["/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    volumes:
+      - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
+      - ./backend/app/keycloak/vault_agent/agent.hcl:/vault/agent/agent.hcl:ro
+      - ./backend/app/keycloak/vault_agent/templates:/vault/templates:ro
+      - ./container_data/vault/approle/keycloak_agent:/vault/approle:ro
+      - keycloak_vault_rendered:/vault/rendered
+    healthcheck:
+      test: ["CMD-SHELL","test -s /vault/rendered/keycloak.env" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  keycloak:
+    # Pin a specific stable version (do not use :latest)
+    image: quay.io/keycloak/keycloak:<PINNED_VERSION>
+    container_name: keycloak
+    restart: unless-stopped
+    depends_on:
+      vault_agent_keycloak:
+        condition: service_healthy
+      postgres_primary:
+        condition: service_started
+    volumes:
+      - keycloak_vault_rendered:/run/vault:ro
+      - ./backend/app/keycloak/scripts/keycloak_entrypoint_from_vault.sh:/opt/keycloak/bin/keycloak_entrypoint_from_vault.sh:ro
+    entrypoint: ["/bin/bash","/opt/keycloak/bin/keycloak_entrypoint_from_vault.sh"]
+    command: ["start","--optimized"]
+```
+
+#### 7.3.6 Bring-up and verification
+
+1) Ensure Vault is initialized/unsealed and seeded.
+
+2) Ensure the Keycloak AppRole artifacts exist (see **7.3.3**).
+
+3) Start the agent and confirm it is healthy:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d vault_agent_keycloak
+docker logs --tail 200 -f vault_agent_keycloak
+docker exec -it vault_agent_keycloak sh -lc 'ls -lah /vault/rendered && echo "----" && sed -n "1,40p" /vault/rendered/keycloak.env'
+```
+
+4) Start Keycloak:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d keycloak
+docker logs --tail 200 -f keycloak
+```
+
+#### 7.3.7 Troubleshooting
+
+**A) Agent log: `vault.read(...): no secret exists at app_postgres_secrets/data/keycloak_runtime`**
+
+- Cause: the KV path has not been seeded (or you seeded a different mount/path).
+- Confirm with KV v2 aware command:
+
+```bash
+docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
+  -e VAULT_CACERT="/vault/certs/ca.crt" \
+  -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
+  vault_production_node \
+  vault kv get app_postgres_secrets/keycloak_runtime
+```
+
+**B) Agent log: `parse: template: ... function "default" not defined`**
+
+- Fix: remove `default` usage; use `or` / `if` / `with`.
+
+**C) Rendered env shows `%!q(<nil>)`**
+
+- Cause: template is calling `printf "%q"` on a missing key.
+- Fix: guard optional keys and only emit the line if the key exists and is non-empty.
+
+**D) Agent log: `error creating file sink ... /run/vault/.vault-token.tmp... no such file or directory`**
+
+- Fix: change sink path to `/tmp/.vault-token` (with `tmpfs: ["/tmp"]`), or create the directory before starting the agent.
+
+**E) Agent log: `no known role ID`**
+
+- Cause: `/vault/approle/role_id` is missing or empty.
+- Fix: confirm the mount, then regenerate artifacts by re-running **7.3.3**.
+
+
+**F) Agent log: `error creating file sink: could not parse 'mode' as integer`**
+
+- Cause: `mode` was provided as a string (quoted) or as a symbolic mode (example: `-r--------`). Vault Agent expects an **integer** file mode.
+- Fix: use an unquoted numeric value (example: `mode = 0400`) in the sink stanza.
+
+**G) Agent log: `template: :3: function "fail" not defined`**
+
+- Cause: Vault Agent templating does not expose a `fail` function in the function set you are using.
+- Fix: remove `fail` calls and instead guard keys with `if` checks. Rely on the agent healthcheck (or application start checks) to catch missing required values.
+
+**H) Rendered env file header is glued to the first variable (example: `#---KC_DB="postgres"`), and Keycloak reports `KC_DB` missing**
+
+- Cause: the template does not emit a newline after the header comment block.
+- Fix: ensure there is a real newline after the header so the first exported variable starts on its own line, then restart the Vault Agent container.
+
+**I) Keycloak container logs: `/opt/keycloak/bin/kc: No such file or directory`**
+
+- Cause: modern Keycloak images ship the CLI as `kc.sh`, not `kc`.
+- Fix: call `/opt/keycloak/bin/kc.sh` from your entrypoint script.
+
+**J) Keycloak logs: `FATAL: password authentication failed for user "keycloak"`**
+
+- Cause: the `keycloak` role exists in Postgres but the password in the cluster does not match the password stored in Vault (or the role/database is missing).
+- Fix: run the Postgres “apply/sync” step (see **4.5**). This aligns Postgres roles/databases with Vault and is the required step whenever you rotate credentials.
+
+
+#### 7.3.8 Rotation and operational notes
+
+- **Bootstrap admin credentials:** treat `KC_BOOTSTRAP_ADMIN_*` as a bootstrap mechanism. After initial admin setup, rotate and/or restrict access to the `keycloak_bootstrap` secret.
+- **Database password rotation:** rotating `KC_DB_PASSWORD` requires updating Postgres (ALTER ROLE/USER) and then updating the Vault secret; coordinate controlled restarts.
+- **AppRole Secret IDs:** if you enforce `secret_id_num_uses=1`, regeneration is expected. Re-run **7.3.3** to mint a new `secret_id` after redeployments.
+
+### 7.4 Keycloak hardening notes
+
+Practical hardening items that typically apply cleanly in this deployment model:
+
+- Pin Keycloak image version and treat upgrades as change-controlled.
+- Run Keycloak as a non-root user (the upstream image defaults to non-root; keep it that way).
+- Set `security_opt: ["no-new-privileges:true"]` and drop Linux capabilities (`cap_drop: ["ALL"]`) unless you have a measured need.
+- Restrict published ports (prefer internal networking + reverse proxy / load balancer when available).
+- Keep the Vault Agent container read-only, with `tmpfs` for `/tmp` and a dedicated secrets-render volume for `/vault/rendered`.
+
+
 
 ## Appendix A – Certificate Management
 
@@ -3598,4 +4186,45 @@ docker compose -f docker-compose.prod.yml up -d --no-deps --no-recreate pgadmin
 - Prefer auto-unseal (KMS/HSM) for production so Vault can restart without manual unseal.
 - Restrict Vault token usage: minimize root-token presence on disk after bootstrap; rely on AppRole and policies.
 - Reduce `VAULT_LOG_LEVEL` from `debug` to `info` (or `warn`) outside troubleshooting windows.
+
+## 8. Lessons learned and common issues
+
+This section captures the operational issues encountered during the Vault + Postgres + Keycloak integration and the “why” behind each fix.
+
+### 8.1 Vault Agent sidecar gotchas
+
+- **Do you need a token sink file?**  
+  Not always. If Vault Agent’s only job is to render templates (env files, certs) into a shared volume, it can keep the token in memory and you can omit exposing a token to other containers.  
+  Use a **file sink** when another process must read the token (for example, an application that talks directly to Vault). If you do use a file sink:
+  - keep the sink path in `tmpfs` (example: `/run` or `/tmp`),
+  - do not mount the token file into other containers unless necessary,
+  - restrict permissions (`mode = 0400`) and confirm the directory exists before agent start.
+
+- **`/run/vault` must exist** if you use it as a sink or render destination. `tmpfs: ["/run"]` does not automatically create `/run/vault`.
+
+### 8.2 Template and rendering pitfalls
+
+- **Avoid `fail` in templates.** Guard missing keys with `if` checks and let healthchecks/startup checks catch missing required values.
+- **Prefer base64 for PEM blobs** stored in Vault KV. It avoids newline/escaping issues and makes templates deterministic (decode at render time).
+- **Watch for newline issues** in generated env files. One missing newline can invalidate the entire first variable and cause “missing env” failures (as you saw with `KC_DB`).
+
+### 8.3 Container entrypoint and permissions pitfalls
+
+- **Bind-mounted scripts must be executable.** If your container entrypoint is a bind-mounted script, the executable bit must be set on the host (`chmod +x ...`) or you will get `permission denied`.
+- **Keycloak CLI path:** for Keycloak 17+ (Quarkus-based images), use `/opt/keycloak/bin/kc.sh`, not `kc`.
+
+### 8.4 Postgres credential drift and how to fix it
+
+The most common root cause of “password authentication failed” during bring-up is **credential drift**:
+
+- Vault KV contains one password.
+- Postgres role password is different (or the role/database does not exist).
+- Keycloak (or another service) reads the Vault-rendered password and fails to authenticate.
+
+Fix pattern:
+
+1) Treat Vault as the source of truth.
+2) Run the apply/sync workflow (**4.5**) to align the running Postgres cluster with Vault values.
+3) Restart the dependent service (Keycloak, pgAdmin, app backends).
+
 

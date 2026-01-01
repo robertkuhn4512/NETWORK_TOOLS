@@ -47,4 +47,14 @@ done
 : "${KC_METRICS_ENABLED:=true}"
 : "${KC_PROXY_HEADERS:=xforwarded}"
 
-exec /opt/keycloak/bin/kc "$@"
+
+# Keycloak launcher: newer images use kc.sh; some older docs reference kc.
+if [[ -x /opt/keycloak/bin/kc.sh ]]; then
+  exec /opt/keycloak/bin/kc.sh "$@"
+elif [[ -x /opt/keycloak/bin/kc ]]; then
+  exec /opt/keycloak/bin/kc "$@"
+else
+  echo "ERROR: Could not find Keycloak launcher (expected /opt/keycloak/bin/kc.sh). Contents of /opt/keycloak/bin:" >&2
+  ls -lah /opt/keycloak/bin >&2 || true
+  exit 127
+fi

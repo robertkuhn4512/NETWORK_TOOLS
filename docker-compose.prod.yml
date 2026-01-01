@@ -1,10 +1,14 @@
 name: network_tools
 
 volumes:
+  postgres_data:
+    name: network_tools_postgres_data
   postgres_certs:
+    name: network_tools_postgres_certs
   postgres_vault_rendered:
-  keycloak_data:
+    name: network_tools_postgres_vault_rendered
   keycloak_vault_rendered:
+    name: network_tools_keycloak_vault_rendered
 
 services:
   # From the project root (~/NETWORK_TOOLS) to start all containers
@@ -138,7 +142,8 @@ services:
     restart: unless-stopped
     depends_on:
       - vault_production_node
-    entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
+    entrypoint:
+      [ "/bin/sh","-lc","mkdir -p /vault/rendered/tls && exec vault agent -config=/vault/agent/agent.hcl" ]
     #read_only: true
     tmpfs:
       - /tmp
@@ -175,8 +180,12 @@ services:
     volumes:
       - keycloak_vault_rendered:/run/vault:ro
       - ./backend/app/keycloak/bin/keycloak_entrypoint_from_vault.sh:/opt/keycloak/bin/keycloak_entrypoint_from_vault.sh:ro
-    entrypoint: [ "/opt/keycloak/bin/keycloak_entrypoint_from_vault.sh" ]
+    entrypoint: [ "/bin/bash", "/opt/keycloak/bin/keycloak_entrypoint_from_vault.sh" ]
     command: [ "start" ]
+    environment:
+      KC_HOSTNAME: "https://keycloak.yourdomain.edu"
+      KC_HTTPS_CERTIFICATE_FILE: "/run/vault/tls/server.crt"
+      KC_HTTPS_CERTIFICATE_KEY_FILE: "/run/vault/tls/server.key"
     ports:
       - "8080:8080"
     logging:
@@ -236,10 +245,13 @@ services:
       POSTGRES_PASSWORD_FILE: "/run/vault/postgres_password"
       PGDATA: "${PGDATA:-/var/lib/postgres/data/pgdata}"
     volumes:
-      - ./container_data/postgres/data:/var/lib/postgres/data
+      - postgres_data:/var/lib/postgres/data
+      - postgres_certs:/etc/postgres/certs:ro
       - ./backend/app/postgres/config/postgres.conf:/etc/postgres/postgres.conf:ro
       - ./backend/app/postgres/config/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
-      - postgres_certs:/etc/postgres/certs:ro
+      - ./backend/app/postgres/certs/cert.crt:/etc/postgres/certs/server.crt:ro
+      - ./backend/app/postgres/certs/cert.key:/etc/postgres/certs/server.key:ro
+      - ./backend/app/postgres/certs/ca.crt:/etc/postgres/certs/ca.crt:ro
 
       # rendered secrets from vault agent
       - postgres_vault_rendered:/run/vault:ro
