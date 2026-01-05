@@ -90,7 +90,7 @@ AppRole + ACL bootstrap (first-time convenience; postgres/pgAdmin Vault Agent):
   --force-postgres-pgadmin-approle      Re-write the policy/role even if they already exist
   --postgres-pgadmin-role-name NAME     Default: postgres_pgadmin_agent
   --postgres-pgadmin-policy-name NAME   Default: postgres_pgadmin_read
-  --postgres-pgadmin-kv-mount NAME      Default: app_postgres_secrets
+  --postgres-pgadmin-kv-mount NAME      Default: app_network_tools_secrets
   --postgres-pgadmin-kv-version 1|2     Default: 2
 
 Pretty output:
@@ -141,7 +141,7 @@ SETUP_POSTGRES_PGADMIN_APPROLE=1
 FORCE_POSTGRES_PGADMIN_APPROLE=0
 POSTGRES_PGADMIN_ROLE_NAME="postgres_pgadmin_agent"
 POSTGRES_PGADMIN_POLICY_NAME="postgres_pgadmin_read"
-POSTGRES_PGADMIN_KV_MOUNT="app_postgres_secrets"
+POSTGRES_PGADMIN_KV_MOUNT="app_network_tools_secrets"
 POSTGRES_PGADMIN_KV_VERSION="2"
 POSTGRES_PGADMIN_TOKEN_TTL="1h"
 POSTGRES_PGADMIN_TOKEN_MAX_TTL="4h"

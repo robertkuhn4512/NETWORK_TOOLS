@@ -453,9 +453,9 @@ export VAULT_BOOTSTRAP_DIR="$NT_ROOT/backend/app/security/configuration_files/va
 export VAULT_ROOT_TOKEN_FILE="$VAULT_BOOTSTRAP_DIR/root_token"
 
 # KV mount that stores the Postgres + pgAdmin credentials
-# Repo default: app_postgres_secrets
+# Repo default: app_network_tools_secrets
 # Legacy/typo variant sometimes seen: app_postgress_secrets
-export POSTGRES_KV_MOUNT="app_postgres_secrets"
+export POSTGRES_KV_MOUNT="app_network_tools_secrets"
 ```
 
 ### 0.2.2 Container-side notes (Vault CLI via `docker exec`)
@@ -1675,7 +1675,7 @@ Key points to internalize up front:
 - **Initialization behavior matters:** these variables affect initialization **only** when the Postgres data directory is empty. If your Postgres data volume already contains a database cluster, changing `POSTGRES_*` values will not automatically rotate users/passwords. Rotation requires explicit SQL (`ALTER USER ...`) and controlled restarts.
 
 Vault KV paths and mounts used in this repo:
-- The bootstrap seeding flow in **4.1** writes `postgres` and `pgadmin` under the configured mount (commonly `app_postgres_secrets`).
+- The bootstrap seeding flow in **4.1** writes `postgres` and `pgadmin` under the configured mount (commonly `app_network_tools_secrets`).
 - If you used a different mount name (for example, a spelling variation), use that consistently in policies, templates, and read paths.
 
 ### 6.2 Option A – Keep env file (.env) as the runtime source of truth
@@ -1753,11 +1753,11 @@ If your mount is KV v2 (the repo default), the paths include `/data/`:
 
 ```hcl
 # postgres + pgAdmin runtime reads (KV v2)
-path "app_postgres_secrets/data/postgres" {
+path "app_network_tools_secrets/data/postgres" {
   capabilities = ["read"]
 }
 
-path "app_postgres_secrets/data/pgadmin" {
+path "app_network_tools_secrets/data/pgadmin" {
   capabilities = ["read"]
 }
 ```
@@ -1766,16 +1766,16 @@ If your mount is KV v1, remove `/data/`:
 
 ```hcl
 # postgres + pgAdmin runtime reads (KV v1)
-path "app_postgres_secrets/postgres" {
+path "app_network_tools_secrets/postgres" {
   capabilities = ["read"]
 }
 
-path "app_postgres_secrets/pgadmin" {
+path "app_network_tools_secrets/pgadmin" {
   capabilities = ["read"]
 }
 ```
 
-> If your KV mount name differs (for example, legacy `app_postgres_secrets`), replace `app_postgres_secrets` everywhere in the policy, templates, and validation commands.
+> If your KV mount name differs (for example, legacy `app_network_tools_secrets`), replace `app_network_tools_secrets` everywhere in the policy, templates, and validation commands.
 
 Apply the policy (run from the host using `docker exec` into the Vault container; requires a Vault admin/root token for setup tasks).
 
@@ -1794,11 +1794,11 @@ docker exec -i \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   "$VAULT_CONTAINER" \
   sh -lc 'cat >/tmp/postgres_pgadmin_read.hcl && vault policy write postgres_pgadmin_read /tmp/postgres_pgadmin_read.hcl' <<'HCL'
-path "app_postgres_secrets/data/postgres" {
+path "app_network_tools_secrets/data/postgres" {
   capabilities = ["read"]
 }
 
-path "app_postgres_secrets/data/pgadmin" {
+path "app_network_tools_secrets/data/pgadmin" {
   capabilities = ["read"]
 }
 HCL
@@ -1815,11 +1815,11 @@ docker exec -i \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   vault_production_node \
   sh -lc 'cat >/tmp/postgres_pgadmin_read.hcl && vault policy write postgres_pgadmin_read /tmp/postgres_pgadmin_read.hcl' <<'HCL'
-path "app_postgres_secrets/data/postgres" {
+path "app_network_tools_secrets/data/postgres" {
   capabilities = ["read"]
 }
 
-path "app_postgres_secrets/data/pgadmin" {
+path "app_network_tools_secrets/data/pgadmin" {
   capabilities = ["read"]
 }
 HCL
@@ -2109,28 +2109,28 @@ Template examples (KV v2):
 
 `postgres_db.ctmpl`
 ```ctmpl
-{{- with secret "app_postgres_secrets/data/postgres" -}}
+{{- with secret "app_network_tools_secrets/data/postgres" -}}
 {{ .Data.data.POSTGRES_DB }}
 {{- end }}
 ```
 
 `postgres_user.ctmpl`
 ```ctmpl
-{{- with secret "app_postgres_secrets/data/postgres" -}}
+{{- with secret "app_network_tools_secrets/data/postgres" -}}
 {{ .Data.data.POSTGRES_USER }}
 {{- end }}
 ```
 
 `postgres_password.ctmpl`
 ```ctmpl
-{{- with secret "app_postgres_secrets/data/postgres" -}}
+{{- with secret "app_network_tools_secrets/data/postgres" -}}
 {{ .Data.data.POSTGRES_PASSWORD }}
 {{- end }}
 ```
 
 `pgadmin_password.ctmpl`
 ```ctmpl
-{{- with secret "app_postgres_secrets/data/pgadmin" -}}
+{{- with secret "app_network_tools_secrets/data/pgadmin" -}}
 {{ .Data.data.PGADMIN_DEFAULT_PASSWORD }}
 {{- end }}
 ```
@@ -2213,12 +2213,12 @@ docker exec -it vault_production_node sh -lc '
   export VAULT_ADDR=https://vault_production_node:8200
   export VAULT_CACERT=/vault/certs/ca.crt
   export VAULT_TOKEN="$(cat /vault/bootstrap/root_token 2>/dev/null || true)"
-  vault kv get app_postgres_secrets/postgres 2>/dev/null || true
-  vault kv get app_postgres_secrets/pgadmin 2>/dev/null || true
+  vault kv get app_network_tools_secrets/postgres 2>/dev/null || true
+  vault kv get app_network_tools_secrets/pgadmin 2>/dev/null || true
 '
 ```
 
-> Note: The KV mount name is currently `app_postgres_secrets` (historical spelling). If you standardize the mount to `app_postgres_secrets`, update the Vault Agent templates and validation commands accordingly.
+> Note: The KV mount name is currently `app_network_tools_secrets` (historical spelling). If you standardize the mount to `app_network_tools_secrets`, update the Vault Agent templates and validation commands accordingly.
 
 4) Export AppRole `role_id` + `secret_id` onto the host (Section 6.3.3). This produces:
 
@@ -2409,7 +2409,7 @@ docker logs --tail 200 -f pgadmin
        If you used `--mode rotate`, the script already updated Vault. Otherwise:
 
        ```bash
-       vault kv patch app_postgres_secrets/postgres POSTGRES_PASSWORD="$NEW_PASSWORD"
+       vault kv patch app_network_tools_secrets/postgres POSTGRES_PASSWORD="$NEW_PASSWORD"
        ```
 
     3) **Restart or reload clients** that authenticate using that password (pgAdmin, backend apps, etc.).
@@ -2417,7 +2417,7 @@ docker logs --tail 200 -f pgadmin
 - **Rotate the pgAdmin default password (static credential)**
   - `PGADMIN_DEFAULT_PASSWORD(_FILE)` is used only for initial admin account creation.
   - To rotate it non-interactively, the simplest approach is to:
-    1) update Vault KV (`app_postgres_secrets/pgadmin`), and
+    1) update Vault KV (`app_network_tools_secrets/pgadmin`), and
     2) recreate the `pgadmin` container so it re-initializes (or change the password from the UI).
 
 - **Prefer dynamic credentials for applications**
@@ -2639,14 +2639,14 @@ INFO: Unseal keys file: /home/developer_network_tools/NETWORK_TOOLS/backend/app/
 INFO: CA cert: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt
 INFO: Vault is already unsealed. Skipping unseal.
 INFO: Spec mounts: 1
-INFO: --- Mount [0]: app_postgres_secrets (version=2) ---
-INFO: Enabled KV v2 at app_postgres_secrets/
-INFO: wrote -> app_postgres_secrets/postgres
-INFO: wrote -> app_postgres_secrets/pgadmin
-INFO: wrote -> app_postgres_secrets/keycloak_postgres
-INFO: wrote -> app_postgres_secrets/keycloak_bootstrap
-INFO: wrote -> app_postgres_secrets/keycloak_runtime
-INFO: Mount app_postgres_secrets: seed complete. success=5 failed=0
+INFO: --- Mount [0]: app_network_tools_secrets (version=2) ---
+INFO: Enabled KV v2 at app_network_tools_secrets/
+INFO: wrote -> app_network_tools_secrets/postgres
+INFO: wrote -> app_network_tools_secrets/pgadmin
+INFO: wrote -> app_network_tools_secrets/keycloak_postgres
+INFO: wrote -> app_network_tools_secrets/keycloak_bootstrap
+INFO: wrote -> app_network_tools_secrets/keycloak_runtime
+INFO: Mount app_network_tools_secrets: seed complete. success=5 failed=0
 INFO: Wrote consolidated secrets artifact:
       /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_all.json
 INFO: (Not printing secrets; use --print-secrets to print.)
@@ -2763,7 +2763,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ cat ./backend/app/securi
 {
   "mounts": [
     {
-      "mount": "app_postgres_secrets",
+      "mount": "app_network_tools_secrets",
       "version": 2,
       "secrets": {
         "postgres": {
@@ -2821,7 +2821,7 @@ What the script does:
   - `postgres_pgadmin_credentials.json` (human-readable credentials JSON)
   - `seed_kv_spec.postgres_pgadmin.json` (the spec used to seed Vault)
 
-- Seeds Vault KV mount **`app_postgres_secrets`** (default) with two secret paths:
+- Seeds Vault KV mount **`app_network_tools_secrets`** (default) with two secret paths:
   - `postgres` (postgres values)
   - `pgadmin` (pgAdmin values)
 
@@ -2877,7 +2877,7 @@ TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault
 # postgres secret (KV v2)
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/data/postgres" | jq .
+  "$VAULT_ADDR/v1/app_network_tools_secrets/data/postgres" | jq .
 ```
 
 To extract a single value (example: password):
@@ -2885,7 +2885,7 @@ To extract a single value (example: password):
 ```bash
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/data/postgres" | jq -r '.data.data.POSTGRES_PASSWORD'
+  "$VAULT_ADDR/v1/app_network_tools_secrets/data/postgres" | jq -r '.data.data.POSTGRES_PASSWORD'
 ```
 
 If you later choose to use **KV v1**, the read path will not include `/data/`:
@@ -2893,7 +2893,7 @@ If you later choose to use **KV v1**, the read path will not include `/data/`:
 ```bash
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/postgres" | jq .
+  "$VAULT_ADDR/v1/app_network_tools_secrets/postgres" | jq .
 ```
 
 ### 4.3 Use with Docker Compose
@@ -3331,7 +3331,7 @@ bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.
 
 The pgAdmin secret is stored under:
 
-- KV mount: `app_postgres_secrets`
+- KV mount: `app_network_tools_secrets`
 - Secret path: `pgadmin`
 - Key: `PGADMIN_DEFAULT_PASSWORD`
 
@@ -3346,7 +3346,7 @@ TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault
 
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/data/pgadmin" | jq .
+  "$VAULT_ADDR/v1/app_network_tools_secrets/data/pgadmin" | jq .
 ```
 
 Example extracting the password only:
@@ -3354,7 +3354,7 @@ Example extracting the password only:
 ```bash
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/data/pgadmin" | jq -r '.data.data.PGADMIN_DEFAULT_PASSWORD'
+  "$VAULT_ADDR/v1/app_network_tools_secrets/data/pgadmin" | jq -r '.data.data.PGADMIN_DEFAULT_PASSWORD'
 ```
 
 ### 5.3 Use with Docker Compose
@@ -3398,25 +3398,25 @@ Keycloak is **not** expected to talk to Vault directly. Instead:
 
 ### 7.1 Vault KV paths and required keys
 
-This repo assumes KV v2 mounted at `app_postgres_secrets`, and the following **existing** paths (you confirmed these are the canonical locations):
+This repo assumes KV v2 mounted at `app_network_tools_secrets`, and the following **existing** paths (you confirmed these are the canonical locations):
 
-- `app_postgres_secrets/keycloak_postgres`  
+- `app_network_tools_secrets/keycloak_postgres`  
   Database connection settings for Keycloak (schema/user/password/host/port/database).
 
-- `app_postgres_secrets/keycloak_bootstrap`  
+- `app_network_tools_secrets/keycloak_bootstrap`  
   Bootstrap admin credentials for first startup (or controlled re-bootstrap).
 
-- `app_postgres_secrets/keycloak_runtime`  
+- `app_network_tools_secrets/keycloak_runtime`  
   Runtime settings such as hostname/proxy mode/listeners/observability flags.
 
-- `app_postgres_secrets/keycloak_tls`  
+- `app_network_tools_secrets/keycloak_tls`  
   TLS material for Keycloak (server certificate and private key). This repo stores PEM values as **base64 strings** in Vault and decodes them in Vault Agent templates.
 
-For KV v2, the Vault API paths used by the agent include `/data/` (example: `app_postgres_secrets/data/keycloak_postgres`).
+For KV v2, the Vault API paths used by the agent include `/data/` (example: `app_network_tools_secrets/data/keycloak_postgres`).
 
 Minimum recommended keys per path:
 
-**A) `app_postgres_secrets/keycloak_postgres`**
+**A) `app_network_tools_secrets/keycloak_postgres`**
 
 - `KC_DB` (recommended: `postgres`)
 - `KC_DB_URL_HOST` (example: `postgres_primary`)
@@ -3426,12 +3426,12 @@ Minimum recommended keys per path:
 - `KC_DB_PASSWORD` (random, high-entropy)
 - `KC_DB_SCHEMA` (example: `keycloak`)
 
-**B) `app_postgres_secrets/keycloak_bootstrap`**
+**B) `app_network_tools_secrets/keycloak_bootstrap`**
 
 - `KC_BOOTSTRAP_ADMIN_USERNAME` (example: `admin`)
 - `KC_BOOTSTRAP_ADMIN_PASSWORD` (random, high-entropy)
 
-**C) `app_postgres_secrets/keycloak_runtime`** (optional keys; only set what you need)
+**C) `app_network_tools_secrets/keycloak_runtime`** (optional keys; only set what you need)
 
 - `KC_HOSTNAME` (example: `keycloak.yourdomain.edu`)
 - `KC_HOSTNAME_STRICT` (`true` or `false`)
@@ -3459,7 +3459,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv put app_postgres_secrets/keycloak_postgres \
+  vault kv put app_network_tools_secrets/keycloak_postgres \
     KC_DB="postgres" \
     KC_DB_URL_HOST="postgres_primary" \
     KC_DB_URL_PORT="5432" \
@@ -3473,7 +3473,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv put app_postgres_secrets/keycloak_bootstrap \
+  vault kv put app_network_tools_secrets/keycloak_bootstrap \
     KC_BOOTSTRAP_ADMIN_USERNAME="admin" \
     KC_BOOTSTRAP_ADMIN_PASSWORD="<REDACTED>"
 
@@ -3482,7 +3482,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv put app_postgres_secrets/keycloak_runtime \
+  vault kv put app_network_tools_secrets/keycloak_runtime \
     KC_HOSTNAME="keycloak.yourdomain.edu" \
     KC_HOSTNAME_STRICT="true" \
     KC_HTTP_ENABLED="false" \
@@ -3499,7 +3499,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv get -format=json app_postgres_secrets/keycloak_postgres | jq -r '.data.data'
+  vault kv get -format=json app_network_tools_secrets/keycloak_postgres | jq -r '.data.data'
 ```
 
 
@@ -3635,13 +3635,13 @@ cd "$HOME/NETWORK_TOOLS"
 CERT_B64="$(base64 -w0 ./backend/app/keycloak/certs/server.crt)"
 KEY_B64="$(base64 -w0 ./backend/app/keycloak/certs/server.key)"
 
-docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv put app_postgres_secrets/keycloak_tls     KC_HTTPS_CERTIFICATE_PEM_B64="$CERT_B64"     KC_HTTPS_CERTIFICATE_KEY_PEM_B64="$KEY_B64"
+docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv put app_network_tools_secrets/keycloak_tls     KC_HTTPS_CERTIFICATE_PEM_B64="$CERT_B64"     KC_HTTPS_CERTIFICATE_KEY_PEM_B64="$KEY_B64"
 ```
 
 3) Verify:
 
 ```bash
-docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv get app_postgres_secrets/keycloak_tls
+docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv get app_network_tools_secrets/keycloak_tls
 ```
 
 Vault Agent will decode and render:
@@ -3669,14 +3669,14 @@ Create a dedicated policy (example name: `keycloak_agent`) that grants **read-on
 path "auth/token/lookup-self" { capabilities = ["read"] }
 path "auth/token/renew-self"  { capabilities = ["update"] }
 
-path "app_postgres_secrets/data/keycloak_postgres"   { capabilities = ["read"] }
-path "app_postgres_secrets/data/keycloak_bootstrap" { capabilities = ["read"] }
-path "app_postgres_secrets/data/keycloak_runtime"   { capabilities = ["read"] }
+path "app_network_tools_secrets/data/keycloak_postgres"   { capabilities = ["read"] }
+path "app_network_tools_secrets/data/keycloak_bootstrap" { capabilities = ["read"] }
+path "app_network_tools_secrets/data/keycloak_runtime"   { capabilities = ["read"] }
 
 # Optional metadata access for troubleshooting
-path "app_postgres_secrets/metadata/keycloak_postgres"   { capabilities = ["list","read"] }
-path "app_postgres_secrets/metadata/keycloak_bootstrap" { capabilities = ["list","read"] }
-path "app_postgres_secrets/metadata/keycloak_runtime"   { capabilities = ["list","read"] }
+path "app_network_tools_secrets/metadata/keycloak_postgres"   { capabilities = ["list","read"] }
+path "app_network_tools_secrets/metadata/keycloak_bootstrap" { capabilities = ["list","read"] }
+path "app_network_tools_secrets/metadata/keycloak_runtime"   { capabilities = ["list","read"] }
 ```
 
 Apply it:
@@ -3930,7 +3930,7 @@ docker logs --tail 200 -f keycloak
 
 #### 7.3.7 Troubleshooting
 
-**A) Agent log: `vault.read(...): no secret exists at app_postgres_secrets/data/keycloak_runtime`**
+**A) Agent log: `vault.read(...): no secret exists at app_network_tools_secrets/data/keycloak_runtime`**
 
 - Cause: the KV path has not been seeded (or you seeded a different mount/path).
 - Confirm with KV v2 aware command:
@@ -3940,7 +3940,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv get app_postgres_secrets/keycloak_runtime
+  vault kv get app_network_tools_secrets/keycloak_runtime
 ```
 
 **B) Agent log: `parse: template: ... function "default" not defined`**
@@ -5572,9 +5572,9 @@ export VAULT_BOOTSTRAP_DIR="$NT_ROOT/backend/app/security/configuration_files/va
 export VAULT_ROOT_TOKEN_FILE="$VAULT_BOOTSTRAP_DIR/root_token"
 
 # KV mount that stores the Postgres + pgAdmin credentials
-# Repo default: app_postgres_secrets
+# Repo default: app_network_tools_secrets
 # Legacy/typo variant sometimes seen: app_postgress_secrets
-export POSTGRES_KV_MOUNT="app_postgres_secrets"
+export POSTGRES_KV_MOUNT="app_network_tools_secrets"
 ```
 
 ### 0.2.2 Container-side notes (Vault CLI via `docker exec`)
@@ -7411,14 +7411,14 @@ INFO: Unseal keys file: /home/developer_network_tools/NETWORK_TOOLS/backend/app/
 INFO: CA cert: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt
 INFO: Vault is already unsealed. Skipping unseal.
 INFO: Spec mounts: 1
-INFO: --- Mount [0]: app_postgres_secrets (version=2) ---
-INFO: Enabled KV v2 at app_postgres_secrets/
-INFO: wrote -> app_postgres_secrets/postgres
-INFO: wrote -> app_postgres_secrets/pgadmin
-INFO: wrote -> app_postgres_secrets/keycloak_postgres
-INFO: wrote -> app_postgres_secrets/keycloak_bootstrap
-INFO: wrote -> app_postgres_secrets/keycloak_runtime
-INFO: Mount app_postgres_secrets: seed complete. success=5 failed=0
+INFO: --- Mount [0]: app_network_tools_secrets (version=2) ---
+INFO: Enabled KV v2 at app_network_tools_secrets/
+INFO: wrote -> app_network_tools_secrets/postgres
+INFO: wrote -> app_network_tools_secrets/pgadmin
+INFO: wrote -> app_network_tools_secrets/keycloak_postgres
+INFO: wrote -> app_network_tools_secrets/keycloak_bootstrap
+INFO: wrote -> app_network_tools_secrets/keycloak_runtime
+INFO: Mount app_network_tools_secrets: seed complete. success=5 failed=0
 INFO: Wrote consolidated secrets artifact:
       /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_all.json
 INFO: (Not printing secrets; use --print-secrets to print.)
@@ -7535,7 +7535,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ cat ./backend/app/securi
 {
   "mounts": [
     {
-      "mount": "app_postgres_secrets",
+      "mount": "app_network_tools_secrets",
       "version": 2,
       "secrets": {
         "postgres": {
@@ -7593,7 +7593,7 @@ What the script does:
   - `postgres_pgadmin_credentials.json` (human-readable credentials JSON)
   - `seed_kv_spec.postgres_pgadmin.json` (the spec used to seed Vault)
 
-- Seeds Vault KV mount **`app_postgres_secrets`** (default) with two secret paths:
+- Seeds Vault KV mount **`app_network_tools_secrets`** (default) with two secret paths:
   - `postgres` (postgres values)
   - `pgadmin` (pgAdmin values)
 
@@ -7649,7 +7649,7 @@ TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault
 # postgres secret (KV v2)
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/data/postgres" | jq .
+  "$VAULT_ADDR/v1/app_network_tools_secrets/data/postgres" | jq .
 ```
 
 To extract a single value (example: password):
@@ -7657,7 +7657,7 @@ To extract a single value (example: password):
 ```bash
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/data/postgres" | jq -r '.data.data.POSTGRES_PASSWORD'
+  "$VAULT_ADDR/v1/app_network_tools_secrets/data/postgres" | jq -r '.data.data.POSTGRES_PASSWORD'
 ```
 
 If you later choose to use **KV v1**, the read path will not include `/data/`:
@@ -7665,7 +7665,7 @@ If you later choose to use **KV v1**, the read path will not include `/data/`:
 ```bash
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/postgres" | jq .
+  "$VAULT_ADDR/v1/app_network_tools_secrets/postgres" | jq .
 ```
 
 ### 4.3 Use with Docker Compose
@@ -8105,7 +8105,7 @@ bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.
 
 The pgAdmin secret is stored under:
 
-- KV mount: `app_postgres_secrets`
+- KV mount: `app_network_tools_secrets`
 - Secret path: `pgadmin`
 - Key: `PGADMIN_DEFAULT_PASSWORD`
 
@@ -8120,7 +8120,7 @@ TOKEN="$(cat "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault
 
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/data/pgadmin" | jq .
+  "$VAULT_ADDR/v1/app_network_tools_secrets/data/pgadmin" | jq .
 ```
 
 Example extracting the password only:
@@ -8128,7 +8128,7 @@ Example extracting the password only:
 ```bash
 curl -sS --cacert "$CA_CERT" \
   -H "X-Vault-Token: $TOKEN" \
-  "$VAULT_ADDR/v1/app_postgres_secrets/data/pgadmin" | jq -r '.data.data.PGADMIN_DEFAULT_PASSWORD'
+  "$VAULT_ADDR/v1/app_network_tools_secrets/data/pgadmin" | jq -r '.data.data.PGADMIN_DEFAULT_PASSWORD'
 ```
 
 ### 5.3 Use with Docker Compose
@@ -8176,7 +8176,7 @@ Key points to internalize up front:
 - **Initialization behavior matters:** these variables affect initialization **only** when the Postgres data directory is empty. If your Postgres data volume already contains a database cluster, changing `POSTGRES_*` values will not automatically rotate users/passwords. Rotation requires explicit SQL (`ALTER USER ...`) and controlled restarts.
 
 Vault KV paths and mounts used in this repo:
-- The bootstrap seeding flow in **4.1** writes `postgres` and `pgadmin` under the configured mount (commonly `app_postgres_secrets`).
+- The bootstrap seeding flow in **4.1** writes `postgres` and `pgadmin` under the configured mount (commonly `app_network_tools_secrets`).
 - If you used a different mount name (for example, a spelling variation), use that consistently in policies, templates, and read paths.
 
 ### 6.2 Option A – Keep env file (.env) as the runtime source of truth
@@ -8254,11 +8254,11 @@ If your mount is KV v2 (the repo default), the paths include `/data/`:
 
 ```hcl
 # postgres + pgAdmin runtime reads (KV v2)
-path "app_postgres_secrets/data/postgres" {
+path "app_network_tools_secrets/data/postgres" {
   capabilities = ["read"]
 }
 
-path "app_postgres_secrets/data/pgadmin" {
+path "app_network_tools_secrets/data/pgadmin" {
   capabilities = ["read"]
 }
 ```
@@ -8267,16 +8267,16 @@ If your mount is KV v1, remove `/data/`:
 
 ```hcl
 # postgres + pgAdmin runtime reads (KV v1)
-path "app_postgres_secrets/postgres" {
+path "app_network_tools_secrets/postgres" {
   capabilities = ["read"]
 }
 
-path "app_postgres_secrets/pgadmin" {
+path "app_network_tools_secrets/pgadmin" {
   capabilities = ["read"]
 }
 ```
 
-> If your KV mount name differs (for example, legacy `app_postgres_secrets`), replace `app_postgres_secrets` everywhere in the policy, templates, and validation commands.
+> If your KV mount name differs (for example, legacy `app_network_tools_secrets`), replace `app_network_tools_secrets` everywhere in the policy, templates, and validation commands.
 
 Apply the policy (run from the host using `docker exec` into the Vault container; requires a Vault admin/root token for setup tasks).
 
@@ -8295,11 +8295,11 @@ docker exec -i \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   "$VAULT_CONTAINER" \
   sh -lc 'cat >/tmp/postgres_pgadmin_read.hcl && vault policy write postgres_pgadmin_read /tmp/postgres_pgadmin_read.hcl' <<'HCL'
-path "app_postgres_secrets/data/postgres" {
+path "app_network_tools_secrets/data/postgres" {
   capabilities = ["read"]
 }
 
-path "app_postgres_secrets/data/pgadmin" {
+path "app_network_tools_secrets/data/pgadmin" {
   capabilities = ["read"]
 }
 HCL
@@ -8316,11 +8316,11 @@ docker exec -i \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   vault_production_node \
   sh -lc 'cat >/tmp/postgres_pgadmin_read.hcl && vault policy write postgres_pgadmin_read /tmp/postgres_pgadmin_read.hcl' <<'HCL'
-path "app_postgres_secrets/data/postgres" {
+path "app_network_tools_secrets/data/postgres" {
   capabilities = ["read"]
 }
 
-path "app_postgres_secrets/data/pgadmin" {
+path "app_network_tools_secrets/data/pgadmin" {
   capabilities = ["read"]
 }
 HCL
@@ -8610,28 +8610,28 @@ Template examples (KV v2):
 
 `postgres_db.ctmpl`
 ```ctmpl
-{{- with secret "app_postgres_secrets/data/postgres" -}}
+{{- with secret "app_network_tools_secrets/data/postgres" -}}
 {{ .Data.data.POSTGRES_DB }}
 {{- end }}
 ```
 
 `postgres_user.ctmpl`
 ```ctmpl
-{{- with secret "app_postgres_secrets/data/postgres" -}}
+{{- with secret "app_network_tools_secrets/data/postgres" -}}
 {{ .Data.data.POSTGRES_USER }}
 {{- end }}
 ```
 
 `postgres_password.ctmpl`
 ```ctmpl
-{{- with secret "app_postgres_secrets/data/postgres" -}}
+{{- with secret "app_network_tools_secrets/data/postgres" -}}
 {{ .Data.data.POSTGRES_PASSWORD }}
 {{- end }}
 ```
 
 `pgadmin_password.ctmpl`
 ```ctmpl
-{{- with secret "app_postgres_secrets/data/pgadmin" -}}
+{{- with secret "app_network_tools_secrets/data/pgadmin" -}}
 {{ .Data.data.PGADMIN_DEFAULT_PASSWORD }}
 {{- end }}
 ```
@@ -8714,12 +8714,12 @@ docker exec -it vault_production_node sh -lc '
   export VAULT_ADDR=https://vault_production_node:8200
   export VAULT_CACERT=/vault/certs/ca.crt
   export VAULT_TOKEN="$(cat /vault/bootstrap/root_token 2>/dev/null || true)"
-  vault kv get app_postgres_secrets/postgres 2>/dev/null || true
-  vault kv get app_postgres_secrets/pgadmin 2>/dev/null || true
+  vault kv get app_network_tools_secrets/postgres 2>/dev/null || true
+  vault kv get app_network_tools_secrets/pgadmin 2>/dev/null || true
 '
 ```
 
-> Note: The KV mount name is currently `app_postgres_secrets` (historical spelling). If you standardize the mount to `app_postgres_secrets`, update the Vault Agent templates and validation commands accordingly.
+> Note: The KV mount name is currently `app_network_tools_secrets` (historical spelling). If you standardize the mount to `app_network_tools_secrets`, update the Vault Agent templates and validation commands accordingly.
 
 4) Export AppRole `role_id` + `secret_id` onto the host (Section 6.3.3). This produces:
 
@@ -8910,7 +8910,7 @@ docker logs --tail 200 -f pgadmin
        If you used `--mode rotate`, the script already updated Vault. Otherwise:
 
        ```bash
-       vault kv patch app_postgres_secrets/postgres POSTGRES_PASSWORD="$NEW_PASSWORD"
+       vault kv patch app_network_tools_secrets/postgres POSTGRES_PASSWORD="$NEW_PASSWORD"
        ```
 
     3) **Restart or reload clients** that authenticate using that password (pgAdmin, backend apps, etc.).
@@ -8918,7 +8918,7 @@ docker logs --tail 200 -f pgadmin
 - **Rotate the pgAdmin default password (static credential)**
   - `PGADMIN_DEFAULT_PASSWORD(_FILE)` is used only for initial admin account creation.
   - To rotate it non-interactively, the simplest approach is to:
-    1) update Vault KV (`app_postgres_secrets/pgadmin`), and
+    1) update Vault KV (`app_network_tools_secrets/pgadmin`), and
     2) recreate the `pgadmin` container so it re-initializes (or change the password from the UI).
 
 - **Prefer dynamic credentials for applications**
@@ -9107,25 +9107,25 @@ Keycloak is **not** expected to talk to Vault directly. Instead:
 
 ### 7.1 Vault KV paths and required keys
 
-This repo assumes KV v2 mounted at `app_postgres_secrets`, and the following **existing** paths (you confirmed these are the canonical locations):
+This repo assumes KV v2 mounted at `app_network_tools_secrets`, and the following **existing** paths (you confirmed these are the canonical locations):
 
-- `app_postgres_secrets/keycloak_postgres`  
+- `app_network_tools_secrets/keycloak_postgres`  
   Database connection settings for Keycloak (schema/user/password/host/port/database).
 
-- `app_postgres_secrets/keycloak_bootstrap`  
+- `app_network_tools_secrets/keycloak_bootstrap`  
   Bootstrap admin credentials for first startup (or controlled re-bootstrap).
 
-- `app_postgres_secrets/keycloak_runtime`  
+- `app_network_tools_secrets/keycloak_runtime`  
   Runtime settings such as hostname/proxy mode/listeners/observability flags.
 
-- `app_postgres_secrets/keycloak_tls`  
+- `app_network_tools_secrets/keycloak_tls`  
   TLS material for Keycloak (server certificate and private key). This repo stores PEM values as **base64 strings** in Vault and decodes them in Vault Agent templates.
 
-For KV v2, the Vault API paths used by the agent include `/data/` (example: `app_postgres_secrets/data/keycloak_postgres`).
+For KV v2, the Vault API paths used by the agent include `/data/` (example: `app_network_tools_secrets/data/keycloak_postgres`).
 
 Minimum recommended keys per path:
 
-**A) `app_postgres_secrets/keycloak_postgres`**
+**A) `app_network_tools_secrets/keycloak_postgres`**
 
 - `KC_DB` (recommended: `postgres`)
 - `KC_DB_URL_HOST` (example: `postgres_primary`)
@@ -9135,12 +9135,12 @@ Minimum recommended keys per path:
 - `KC_DB_PASSWORD` (random, high-entropy)
 - `KC_DB_SCHEMA` (example: `keycloak`)
 
-**B) `app_postgres_secrets/keycloak_bootstrap`**
+**B) `app_network_tools_secrets/keycloak_bootstrap`**
 
 - `KC_BOOTSTRAP_ADMIN_USERNAME` (example: `admin`)
 - `KC_BOOTSTRAP_ADMIN_PASSWORD` (random, high-entropy)
 
-**C) `app_postgres_secrets/keycloak_runtime`** (optional keys; only set what you need)
+**C) `app_network_tools_secrets/keycloak_runtime`** (optional keys; only set what you need)
 
 - `KC_HOSTNAME` (example: `keycloak.yourdomain.edu`)
 - `KC_HOSTNAME_STRICT` (`true` or `false`)
@@ -9168,7 +9168,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv put app_postgres_secrets/keycloak_postgres \
+  vault kv put app_network_tools_secrets/keycloak_postgres \
     KC_DB="postgres" \
     KC_DB_URL_HOST="postgres_primary" \
     KC_DB_URL_PORT="5432" \
@@ -9182,7 +9182,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv put app_postgres_secrets/keycloak_bootstrap \
+  vault kv put app_network_tools_secrets/keycloak_bootstrap \
     KC_BOOTSTRAP_ADMIN_USERNAME="admin" \
     KC_BOOTSTRAP_ADMIN_PASSWORD="<REDACTED>"
 
@@ -9191,7 +9191,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv put app_postgres_secrets/keycloak_runtime \
+  vault kv put app_network_tools_secrets/keycloak_runtime \
     KC_HOSTNAME="keycloak.yourdomain.edu" \
     KC_HOSTNAME_STRICT="true" \
     KC_HTTP_ENABLED="false" \
@@ -9208,7 +9208,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv get -format=json app_postgres_secrets/keycloak_postgres | jq -r '.data.data'
+  vault kv get -format=json app_network_tools_secrets/keycloak_postgres | jq -r '.data.data'
 ```
 
 
@@ -9344,13 +9344,13 @@ cd "$HOME/NETWORK_TOOLS"
 CERT_B64="$(base64 -w0 ./backend/app/keycloak/certs/server.crt)"
 KEY_B64="$(base64 -w0 ./backend/app/keycloak/certs/server.key)"
 
-docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv put app_postgres_secrets/keycloak_tls     KC_HTTPS_CERTIFICATE_PEM_B64="$CERT_B64"     KC_HTTPS_CERTIFICATE_KEY_PEM_B64="$KEY_B64"
+docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv put app_network_tools_secrets/keycloak_tls     KC_HTTPS_CERTIFICATE_PEM_B64="$CERT_B64"     KC_HTTPS_CERTIFICATE_KEY_PEM_B64="$KEY_B64"
 ```
 
 3) Verify:
 
 ```bash
-docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv get app_postgres_secrets/keycloak_tls
+docker exec -e VAULT_ADDR="https://vault_production_node:8200"   -e VAULT_CACERT="/vault/certs/ca.crt"   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)"   vault_production_node   vault kv get app_network_tools_secrets/keycloak_tls
 ```
 
 Vault Agent will decode and render:
@@ -9378,14 +9378,14 @@ Create a dedicated policy (example name: `keycloak_agent`) that grants **read-on
 path "auth/token/lookup-self" { capabilities = ["read"] }
 path "auth/token/renew-self"  { capabilities = ["update"] }
 
-path "app_postgres_secrets/data/keycloak_postgres"   { capabilities = ["read"] }
-path "app_postgres_secrets/data/keycloak_bootstrap" { capabilities = ["read"] }
-path "app_postgres_secrets/data/keycloak_runtime"   { capabilities = ["read"] }
+path "app_network_tools_secrets/data/keycloak_postgres"   { capabilities = ["read"] }
+path "app_network_tools_secrets/data/keycloak_bootstrap" { capabilities = ["read"] }
+path "app_network_tools_secrets/data/keycloak_runtime"   { capabilities = ["read"] }
 
 # Optional metadata access for troubleshooting
-path "app_postgres_secrets/metadata/keycloak_postgres"   { capabilities = ["list","read"] }
-path "app_postgres_secrets/metadata/keycloak_bootstrap" { capabilities = ["list","read"] }
-path "app_postgres_secrets/metadata/keycloak_runtime"   { capabilities = ["list","read"] }
+path "app_network_tools_secrets/metadata/keycloak_postgres"   { capabilities = ["list","read"] }
+path "app_network_tools_secrets/metadata/keycloak_bootstrap" { capabilities = ["list","read"] }
+path "app_network_tools_secrets/metadata/keycloak_runtime"   { capabilities = ["list","read"] }
 ```
 
 Apply it:
@@ -9639,7 +9639,7 @@ docker logs --tail 200 -f keycloak
 
 #### 7.3.7 Troubleshooting
 
-**A) Agent log: `vault.read(...): no secret exists at app_postgres_secrets/data/keycloak_runtime`**
+**A) Agent log: `vault.read(...): no secret exists at app_network_tools_secrets/data/keycloak_runtime`**
 
 - Cause: the KV path has not been seeded (or you seeded a different mount/path).
 - Confirm with KV v2 aware command:
@@ -9649,7 +9649,7 @@ docker exec -e VAULT_ADDR="https://vault_production_node:8200" \
   -e VAULT_CACERT="/vault/certs/ca.crt" \
   -e VAULT_TOKEN="$(cat ./backend/app/security/configuration_files/vault/bootstrap/root_token)" \
   vault_production_node \
-  vault kv get app_postgres_secrets/keycloak_runtime
+  vault kv get app_network_tools_secrets/keycloak_runtime
 ```
 
 **B) Agent log: `parse: template: ... function "default" not defined`**

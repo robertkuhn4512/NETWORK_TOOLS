@@ -9,6 +9,16 @@ volumes:
     name: network_tools_postgres_vault_rendered
   keycloak_vault_rendered:
     name: network_tools_keycloak_vault_rendered
+  pgadmin_certs:
+    name: network_tools_pgadmin_certs
+
+networks:
+  db_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.20.0/24
 
 services:
   # From the project root (~/NETWORK_TOOLS) to start all containers
@@ -169,6 +179,9 @@ services:
   # docker compose -f docker-compose.prod.yml up -d keycloak
 
   keycloak:
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.30
     image: quay.io/keycloak/keycloak:26.4.7
     container_name: keycloak
     restart: unless-stopped
@@ -227,9 +240,43 @@ services:
         chown -R 999:999 /dest || true
         ls -l /dest
 
+  pgadmin_certs_init:
+    image: postgres:18.1
+    container_name: pgadmin_certs_init
+    user: "0:0"
+    restart: "no"
+    volumes:
+      - ./backend/app/pgadmin/certs:/src:ro
+      - pgadmin_certs:/dest
+    tmpfs:
+      - /tmp
+      - /run
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        set -e
+        mkdir -p /dest
+        cp -f /src/cert.crt /dest/server.cert
+        cp -f /src/cert.key /dest/server.key
+        cp -f /src/ca.crt   /dest/ca.crt
+        chmod 600 /dest/server.key
+        chmod 644 /dest/server.cert /dest/ca.crt
+        chown -R 5050:5050 /dest || true
+        ls -l /dest
+
   # docker compose -f docker-compose.prod.yml up -d postgres_primary
 
   postgres_primary:
+    # REMOVE this for production:
+    # ports:
+    #   - "5432:5432"
+    # Optional for local-only admin:
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.10
     image: postgres:18.1
     container_name: postgres_primary
     restart: unless-stopped
@@ -262,16 +309,19 @@ services:
       postgres
       -c config_file=/etc/postgres/postgres.conf
       -c hba_file=/etc/postgres/pg_hba.conf
-    ports:
-      - "5432:5432"
 
   # docker compose -f docker-compose.prod.yml up -d pgadmin
 
   pgadmin:
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.20
     image: dpage/pgadmin4:9.11
     container_name: pgadmin
     restart: unless-stopped
     depends_on:
+      pgadmin_certs_init:
+        condition: service_completed_successfully
       vault_agent_postgres_pgadmin:
         condition: service_healthy
       postgres_primary:
@@ -279,6 +329,7 @@ services:
     env_file:
       - .env
     environment:
+      PGADMIN_ENABLE_TLS: "True"
       PGDATA: "/var/lib/postgres/data/pgdata"
       PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
       PGADMIN_DEFAULT_PASSWORD_FILE: "/run/vault/pgadmin_password"
@@ -289,6 +340,7 @@ services:
                                                          # The root account. For now, i'm leaving it enabled for testing.
     volumes:
       - postgres_vault_rendered:/run/vault:ro
+      - pgadmin_certs:/certs:ro
     logging:
       driver: json-file
       options:
@@ -296,14 +348,16 @@ services:
         max-file: "5"
     healthcheck:
       test: [ "CMD-SHELL",
-        "test -s /vault/rendered/postgres_db \
-         && test -s /vault/rendered/postgres_user \
-         && test -s /vault/rendered/postgres_password \
-         && test -s /vault/rendered/pgadmin_password \
-         && test -s /vault/rendered/servers.json"
+        "test -s /certs/server.cert \
+              && test -s /certs/server.key \
+              && test -s /run/vault/postgres_db \
+              && test -s /run/vault/postgres_user \
+              && test -s /run/vault/postgres_password \
+              && test -s /run/vault/pgadmin_password \
+              && test -s /run/vault/servers.json"
       ]
       interval: 5s
       timeout: 3s
       retries: 30
     ports:
-      - "8081:80"
+      - "8081:443"

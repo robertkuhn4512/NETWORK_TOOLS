@@ -61,6 +61,16 @@ POSTGRES_DB="network_tools"
 POSTGRES_USER="network_tools_user"
 POSTGRES_PASSWORD=""
 
+# FastAPI -> Postgres (network_tools DB, limited DML user)
+INCLUDE_FASTAPI=1
+FASTAPI_DB_URL_HOST="postgres_primary"
+FASTAPI_DB_URL_PORT="5432"
+FASTAPI_DB_URL_DATABASE="network_tools"
+FASTAPI_DB_USERNAME="network_tools_fastapi"
+FASTAPI_DB_PASSWORD=""
+FASTAPI_DB_SCHEMA="public"
+
+
 # pgAdmin
 PGADMIN_DEFAULT_EMAIL="admin@example.com"
 PGADMIN_DEFAULT_PASSWORD=""
@@ -108,7 +118,7 @@ KEYCLOAK_HTTP_MANAGEMENT_PORT="9000"
 KEYCLOAK_HTTP_MANAGEMENT_SCHEME="http"
 
 # Vault KV v2
-VAULT_MOUNT="app_postgres_secrets"
+VAULT_MOUNT="app_network_tools_secrets"
 VAULT_PREFIX=""
 
 # Vault connectivity
@@ -166,6 +176,15 @@ Postgres (network_tools):
   --postgres-db <name>
   --postgres-user <name>
   --postgres-password <value>
+
+FastAPI (Postgres-backed; limited DML user for network_tools DB):
+  --no-fastapi
+  --fastapi-db-host <host>
+  --fastapi-db-port <port>
+  --fastapi-db <name>
+  --fastapi-user <name>
+  --fastapi-password <value>
+  --fastapi-schema <name>
 
 pgAdmin:
   --pgadmin-default-email <val>
@@ -248,6 +267,14 @@ while [[ $# -gt 0 ]]; do
     --postgres-db) POSTGRES_DB="${2:-}"; shift 2;;
     --postgres-user) POSTGRES_USER="${2:-}"; shift 2;;
     --postgres-password) POSTGRES_PASSWORD="${2:-}"; shift 2;;
+
+    --no-fastapi) INCLUDE_FASTAPI=0; shift 1;;
+    --fastapi-db-host) FASTAPI_DB_URL_HOST="${2:-}"; shift 2;;
+    --fastapi-db-port) FASTAPI_DB_URL_PORT="${2:-}"; shift 2;;
+    --fastapi-db) FASTAPI_DB_URL_DATABASE="${2:-}"; shift 2;;
+    --fastapi-user) FASTAPI_DB_USERNAME="${2:-}"; shift 2;;
+    --fastapi-password) FASTAPI_DB_PASSWORD="${2:-}"; shift 2;;
+    --fastapi-schema) FASTAPI_DB_SCHEMA="${2:-}"; shift 2;;
 
     --pgadmin-default-email) PGADMIN_DEFAULT_EMAIL="${2:-}"; shift 2;;
     --pgadmin-password) PGADMIN_DEFAULT_PASSWORD="${2:-}"; shift 2;;
@@ -446,6 +473,27 @@ load_from_local_env_if_present() {
     return 1
   fi
 
+  # FastAPI (optional)
+  local fa_inc fa_host fa_port fa_db fa_user fa_pass fa_schema
+  fa_inc="$(load_env_value "${ENV_FILE}" "INCLUDE_FASTAPI")"
+  [[ "${fa_inc}" == "0" || "${fa_inc}" == "1" ]] && INCLUDE_FASTAPI="${fa_inc}"
+
+  fa_host="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_URL_HOST")"
+  fa_port="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_URL_PORT")"
+  fa_db="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_URL_DATABASE")"
+  fa_user="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_USERNAME")"
+  fa_pass="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_PASSWORD")"
+  fa_schema="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_SCHEMA")"
+
+  if [[ -n "${fa_db}" && -n "${fa_user}" && -n "${fa_pass}" ]]; then
+    [[ -n "${fa_host}" ]] && FASTAPI_DB_URL_HOST="${fa_host}"
+    [[ -n "${fa_port}" ]] && FASTAPI_DB_URL_PORT="${fa_port}"
+    FASTAPI_DB_URL_DATABASE="${fa_db}"
+    FASTAPI_DB_USERNAME="${fa_user}"
+    FASTAPI_DB_PASSWORD="${fa_pass}"
+    [[ -n "${fa_schema}" ]] && FASTAPI_DB_SCHEMA="${fa_schema}"
+  fi
+
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
     local kc_host kc_port kc_db kc_user kc_pass kc_schema
     kc_host="$(load_env_value "${ENV_FILE}" "KC_DB_URL_HOST")"
@@ -595,9 +643,10 @@ vault_try_load_from_vault() {
   # Only used in generate mode when prefer vault and token is available.
   vault_token_acquire_if_needed || return 1
 
-  local postgres_path pgadmin_path keycloak_path
+  local postgres_path pgadmin_path fastapi_path keycloak_path
   postgres_path="$(prefixed_path "postgres")"
   pgadmin_path="$(prefixed_path "pgadmin")"
+  fastapi_path="$(prefixed_path "fastapi_postgres")"
   keycloak_path="$(prefixed_path "keycloak_postgres")"
 
   # Postgres
@@ -617,6 +666,22 @@ vault_try_load_from_vault() {
       PGADMIN_DEFAULT_PASSWORD="$(echo "${data}" | jq -r '.PGADMIN_DEFAULT_PASSWORD')"
       log "Using existing Vault secret for pgAdmin: ${VAULT_MOUNT}/${pgadmin_path}"
     }
+  fi
+
+  # FastAPI (optional)
+  if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
+    if data="$(vault_kv2_get_data_json "${VAULT_MOUNT}" "${fastapi_path}" 2>/dev/null || true)"; then
+      # Require minimum fields
+      echo "${data}" | jq -e '.FASTAPI_DB_URL_DATABASE and .FASTAPI_DB_USERNAME and .FASTAPI_DB_PASSWORD' >/dev/null 2>&1 && {
+        FASTAPI_DB_URL_DATABASE="$(echo "${data}" | jq -r '.FASTAPI_DB_URL_DATABASE')"
+        FASTAPI_DB_USERNAME="$(echo "${data}" | jq -r '.FASTAPI_DB_USERNAME')"
+        FASTAPI_DB_PASSWORD="$(echo "${data}" | jq -r '.FASTAPI_DB_PASSWORD')"
+        FASTAPI_DB_SCHEMA="$(echo "${data}" | jq -r '.FASTAPI_DB_SCHEMA // "public"')"
+        FASTAPI_DB_URL_HOST="$(echo "${data}" | jq -r '.FASTAPI_DB_URL_HOST // "postgres_primary"')"
+        FASTAPI_DB_URL_PORT="$(echo "${data}" | jq -r '.FASTAPI_DB_URL_PORT // "5432"')"
+        log "Using existing Vault secret for FastAPI Postgres: ${VAULT_MOUNT}/${fastapi_path}"
+      }
+    fi
   fi
 
   # Keycloak
@@ -737,15 +802,29 @@ if [[ "${MODE}" == "rotate" ]]; then
   # Rotate passwords; keep names from args/defaults (or from local/Vault load if present)
   POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(gen_urlsafe 32)}"
   PGADMIN_DEFAULT_PASSWORD="${PGADMIN_DEFAULT_PASSWORD:-$(gen_urlsafe 32)}"
+  if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
+    FASTAPI_DB_PASSWORD="${FASTAPI_DB_PASSWORD:-$(gen_urlsafe 32)}"
+  fi
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
     KEYCLOAK_DB_PASSWORD="${KEYCLOAK_DB_PASSWORD:-$(gen_urlsafe 32)}"
   fi
 else
   [[ -n "${POSTGRES_PASSWORD}" ]] || POSTGRES_PASSWORD="$(gen_urlsafe 32)"
   [[ -n "${PGADMIN_DEFAULT_PASSWORD}" ]] || PGADMIN_DEFAULT_PASSWORD="$(gen_urlsafe 32)"
+  if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
+    [[ -n "${FASTAPI_DB_PASSWORD}" ]] || FASTAPI_DB_PASSWORD="$(gen_urlsafe 32)"
+  fi
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
     [[ -n "${KEYCLOAK_DB_PASSWORD}" ]] || KEYCLOAK_DB_PASSWORD="$(gen_urlsafe 32)"
   fi
+fi
+
+# FastAPI defaults
+if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
+  [[ -n "${FASTAPI_DB_URL_DATABASE}" ]] || FASTAPI_DB_URL_DATABASE="${POSTGRES_DB}"
+  [[ -n "${FASTAPI_DB_URL_HOST}" ]] || FASTAPI_DB_URL_HOST="postgres_primary"
+  [[ -n "${FASTAPI_DB_URL_PORT}" ]] || FASTAPI_DB_URL_PORT="5432"
+  [[ -n "${FASTAPI_DB_SCHEMA}" ]] || FASTAPI_DB_SCHEMA="public"
 fi
 
 # Keycloak bootstrap/runtime defaults (and validation)
@@ -819,6 +898,16 @@ POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 
+INCLUDE_FASTAPI=${INCLUDE_FASTAPI}
+
+# FastAPI (network_tools DB — limited DML user)
+FASTAPI_DB_URL_HOST=${FASTAPI_DB_URL_HOST}
+FASTAPI_DB_URL_PORT=${FASTAPI_DB_URL_PORT}
+FASTAPI_DB_URL_DATABASE=${FASTAPI_DB_URL_DATABASE}
+FASTAPI_DB_USERNAME=${FASTAPI_DB_USERNAME}
+FASTAPI_DB_PASSWORD=${FASTAPI_DB_PASSWORD}
+FASTAPI_DB_SCHEMA=${FASTAPI_DB_SCHEMA}
+
 # pgAdmin
 PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
 PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
@@ -863,13 +952,58 @@ EOF
 fi
 
 # Credentials JSON
-if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
-  jq -n     --arg generated_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"     --arg vault_mount "${VAULT_MOUNT}"     --arg vault_prefix "${VAULT_PREFIX}"     --arg POSTGRES_DB "${POSTGRES_DB}"     --arg POSTGRES_USER "${POSTGRES_USER}"     --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"     --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"     --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"     --arg KC_DB "postgres"     --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}"     --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}"     --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}"     --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}"     --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}"     --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}"     --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}"     --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}"     --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}"     --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}"     --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}"     --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}"     --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}"     --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}"     --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}"     --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}"     --arg KEYCLOAK_TLS_PRESENT "${KEYCLOAK_TLS_PRESENT}"     --arg KC_HTTPS_CERTIFICATE_PEM_B64 "${KEYCLOAK_TLS_CERT_PEM_B64}"     --arg KC_HTTPS_CERTIFICATE_KEY_PEM_B64 "${KEYCLOAK_TLS_KEY_PEM_B64}"     --arg KC_HTTPS_CA_CERT_PEM_B64 "${KEYCLOAK_TLS_CA_PEM_B64}"     '{
-      generated_at_utc: $generated_at_utc,
-      vault: { mount: $vault_mount, prefix: $vault_prefix },
-      postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
-      pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD },
-      keycloak_postgres: {
+export INCLUDE_FASTAPI INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
+
+jq -n \
+  --arg generated_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+  --arg vault_mount "${VAULT_MOUNT}" \
+  --arg vault_prefix "${VAULT_PREFIX}" \
+  --arg POSTGRES_DB "${POSTGRES_DB}" \
+  --arg POSTGRES_USER "${POSTGRES_USER}" \
+  --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}" \
+  --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}" \
+  --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}" \
+  --arg FASTAPI_DB_URL_HOST "${FASTAPI_DB_URL_HOST}" \
+  --arg FASTAPI_DB_URL_PORT "${FASTAPI_DB_URL_PORT}" \
+  --arg FASTAPI_DB_URL_DATABASE "${FASTAPI_DB_URL_DATABASE}" \
+  --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
+  --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
+  --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
+  --arg KC_DB "postgres" \
+  --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}" \
+  --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}" \
+  --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}" \
+  --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}" \
+  --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}" \
+  --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}" \
+  --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}" \
+  --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
+  --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}" \
+  --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}" \
+  --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}" \
+  --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}" \
+  --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}" \
+  --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}" \
+  --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}" \
+  --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}" \
+  --arg KC_HTTPS_CERTIFICATE_PEM_B64 "${KEYCLOAK_TLS_CERT_PEM_B64}" \
+  --arg KC_HTTPS_CERTIFICATE_KEY_PEM_B64 "${KEYCLOAK_TLS_KEY_PEM_B64}" \
+  --arg KC_HTTPS_CA_CERT_PEM_B64 "${KEYCLOAK_TLS_CA_PEM_B64}" \
+  '{
+    generated_at_utc: $generated_at_utc,
+    vault: { mount: $vault_mount, prefix: $vault_prefix },
+    postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
+    pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD }
+  }
+  + (if env.INCLUDE_FASTAPI == "1" then { fastapi_postgres: {
+        FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
+        FASTAPI_DB_URL_PORT: $FASTAPI_DB_URL_PORT,
+        FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
+        FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
+        FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
+        FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
+      } } else {} end)
+  + (if env.INCLUDE_KEYCLOAK == "1" then { keycloak_postgres: {
         KC_DB: $KC_DB,
         KC_DB_URL_HOST: $KC_DB_URL_HOST,
         KC_DB_URL_PORT: $KC_DB_URL_PORT,
@@ -877,12 +1011,12 @@ if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
         KC_DB_USERNAME: $KC_DB_USERNAME,
         KC_DB_PASSWORD: $KC_DB_PASSWORD,
         KC_DB_SCHEMA: $KC_DB_SCHEMA
-      },
-      keycloak_bootstrap: {
+      } } else {} end)
+  + (if env.INCLUDE_KEYCLOAK_BOOTSTRAP == "1" then { keycloak_bootstrap: {
         KC_BOOTSTRAP_ADMIN_USERNAME: $KC_BOOTSTRAP_ADMIN_USERNAME,
         KC_BOOTSTRAP_ADMIN_PASSWORD: $KC_BOOTSTRAP_ADMIN_PASSWORD
-      },
-      keycloak_runtime: {
+      } } else {} end)
+  + (if env.INCLUDE_KEYCLOAK_RUNTIME == "1" then { keycloak_runtime: {
         KC_HOSTNAME: $KC_HOSTNAME,
         KC_HOSTNAME_STRICT: $KC_HOSTNAME_STRICT,
         KC_HTTP_ENABLED: $KC_HTTP_ENABLED,
@@ -891,105 +1025,188 @@ if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
         KC_METRICS_ENABLED: $KC_METRICS_ENABLED,
         KC_HTTP_MANAGEMENT_PORT: $KC_HTTP_MANAGEMENT_PORT,
         KC_HTTP_MANAGEMENT_SCHEME: $KC_HTTP_MANAGEMENT_SCHEME
-      },
-      keycloak_tls: (if $KEYCLOAK_TLS_PRESENT == "1" then {
+      } } else {} end)
+  + (if env.KEYCLOAK_TLS_PRESENT == "1" then { keycloak_tls: {
         KC_HTTPS_CERTIFICATE_PEM_B64: $KC_HTTPS_CERTIFICATE_PEM_B64,
         KC_HTTPS_CERTIFICATE_KEY_PEM_B64: $KC_HTTPS_CERTIFICATE_KEY_PEM_B64,
         KC_HTTPS_CA_CERT_PEM_B64: $KC_HTTPS_CA_CERT_PEM_B64
-      } else null end)
-    }' > "${JSON_FILE}"
-else
-  jq -n     --arg generated_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"     --arg vault_mount "${VAULT_MOUNT}"     --arg vault_prefix "${VAULT_PREFIX}"     --arg POSTGRES_DB "${POSTGRES_DB}"     --arg POSTGRES_USER "${POSTGRES_USER}"     --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"     --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"     --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"     '{
-      generated_at_utc: $generated_at_utc,
-      vault: { mount: $vault_mount, prefix: $vault_prefix },
-      postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
-      pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD }
-    }' > "${JSON_FILE}"
-fi
+      } } else {} end)
+  ' > "${JSON_FILE}"
 
-export INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
+export INCLUDE_FASTAPI INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
 # Seed spec JSON (KV v2)
 # Structure required by vault_unseal_multi_kv_seed_bootstrap_rootless.sh:
 # { mounts: [ { mount, version, prefix?, secrets: {...} } ] }
-if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
-  if [[ -n "${VAULT_PREFIX}" ]]; then
-    jq -n       --arg mount "${VAULT_MOUNT}"       --arg prefix "${VAULT_PREFIX}"       --arg POSTGRES_DB "${POSTGRES_DB}"       --arg POSTGRES_USER "${POSTGRES_USER}"       --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"       --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"       --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"       --arg KC_DB "postgres"       --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}"       --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}"       --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}"       --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}"       --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}"       --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}"       --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}"       --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}"       --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}"       --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}"       --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}"       --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}"       --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}"       --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}"       --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}"       --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}"       --arg KC_HTTPS_CERTIFICATE_PEM_B64 "${KEYCLOAK_TLS_CERT_PEM_B64}"       --arg KC_HTTPS_CERTIFICATE_KEY_PEM_B64 "${KEYCLOAK_TLS_KEY_PEM_B64}"       --arg KC_HTTPS_CA_CERT_PEM_B64 "${KEYCLOAK_TLS_CA_PEM_B64}"       '{
-        mounts: [
-          {
-            mount: $mount,
-            version: 2,
-            prefix: $prefix,
-            secrets: (
-              {
-                postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
-                pgadmin:  { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD },
-                keycloak_postgres: { KC_DB: $KC_DB, KC_DB_URL_HOST: $KC_DB_URL_HOST, KC_DB_URL_PORT: $KC_DB_URL_PORT, KC_DB_URL_DATABASE: $KC_DB_URL_DATABASE,
-                                     KC_DB_USERNAME: $KC_DB_USERNAME, KC_DB_PASSWORD: $KC_DB_PASSWORD, KC_DB_SCHEMA: $KC_DB_SCHEMA }
-              }
-              + (if env.INCLUDE_KEYCLOAK_BOOTSTRAP == "1" then { keycloak_bootstrap: { KC_BOOTSTRAP_ADMIN_USERNAME: $KC_BOOTSTRAP_ADMIN_USERNAME, KC_BOOTSTRAP_ADMIN_PASSWORD: $KC_BOOTSTRAP_ADMIN_PASSWORD } } else {} end)
-              + (if env.INCLUDE_KEYCLOAK_RUNTIME == "1" then { keycloak_runtime: { KC_HOSTNAME: $KC_HOSTNAME, KC_HOSTNAME_STRICT: $KC_HOSTNAME_STRICT, KC_HTTP_ENABLED: $KC_HTTP_ENABLED, KC_HTTPS_PORT: $KC_HTTPS_PORT,
-                                                                                 KC_HEALTH_ENABLED: $KC_HEALTH_ENABLED, KC_METRICS_ENABLED: $KC_METRICS_ENABLED, KC_HTTP_MANAGEMENT_PORT: $KC_HTTP_MANAGEMENT_PORT,
-                                                                                 KC_HTTP_MANAGEMENT_SCHEME: $KC_HTTP_MANAGEMENT_SCHEME } } else {} end)
-              + (if env.KEYCLOAK_TLS_PRESENT == "1" then { keycloak_tls: { KC_HTTPS_CERTIFICATE_PEM_B64: $KC_HTTPS_CERTIFICATE_PEM_B64, KC_HTTPS_CERTIFICATE_KEY_PEM_B64: $KC_HTTPS_CERTIFICATE_KEY_PEM_B64, KC_HTTPS_CA_CERT_PEM_B64: $KC_HTTPS_CA_CERT_PEM_B64 } } else {} end)
-            )
-          }
-        ]
-      }' > "${SPEC_FILE}"
-  else
-    jq -n       --arg mount "${VAULT_MOUNT}"       --arg POSTGRES_DB "${POSTGRES_DB}"       --arg POSTGRES_USER "${POSTGRES_USER}"       --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"       --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"       --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"       --arg KC_DB "postgres"       --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}"       --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}"       --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}"       --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}"       --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}"       --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}"       --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}"       --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}"       --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}"       --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}"       --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}"       --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}"       --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}"       --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}"       --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}"       --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}"       --arg KC_HTTPS_CERTIFICATE_PEM_B64 "${KEYCLOAK_TLS_CERT_PEM_B64}"       --arg KC_HTTPS_CERTIFICATE_KEY_PEM_B64 "${KEYCLOAK_TLS_KEY_PEM_B64}"       --arg KC_HTTPS_CA_CERT_PEM_B64 "${KEYCLOAK_TLS_CA_PEM_B64}"       '{
-        mounts: [
-          {
-            mount: $mount,
-            version: 2,
-            secrets: (
-              {
-                postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
-                pgadmin:  { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD },
-                keycloak_postgres: { KC_DB: $KC_DB, KC_DB_URL_HOST: $KC_DB_URL_HOST, KC_DB_URL_PORT: $KC_DB_URL_PORT, KC_DB_URL_DATABASE: $KC_DB_URL_DATABASE,
-                                     KC_DB_USERNAME: $KC_DB_USERNAME, KC_DB_PASSWORD: $KC_DB_PASSWORD, KC_DB_SCHEMA: $KC_DB_SCHEMA }
-              }
-              + (if env.INCLUDE_KEYCLOAK_BOOTSTRAP == "1" then { keycloak_bootstrap: { KC_BOOTSTRAP_ADMIN_USERNAME: $KC_BOOTSTRAP_ADMIN_USERNAME, KC_BOOTSTRAP_ADMIN_PASSWORD: $KC_BOOTSTRAP_ADMIN_PASSWORD } } else {} end)
-              + (if env.INCLUDE_KEYCLOAK_RUNTIME == "1" then { keycloak_runtime: { KC_HOSTNAME: $KC_HOSTNAME, KC_HOSTNAME_STRICT: $KC_HOSTNAME_STRICT, KC_HTTP_ENABLED: $KC_HTTP_ENABLED, KC_HTTPS_PORT: $KC_HTTPS_PORT,
-                                                                                 KC_HEALTH_ENABLED: $KC_HEALTH_ENABLED, KC_METRICS_ENABLED: $KC_METRICS_ENABLED, KC_HTTP_MANAGEMENT_PORT: $KC_HTTP_MANAGEMENT_PORT,
-                                                                                 KC_HTTP_MANAGEMENT_SCHEME: $KC_HTTP_MANAGEMENT_SCHEME } } else {} end)
-              + (if env.KEYCLOAK_TLS_PRESENT == "1" then { keycloak_tls: { KC_HTTPS_CERTIFICATE_PEM_B64: $KC_HTTPS_CERTIFICATE_PEM_B64, KC_HTTPS_CERTIFICATE_KEY_PEM_B64: $KC_HTTPS_CERTIFICATE_KEY_PEM_B64, KC_HTTPS_CA_CERT_PEM_B64: $KC_HTTPS_CA_CERT_PEM_B64 } } else {} end)
-            )
-          }
-        ]
-      }' > "${SPEC_FILE}"
-  fi
-else
-  if [[ -n "${VAULT_PREFIX}" ]]; then
-    jq -n       --arg mount "${VAULT_MOUNT}"       --arg prefix "${VAULT_PREFIX}"       --arg POSTGRES_DB "${POSTGRES_DB}"       --arg POSTGRES_USER "${POSTGRES_USER}"       --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"       --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"       --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"       '{
-        mounts: [
-          {
-            mount: $mount,
-            version: 2,
-            prefix: $prefix,
-            secrets: {
-              postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
-              pgadmin:  { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD }
-            }
-          }
-        ]
-      }' > "${SPEC_FILE}"
-  else
-    jq -n       --arg mount "${VAULT_MOUNT}"       --arg POSTGRES_DB "${POSTGRES_DB}"       --arg POSTGRES_USER "${POSTGRES_USER}"       --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"       --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}"       --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}"       '{
-        mounts: [
-          {
-            mount: $mount,
-            version: 2,
-            secrets: {
-              postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
-              pgadmin:  { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD }
-            }
-          }
-        ]
-      }' > "${SPEC_FILE}"
-  fi
-fi
 
-chmod 600 "${ENV_FILE}" "${JSON_FILE}" "${SPEC_FILE}" || true
+export INCLUDE_FASTAPI INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
+
+if [[ -n "${VAULT_PREFIX}" ]]; then
+  jq -n \
+    --arg mount "${VAULT_MOUNT}" \
+    --arg prefix "${VAULT_PREFIX}" \
+    --arg POSTGRES_DB "${POSTGRES_DB}" \
+    --arg POSTGRES_USER "${POSTGRES_USER}" \
+    --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}" \
+    --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}" \
+    --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}" \
+    --arg FASTAPI_DB_URL_HOST "${FASTAPI_DB_URL_HOST}" \
+    --arg FASTAPI_DB_URL_PORT "${FASTAPI_DB_URL_PORT}" \
+    --arg FASTAPI_DB_URL_DATABASE "${FASTAPI_DB_URL_DATABASE}" \
+    --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
+    --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
+    --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
+    --arg KC_DB "postgres" \
+    --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}" \
+    --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}" \
+    --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}" \
+    --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}" \
+    --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}" \
+    --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}" \
+    --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}" \
+    --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
+    --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}" \
+    --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}" \
+    --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}" \
+    --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}" \
+    --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}" \
+    --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}" \
+    --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}" \
+    --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}" \
+    --arg KC_HTTPS_CERTIFICATE_PEM_B64 "${KEYCLOAK_TLS_CERT_PEM_B64}" \
+    --arg KC_HTTPS_CERTIFICATE_KEY_PEM_B64 "${KEYCLOAK_TLS_KEY_PEM_B64}" \
+    --arg KC_HTTPS_CA_CERT_PEM_B64 "${KEYCLOAK_TLS_CA_PEM_B64}" \
+    '{
+      mounts: [
+        {
+          mount: $mount,
+          version: 2,
+          prefix: $prefix,
+          secrets: (
+            { postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
+              pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD } }
+            + (if env.INCLUDE_FASTAPI == "1" then { fastapi_postgres: {
+                  FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
+                  FASTAPI_DB_URL_PORT: $FASTAPI_DB_URL_PORT,
+                  FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
+                  FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
+                  FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
+                  FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
+                } } else {} end)
+            + (if env.INCLUDE_KEYCLOAK == "1" then { keycloak_postgres: {
+                  KC_DB: $KC_DB,
+                  KC_DB_URL_HOST: $KC_DB_URL_HOST,
+                  KC_DB_URL_PORT: $KC_DB_URL_PORT,
+                  KC_DB_URL_DATABASE: $KC_DB_URL_DATABASE,
+                  KC_DB_USERNAME: $KC_DB_USERNAME,
+                  KC_DB_PASSWORD: $KC_DB_PASSWORD,
+                  KC_DB_SCHEMA: $KC_DB_SCHEMA
+                } } else {} end)
+            + (if env.INCLUDE_KEYCLOAK_BOOTSTRAP == "1" then { keycloak_bootstrap: {
+                  KC_BOOTSTRAP_ADMIN_USERNAME: $KC_BOOTSTRAP_ADMIN_USERNAME,
+                  KC_BOOTSTRAP_ADMIN_PASSWORD: $KC_BOOTSTRAP_ADMIN_PASSWORD
+                } } else {} end)
+            + (if env.INCLUDE_KEYCLOAK_RUNTIME == "1" then { keycloak_runtime: {
+                  KC_HOSTNAME: $KC_HOSTNAME,
+                  KC_HOSTNAME_STRICT: $KC_HOSTNAME_STRICT,
+                  KC_HTTP_ENABLED: $KC_HTTP_ENABLED,
+                  KC_HTTPS_PORT: $KC_HTTPS_PORT,
+                  KC_HEALTH_ENABLED: $KC_HEALTH_ENABLED,
+                  KC_METRICS_ENABLED: $KC_METRICS_ENABLED,
+                  KC_HTTP_MANAGEMENT_PORT: $KC_HTTP_MANAGEMENT_PORT,
+                  KC_HTTP_MANAGEMENT_SCHEME: $KC_HTTP_MANAGEMENT_SCHEME
+                } } else {} end)
+            + (if env.KEYCLOAK_TLS_PRESENT == "1" then { keycloak_tls: {
+                  KC_HTTPS_CERTIFICATE_PEM_B64: $KC_HTTPS_CERTIFICATE_PEM_B64,
+                  KC_HTTPS_CERTIFICATE_KEY_PEM_B64: $KC_HTTPS_CERTIFICATE_KEY_PEM_B64,
+                  KC_HTTPS_CA_CERT_PEM_B64: $KC_HTTPS_CA_CERT_PEM_B64
+                } } else {} end)
+          )
+        }
+      ]
+    }' > "${SPEC_FILE}"
+else
+  jq -n \
+    --arg mount "${VAULT_MOUNT}" \
+    --arg POSTGRES_DB "${POSTGRES_DB}" \
+    --arg POSTGRES_USER "${POSTGRES_USER}" \
+    --arg POSTGRES_PASSWORD "${POSTGRES_PASSWORD}" \
+    --arg PGADMIN_DEFAULT_EMAIL "${PGADMIN_DEFAULT_EMAIL}" \
+    --arg PGADMIN_DEFAULT_PASSWORD "${PGADMIN_DEFAULT_PASSWORD}" \
+    --arg FASTAPI_DB_URL_HOST "${FASTAPI_DB_URL_HOST}" \
+    --arg FASTAPI_DB_URL_PORT "${FASTAPI_DB_URL_PORT}" \
+    --arg FASTAPI_DB_URL_DATABASE "${FASTAPI_DB_URL_DATABASE}" \
+    --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
+    --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
+    --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
+    --arg KC_DB "postgres" \
+    --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}" \
+    --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}" \
+    --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}" \
+    --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}" \
+    --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}" \
+    --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}" \
+    --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}" \
+    --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
+    --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}" \
+    --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}" \
+    --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}" \
+    --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}" \
+    --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}" \
+    --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}" \
+    --arg KC_HTTP_MANAGEMENT_PORT "${KEYCLOAK_HTTP_MANAGEMENT_PORT}" \
+    --arg KC_HTTP_MANAGEMENT_SCHEME "${KEYCLOAK_HTTP_MANAGEMENT_SCHEME}" \
+    --arg KC_HTTPS_CERTIFICATE_PEM_B64 "${KEYCLOAK_TLS_CERT_PEM_B64}" \
+    --arg KC_HTTPS_CERTIFICATE_KEY_PEM_B64 "${KEYCLOAK_TLS_KEY_PEM_B64}" \
+    --arg KC_HTTPS_CA_CERT_PEM_B64 "${KEYCLOAK_TLS_CA_PEM_B64}" \
+    '{
+      mounts: [
+        {
+          mount: $mount,
+          version: 2,
+          secrets: (
+            { postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
+              pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD } }
+            + (if env.INCLUDE_FASTAPI == "1" then { fastapi_postgres: {
+                  FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
+                  FASTAPI_DB_URL_PORT: $FASTAPI_DB_URL_PORT,
+                  FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
+                  FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
+                  FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
+                  FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
+                } } else {} end)
+            + (if env.INCLUDE_KEYCLOAK == "1" then { keycloak_postgres: {
+                  KC_DB: $KC_DB,
+                  KC_DB_URL_HOST: $KC_DB_URL_HOST,
+                  KC_DB_URL_PORT: $KC_DB_URL_PORT,
+                  KC_DB_URL_DATABASE: $KC_DB_URL_DATABASE,
+                  KC_DB_USERNAME: $KC_DB_USERNAME,
+                  KC_DB_PASSWORD: $KC_DB_PASSWORD,
+                  KC_DB_SCHEMA: $KC_DB_SCHEMA
+                } } else {} end)
+            + (if env.INCLUDE_KEYCLOAK_BOOTSTRAP == "1" then { keycloak_bootstrap: {
+                  KC_BOOTSTRAP_ADMIN_USERNAME: $KC_BOOTSTRAP_ADMIN_USERNAME,
+                  KC_BOOTSTRAP_ADMIN_PASSWORD: $KC_BOOTSTRAP_ADMIN_PASSWORD
+                } } else {} end)
+            + (if env.INCLUDE_KEYCLOAK_RUNTIME == "1" then { keycloak_runtime: {
+                  KC_HOSTNAME: $KC_HOSTNAME,
+                  KC_HOSTNAME_STRICT: $KC_HOSTNAME_STRICT,
+                  KC_HTTP_ENABLED: $KC_HTTP_ENABLED,
+                  KC_HTTPS_PORT: $KC_HTTPS_PORT,
+                  KC_HEALTH_ENABLED: $KC_HEALTH_ENABLED,
+                  KC_METRICS_ENABLED: $KC_METRICS_ENABLED,
+                  KC_HTTP_MANAGEMENT_PORT: $KC_HTTP_MANAGEMENT_PORT,
+                  KC_HTTP_MANAGEMENT_SCHEME: $KC_HTTP_MANAGEMENT_SCHEME
+                } } else {} end)
+            + (if env.KEYCLOAK_TLS_PRESENT == "1" then { keycloak_tls: {
+                  KC_HTTPS_CERTIFICATE_PEM_B64: $KC_HTTPS_CERTIFICATE_PEM_B64,
+                  KC_HTTPS_CERTIFICATE_KEY_PEM_B64: $KC_HTTPS_CERTIFICATE_KEY_PEM_B64,
+                  KC_HTTPS_CA_CERT_PEM_B64: $KC_HTTPS_CA_CERT_PEM_B64
+                } } else {} end)
+          )
+        }
+      ]
+    }' > "${SPEC_FILE}"
+fi
 
 log "Wrote credential artifacts:"
 log "  ENV:  ${ENV_FILE}"
@@ -1201,6 +1418,11 @@ if [[ "${APPLY_TO_POSTGRES}" -eq 1 ]]; then
     -e NT_DB="${POSTGRES_DB}" \
     -e NT_USER="${POSTGRES_USER}" \
     -e NT_PASS="${POSTGRES_PASSWORD}" \
+    -e INCLUDE_FASTAPI="${INCLUDE_FASTAPI}" \
+    -e FASTAPI_DB="${FASTAPI_DB_URL_DATABASE}" \
+    -e FASTAPI_USER="${FASTAPI_DB_USERNAME}" \
+    -e FASTAPI_PASS="${FASTAPI_DB_PASSWORD}" \
+    -e FASTAPI_SCHEMA="${FASTAPI_DB_SCHEMA}" \
     -e INCLUDE_KEYCLOAK="${INCLUDE_KEYCLOAK}" \
     -e KC_DB="${KEYCLOAK_DB_URL_DATABASE}" \
     -e KC_USER="${KEYCLOAK_DB_USERNAME}" \
@@ -1266,8 +1488,68 @@ SQL
 }
 
 
+apply_app_dml_user() {
+  local dbname="$1"
+  local schema_name="$2"
+  local username="$3"
+  local password="$4"
+  local owner_role="$5"
+  local admin_db="${POSTGRES_ADMIN_DB}"
+
+  # Create/rotate role password, grant CONNECT (and TEMP) at the database level
+  psql -v ON_ERROR_STOP=1 --username="${ADMIN_USER}" --dbname="${admin_db}" \
+    --set=db_name="${dbname}" --set=role_name="${username}" --set=role_pass="${password}" <<'SQL'
+-- Create role if missing
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L;', :'role_name', :'role_pass')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role_name')
+\gexec
+
+-- Ensure password is set/updated (idempotent)
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L;', :'role_name', :'role_pass')
+\gexec
+
+-- Allow the role to connect to the DB (and use temp tables)
+SELECT format('GRANT CONNECT, TEMPORARY ON DATABASE %I TO %I;', :'db_name', :'role_name')
+\gexec
+SQL
+
+  # Grant DML on existing objects and set default privileges for future objects
+  psql -v ON_ERROR_STOP=1 --username="${ADMIN_USER}" --dbname="${dbname}" \
+    --set=schema_name="${schema_name}" --set=role_name="${username}" --set=owner_role="${owner_role}" <<'SQL'
+-- IMPORTANT: Prevent accidental DDL in public by removing CREATE from PUBLIC.
+-- (Schema owners retain CREATE automatically; grant CREATE explicitly if desired.)
+SELECT format('REVOKE CREATE ON SCHEMA %I FROM PUBLIC;', :'schema_name')
+\gexec
+
+-- Ensure schema usage
+SELECT format('GRANT USAGE ON SCHEMA %I TO %I;', :'schema_name', :'role_name')
+\gexec
+
+-- Existing objects
+SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I;', :'schema_name', :'role_name')
+\gexec
+
+SELECT format('GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA %I TO %I;', :'schema_name', :'role_name')
+\gexec
+
+-- Future objects created by the owner role
+SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I;', :'owner_role', :'schema_name', :'role_name')
+\gexec
+
+SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I;', :'owner_role', :'schema_name', :'role_name')
+\gexec
+SQL
+}
+
+
 apply_role_and_db "${NT_DB}" "${NT_USER}" "${NT_PASS}"
 echo "INFO: Ensured network_tools role/db exist: user=${NT_USER} db=${NT_DB}"
+
+if [[ "${INCLUDE_FASTAPI}" == "1" ]]; then
+  apply_app_dml_user "${FASTAPI_DB}" "${FASTAPI_SCHEMA}" "${FASTAPI_USER}" "${FASTAPI_PASS}" "${NT_USER}"
+  echo "INFO: Ensured fastapi DML grants: user=${FASTAPI_USER} db=${FASTAPI_DB} schema=${FASTAPI_SCHEMA}"
+fi
+
 
 if [[ "${INCLUDE_KEYCLOAK}" == "1" ]]; then
   apply_role_and_db "${KC_DB}" "${KC_USER}" "${KC_PASS}"

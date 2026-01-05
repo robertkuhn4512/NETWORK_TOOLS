@@ -5,95 +5,63 @@
 - [Ubuntu ARM Development Server – NETWORK_TOOLS Setup](./README.full.md#ubuntu-arm-development-server-network_tools-setup)
   - [Table of Contents](./README.full.md#table-of-contents)
 
-Required Steps
-- [3.1 Generate TLS Certificates](./README.full.md#31-generate-tls-certificates)
-- [3.6.1 Run the Init + Unseal Script](./README.full.md#361-run-the-init-unseal-script)
-- [4.1 Bootstrap credentials (generate + seed)](./README.full.md#41-bootstrap-credentials-generate-seed)
-- [4.3 Use with Docker Compose](./README.full.md#43-use-with-docker-compose)
-- [7.2.1 TLS material (local certs → Vault KV)](./README.full.md#721-tls-material-local-certs-vault-kv)
-- [7.3.3 Host-side export script (role_id + secret_id)](./README.full.md#733-host-side-export-script-role_id-secret_id)
-- [4.3.3 Start postgres_primary](./README.full.md#433-start-postgres_primary)
+Generate Self Signed Certificates (Or you can replace with your own:Procedure is WIP)
 
-Run these commands to bring up the containers one set at a time
-Test connectivity to each of them when they are up via the generated credentials
-to ensure they were wired in correctly at boot. Otherwise you may need to rebuild each container
+1.[generate_local_keycloak_certs.sh](backend%2Fbuild_scripts%2Fgenerate_local_keycloak_certs.sh)
 
-docker compose -f docker-compose.prod.yml up -d postgres_primary
-docker compose -f docker-compose.prod.yml up -d pgadmin
-docker compose -f docker-compose.prod.yml up -d keycloak
+```bash
+$HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_keycloak_certs.sh
+```
+Or to overwrite existing certificate files
+```bash
+$HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_keycloak_certs.sh --force
+```
 
-  - [4.3.1 Compose prerequisites](./README.full.md#431-compose-prerequisites)
-  - [4.3.2 Initialize the Postgres certs volume](./README.full.md#432-initialize-the-postgres-certs-volume)
-  - [4.3.4 Verify and connect](./README.full.md#434-verify-and-connect)
-  - [4.3.5 Troubleshooting](./README.full.md#435-troubleshooting)
-  - [4.4 Startup credential options (choose one)](./README.full.md#44-startup-credential-options-choose-one)
-  - [4.5 Apply Vault credentials to an existing Postgres cluster](./README.full.md#45-apply-vault-credentials-to-an-existing-postgres-cluster)
-  - [4.6 Rotation runbook (static credentials)](./README.full.md#46-rotation-runbook-static-credentials)
-  - [5. pgAdmin](./README.full.md#5-pgadmin)
-  - [5.1 Bootstrap credentials (generate + seed)](./README.full.md#51-bootstrap-credentials-generate-seed)
-  - [5.2 Retrieve credentials from Vault](./README.full.md#52-retrieve-credentials-from-vault)
-  - [5.3 Use with Docker Compose](./README.full.md#53-use-with-docker-compose)
-  - [5.4 Startup credential options (choose one)](./README.full.md#54-startup-credential-options-choose-one)
-  - [6. Postgres and pgAdmin Vault Integration Bootstrapping](./README.full.md#6-postgres-and-pgadmin-vault-integration-bootstrapping)
-  - [6.1 Overview and constraints](./README.full.md#61-overview-and-constraints)
-  - [6.2 Option A – Keep env file (.env) as the runtime source of truth](./README.full.md#62-option-a-keep-env-file-env-as-the-runtime-source-of-truth)
-  - [When to use this option](./README.full.md#when-to-use-this-option)
-  - [Steps](./README.full.md#steps)
-  - [6.3 Option B – Vault Agent sidecar renders file-based secrets at container start](./README.full.md#63-option-b-vault-agent-sidecar-renders-file-based-secrets-at-container-start)
-  - [High-level flow](./README.full.md#high-level-flow)
-  - [6.3.1 Create a least-privilege Vault policy](./README.full.md#631-create-a-least-privilege-vault-policy)
-  - [6.3.2 Create an AppRole for the agent](./README.full.md#632-create-an-approle-for-the-agent)
-  - [6.3.3 Export Role ID and Secret ID for the Vault Agent](./README.full.md#633-export-role-id-and-secret-id-for-the-vault-agent)
-  - [6.3.3.1 Recommended: use the repo export script](./README.full.md#6331-recommended-use-the-repo-export-script)
-  - [6.3.3.2 Manual commands (fully expanded; no script)](./README.full.md#6332-manual-commands-fully-expanded-no-script)
-  - [6.3.4 Vault Agent config + templates](./README.full.md#634-vault-agent-config-templates)
-  - [6.3.5 Docker Compose wiring (vault-agent + shared secrets volume)](./README.full.md#635-docker-compose-wiring-vault-agent-shared-secrets-volume)
-  - [6.3.6 Bring-up and verification](./README.full.md#636-bring-up-and-verification)
-  - [6.3.6.1 Current bring-up commands (Approach 2: single compose file)](./README.full.md#6361-current-bring-up-commands-approach-2-single-compose-file)
-  - [6.3.6.2 Troubleshooting: common Vault Agent errors](./README.full.md#6362-troubleshooting-common-vault-agent-errors)
-  - [6.3.7 Rotation and operational notes](./README.full.md#637-rotation-and-operational-notes)
-  - [6.4 Option C – Advanced: Vault Database secrets engine (dynamic credentials)](./README.full.md#64-option-c-advanced-vault-database-secrets-engine-dynamic-credentials)
-  - [6.4.1 What this enables (and what it is *not*)](./README.full.md#641-what-this-enables-and-what-it-is-not)
-  - [6.4.2 Prerequisites](./README.full.md#642-prerequisites)
-  - [6.4.3 Create a dedicated Postgres management role for Vault](./README.full.md#643-create-a-dedicated-postgres-management-role-for-vault)
-  - [6.4.4 Enable and configure Vault’s PostgreSQL database connection](./README.full.md#644-enable-and-configure-vaults-postgresql-database-connection)
-  - [6.4.5 Create a Vault role that defines how dynamic users are created](./README.full.md#645-create-a-vault-role-that-defines-how-dynamic-users-are-created)
-  - [6.4.6 Fetch credentials and validate](./README.full.md#646-fetch-credentials-and-validate)
-  - [6.4.7 Rotation (future-facing)](./README.full.md#647-rotation-future-facing)
-  - [7. Keycloak Vault Integration Bootstrapping](./README.full.md#7-keycloak-vault-integration-bootstrapping)
-  - [7.1 Vault KV paths and required keys](./README.full.md#71-vault-kv-paths-and-required-keys)
-  - [7.2 Seeding Keycloak secrets into Vault](./README.full.md#72-seeding-keycloak-secrets-into-vault)
-  - [7.3 Vault Agent sidecar for Keycloak](./README.full.md#73-vault-agent-sidecar-for-keycloak)
-  - [7.3.1 Create a least-privilege Vault policy](./README.full.md#731-create-a-least-privilege-vault-policy)
-  - [7.3.2 Create an AppRole for the Keycloak agent](./README.full.md#732-create-an-approle-for-the-keycloak-agent)
-  - [7.3.4 Vault Agent config + template](./README.full.md#734-vault-agent-config-template)
-  - [7.3.5 Docker Compose wiring](./README.full.md#735-docker-compose-wiring)
-  - [7.3.6 Bring-up and verification](./README.full.md#736-bring-up-and-verification)
-  - [7.3.7 Troubleshooting](./README.full.md#737-troubleshooting)
-  - [7.3.8 Rotation and operational notes](./README.full.md#738-rotation-and-operational-notes)
-  - [7.4 Keycloak hardening notes](./README.full.md#74-keycloak-hardening-notes)
-  - [Appendix A – Certificate Management](./README.full.md#appendix-a-certificate-management)
-  - [A.1 Vault TLS Certificates – What to Keep and Where](./README.full.md#a1-vault-tls-certificates-what-to-keep-and-where)
-  - [1. Files That Must Be Treated as Secrets](./README.full.md#1-files-that-must-be-treated-as-secrets)
-  - [2. Files That Can Be Safely Distributed](./README.full.md#2-files-that-can-be-safely-distributed)
-  - [3. Recommended Project Layout and Git Hygiene](./README.full.md#3-recommended-project-layout-and-git-hygiene)
-  - [4. Minimal “Must-Keep” List](./README.full.md#4-minimal-must-keep-list)
-  - [A.2 Rootless Docker and Subordinate UID/GID Ranges (subuid/subgid)](./README.full.md#a2-rootless-docker-and-subordinate-uidgid-ranges-subuidsubgid)
-  - [What are UID/GID ranges?](./README.full.md#what-are-uidgid-ranges)
-  - [Why “at least 65,536”?](./README.full.md#why-at-least-65536)
-  - [How to check your current ranges](./README.full.md#how-to-check-your-current-ranges)
-  - [How to set the ranges (Ubuntu)](./README.full.md#how-to-set-the-ranges-ubuntu)
-  - [Common symptoms when this is missing or wrong](./README.full.md#common-symptoms-when-this-is-missing-or-wrong)
-  - [Appendix B – Container Hardening Recommendations (Vault / Vault Agent / Postgres / pgAdmin)](./README.full.md#appendix-b-container-hardening-recommendations-vault-vault-agent-postgres-pgadmin)
-  - [B.1 Network and port exposure](./README.full.md#b1-network-and-port-exposure)
-  - [B.2 Drop privileges, reduce Linux capabilities, and prevent privilege escalation](./README.full.md#b2-drop-privileges-reduce-linux-capabilities-and-prevent-privilege-escalation)
-  - [B.3 Read-only root filesystem + tmpfs](./README.full.md#b3-read-only-root-filesystem-tmpfs)
-  - [B.4 Tighten service dependencies to avoid accidental Vault restarts](./README.full.md#b4-tighten-service-dependencies-to-avoid-accidental-vault-restarts)
-  - [B.5 Secrets hygiene](./README.full.md#b5-secrets-hygiene)
-  - [B.6 Image pinning and update discipline](./README.full.md#b6-image-pinning-and-update-discipline)
-  - [B.7 Vault-specific hardening (forward-looking)](./README.full.md#b7-vault-specific-hardening-forward-looking)
-  - [8. Lessons learned and common issues](./README.full.md#8-lessons-learned-and-common-issues)
-  - [8.1 Vault Agent sidecar gotchas](./README.full.md#81-vault-agent-sidecar-gotchas)
-  - [8.2 Template and rendering pitfalls](./README.full.md#82-template-and-rendering-pitfalls)
-  - [8.3 Container entrypoint and permissions pitfalls](./README.full.md#83-container-entrypoint-and-permissions-pitfalls)
-  - [8.4 Postgres credential drift and how to fix it](./README.full.md#84-postgres-credential-drift-and-how-to-fix-it)
+2.[generate_local_postgres_certs.sh](backend%2Fbuild_scripts%2Fgenerate_local_postgres_certs.sh)
+
+```bash
+$HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_postgres_certs.sh
+```
+Or to overwrite existing certificate files
+```bash
+$HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_postgres_certs.sh --force
+```
+
+3.[generate_local_vault_certs.sh](backend%2Fbuild_scripts%2Fgenerate_local_vault_certs.sh)
+
+```bash
+$HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_vault_certs.sh
+```
+Or to overwrite existing certificate files
+```bash
+$HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_vault_certs.sh --force
+```
+
+4.[generate_local_pgadmin_certs.sh](backend%2Fbuild_scripts%2Fgenerate_local_pgadmin_certs.sh)
+
+```bash
+$HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_pgadmin_certs.sh
+```
+Or to overwrite existing certificate files
+```bash
+$HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_pgadmin_certs.sh --force
+```
+
+5.[vault_first_time_init_only_rootless.sh](backend%2Fbuild_scripts%2Fvault_first_time_init_only_rootless.sh)
+
+CLI Command<br>
+Initial vault build command
+```bash
+bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --init-shares 5 --init-threshold 3
+```
+
+6.[generate_postgres_pgadmin_bootstrap_creds_and_seed.sh](backend%2Fbuild_scripts%2Fgenerate_postgres_pgadmin_bootstrap_creds_and_seed.sh)
+```bash
+bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+  --vault-addr "https://vault_production_node:8200" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --unseal-required 3
+```
