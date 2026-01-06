@@ -1,0 +1,72 @@
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
+
+server {
+  listen 8080;
+  server_name _;
+
+  location = /nginx-health { return 200 "ok\n"; }
+
+  location / {
+    return 301 https://$host:${PUBLIC_HTTPS_PORT}$request_uri;
+  }
+}
+
+server {
+  listen 8443 ssl http2;
+  server_name auth.${PRIMARY_SERVER_FQDN};
+
+  ssl_certificate     /etc/nginx/certs/cert.crt;
+  ssl_certificate_key /etc/nginx/certs/cert.key;
+
+  location / {
+    proxy_pass http://keycloak:8080;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 8443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+  }
+}
+
+server {
+  listen 8443 ssl http2;
+  server_name api.${PRIMARY_SERVER_FQDN};
+
+  ssl_certificate     /etc/nginx/certs/cert.crt;
+  ssl_certificate_key /etc/nginx/certs/cert.key;
+
+  location / {
+    proxy_pass http://fastapi_api:8000;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 8443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+}
+
+server {
+  listen 8443 ssl http2;
+  server_name pgadmin.${PRIMARY_SERVER_FQDN};
+
+  ssl_certificate     /etc/nginx/certs/cert.crt;
+  ssl_certificate_key /etc/nginx/certs/cert.key;
+
+  location / {
+    proxy_pass http://pgadmin:80;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 8443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+}

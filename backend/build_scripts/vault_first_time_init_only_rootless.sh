@@ -21,7 +21,7 @@
 #
 #     Optional (first-time init convenience; Keycloak Vault Agent):
 #       - Enable AppRole auth (if not already enabled) unless --no-setup-keycloak-approle
-#       - Create a baseline ACL policy (default: keycloak_read)
+#       - Create a baseline ACL policy (default: keycloak_read.hcl)
 #       - Create a baseline AppRole role bound to that policy (default: keycloak_agent)
 
 #       - Enable AppRole auth (if not already enabled) unless --no-setup-postgres-pgadmin-approle

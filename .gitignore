@@ -48,3 +48,4 @@ backend/app/security/configuration_files/vault/certs/
 
 #Ignore local how to videos
 how_to_videos/*
+

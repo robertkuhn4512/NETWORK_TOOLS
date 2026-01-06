@@ -48,6 +48,55 @@ services:
   # docker compose -p network_tools -f docker-compose.prod.yml logs --tail 200 -f --timestamps vault_production_node
   #
   #
+
+  # NGINX Container
+  # docker compose -f docker-compose.prod.yml up -d nginx_gateway
+  #
+  # Rebuild without changing dependencies
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate nginx_gateway
+  #
+  nginx_gateway:
+    image: nginx:1.27-alpine
+    container_name: nginx_gateway
+    restart: unless-stopped
+    depends_on:
+      - keycloak
+      # - fastapi_api   # uncomment once FastAPI service exists
+    networks:
+      public_net:
+    ports:
+      - "${PUBLIC_HTTP_PORT}:8080"
+      - "${PUBLIC_HTTPS_PORT}:8443"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+      - /etc/nginx/conf.d
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Needed so nginx can bind/listen inside container
+      - NET_BIND_SERVICE
+    volumes:
+      - ./backend/app/nginx/templates:/etc/nginx/templates:ro
+      - ./backend/app/nginx/certs:/etc/nginx/certs:ro
+    environment:
+      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN}"
+      PUBLIC_HTTPS_PORT: "${PUBLIC_HTTPS_PORT}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/nginx-health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
   vault_production_node:
     #build:
     #  context: backend/app/security/configuration_files/vault
@@ -200,9 +249,6 @@ services:
       db_net:
         ipv4_address: 172.30.20.30
       public_net:
-    ports:
-      - "8080:8080" # Expose if you want http for testing (Needs to be enabled in the env variables)
-      - "8443:8443"
     image: quay.io/keycloak/keycloak:26.4.7
     container_name: keycloak
     restart: unless-stopped
@@ -217,9 +263,10 @@ services:
     entrypoint: [ "/bin/bash", "/opt/keycloak/bin/keycloak_entrypoint_from_vault.sh" ]
     command: [ "start" ]
     environment:
-      KC_HOSTNAME: "https://keycloak.yourdomain.edu"
-      KC_HTTPS_CERTIFICATE_FILE: "/run/vault/tls/server.crt"
-      KC_HTTPS_CERTIFICATE_KEY_FILE: "/run/vault/tls/server.key"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: "xforwarded"
+      KC_HOSTNAME: "https://auth.${PRIMARY_SERVER_FQDN}:${PUBLIC_HTTPS_PORT}"
+      KC_PROXY_TRUSTED_ADDRESSES: "172.30.20.0/24,172.30.0.0/16"
     logging:
       driver: json-file
       options:
@@ -332,9 +379,6 @@ services:
       db_net:
         ipv4_address: 172.30.20.20
       public_net:
-    ports:
-      - "8081:80"
-      - "8444:443"
     image: dpage/pgadmin4:9.11
     container_name: pgadmin
     restart: unless-stopped
@@ -348,18 +392,19 @@ services:
     env_file:
       - .env
     environment:
-      PGADMIN_ENABLE_TLS: "True"
-      PGDATA: "/var/lib/postgres/data/pgdata"
+      PGADMIN_ENABLE_TLS: "False"
       PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
       PGADMIN_DEFAULT_PASSWORD_FILE: "/run/vault/pgadmin_password"
       PGADMIN_SERVER_JSON_FILE: "/run/vault/servers.json"
       PGADMIN_REPLACE_SERVERS_ON_STARTUP: "True"
+      PGDATA: "/var/lib/postgres/data/pgdata"
       PGADMIN_CONFIG_ENABLE_SERVER_PASS_EXEC_CMD: "True" # This "Should" be disabled if you are using multiple user logins to
                                                          # Access postgres as this will configure access to the postgres server with
                                                          # The root account. For now, i'm leaving it enabled for testing.
     volumes:
       - postgres_vault_rendered:/run/vault:ro
-      - pgadmin_certs:/certs:ro
+      # Not needed but left for an example - Running this behind the nginx service
+      # - pgadmin_certs:/certs:ro
     logging:
       driver: json-file
       options:
