@@ -15,7 +15,7 @@
 # If your URL is changed from the default dev url of vault_production_node then replace this with the new url.
 #
 # Example:
-#   bash ./backend/build_scripts/vault_unseal_multi_kv_seed_bootstrap_rootless.sh \
+#   bash ./backend/helper_scripts/vault_unseal_multi_kv_seed_bootstrap_rootless.sh \
 #     --vault-addr "https://vault_production_node:8200" \
 #     --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
 #     --unseal-required 3 \
