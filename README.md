@@ -27,14 +27,22 @@ All scripts below are expected to be run from the repo root (e.g., `~/NETWORK_TO
 
 Run these **in order**:
 
+Steps 1 - 4 have been replaced with step 5 but left here for now for reference as this is being 
+moved to a single domain, and single cert requirement.
+
+---
 1`./backend/build_scripts/generate_local_vault_certs.sh`  
 2`./backend/build_scripts/generate_local_postgres_certs.sh`  
 3`./backend/build_scripts/generate_local_pgadmin_certs.sh`  
-4`./backend/build_scripts/generate_local_keycloak_certs.sh`  
-5`./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*  
-6`./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh`  
-7`./backend/build_scripts/postgress_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
-8`./backend/build_scripts/keycloak_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
+4`./backend/build_scripts/generate_local_keycloak_certs.sh` 
+---
+
+>NOTE: This build is going off my one domain setup. This can be set / changed in the .env file.
+5`./backend/build_scripts/generate_local_networkengineertools_certs.sh`
+6`./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*  
+7`./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh`  
+8`./backend/build_scripts/postgress_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
+9`./backend/build_scripts/keycloak_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
 
 
 Notes:
