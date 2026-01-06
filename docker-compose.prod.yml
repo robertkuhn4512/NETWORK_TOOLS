@@ -1,3 +1,11 @@
+# For production builds I am going to use a single fqdn for the project.
+# On my dev setup I will be using networkengineertools.com which I will have
+# Pointed to my local VM. So anywhere you see a reference to that you can change it to
+# Your preferred domain. or hardcode this on your dev machine if you want.
+#
+# Items like keycloak will need a stationary name to make sure things flow smoothly and work correctly.
+
+
 name: network_tools
 
 volumes:
@@ -11,6 +19,10 @@ volumes:
     name: network_tools_keycloak_vault_rendered
   pgadmin_certs:
     name: network_tools_pgadmin_certs
+  fastapi_vault_rendered:
+    name: network_tools_vault_rendered
+  redis_data:
+    name: network_tools_redis_data
 
 networks:
   db_net:
@@ -366,3 +378,131 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+
+  # docker compose -f docker-compose.prod.yml up -d vault_agent_fastapi
+
+  vault_agent_fastapi:
+    image: hashicorp/vault:1.21.1
+    container_name: vault_agent_fastapi
+    restart: unless-stopped
+    depends_on:
+      - vault_production_node
+    entrypoint: ["/bin/sh","-lc","mkdir -p /vault/rendered && exec vault agent -config=/vault/agent/agent.hcl"]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    volumes:
+      - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
+      - ./backend/app/fastapi/vault_agent/agent.hcl:/vault/agent/agent.hcl:ro
+      - ./backend/app/fastapi/vault_agent/templates:/vault/templates:ro
+
+      # Host-exported AppRole material (created by the modified init script below)
+      - ./container_data/vault/approle/fastapi_agent:/vault/approle:ro
+
+      # Render target (shared)
+      - fastapi_vault_rendered:/vault/rendered
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /vault/rendered/fastapi_secrets.json" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # ------------------------------------------------------------
+  # Redis (Celery broker/backend)
+  # ------------------------------------------------------------
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.50
+    volumes:
+      - redis_data:/data
+    command: ["redis-server","--appendonly","yes"]
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ------------------------------------------------------------
+  # FastAPI API container (loads ALL Vault keys into process env)
+  # ------------------------------------------------------------
+  fastapi_api:
+    build:
+      context: ./backend/app/fastapi
+      dockerfile: Dockerfile
+    container_name: fastapi_api
+    restart: unless-stopped
+    depends_on:
+      vault_agent_fastapi:
+        condition: service_healthy
+      postgres_primary:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.40
+      public_net:
+    ports:
+      - "8000:8000"
+    volumes:
+      - fastapi_vault_rendered:/run/vault:ro
+    environment:
+      VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
+      SERVER_MODE: "uvicorn"
+      APP_MODULE: "app.main:app"
+      BIND_HOST: "0.0.0.0"
+      BIND_PORT: "8000"
+      WEB_CONCURRENCY: "2"
+    command:
+      - "python"
+      - "/app/run_server.py"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\", timeout=2).read()'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ------------------------------------------------------------
+  # Celery worker (uses the same Vault-rendered JSON as FastAPI)
+  # ------------------------------------------------------------
+  celery_worker:
+    build:
+      context: ./backend/app/fastapi
+      dockerfile: Dockerfile
+    container_name: celery_worker
+    restart: unless-stopped
+    depends_on:
+      vault_agent_fastapi:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres_primary:
+        condition: service_started
+    networks:
+      db_net:
+    volumes:
+      - fastapi_vault_rendered:/run/vault:ro
+    environment:
+      VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
+    command:
+      - "python"
+      - "/app/vault_env_exec.py"
+      - "celery"
+      - "-A"
+      - "app.celery_app"
+      - "worker"
+      - "--loglevel=INFO"
+      - "--concurrency=2"
