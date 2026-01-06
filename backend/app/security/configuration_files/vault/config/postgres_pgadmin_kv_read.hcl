@@ -1,7 +1,7 @@
-path "app_postgres_secrets/data/postgres" {
+path "app_network_tools_secrets/data/postgres" {
   capabilities = ["read"]
 }
 
-path "app_postgres_secrets/data/pgadmin" {
+path "app_network_tools_secrets/data/pgadmin" {
   capabilities = ["read"]
 }

@@ -19,9 +19,8 @@
 # What this script does:
 #   - Executes *all* Vault CLI operations via docker exec into: vault_production_node
 #   - Forces the in-container Vault CLI to talk to:
-#       VAULT_ADDR=https://vault_production_node:8200
-#       VAULT_CACERT=/vault/certs/cert.crt
-#     (This matches your “always use container name” requirement.)
+#       VAULT_ADDR=${VAULT_ADDR_IN_CONTAINER}     (default: https://vault_production_node:8200)
+#       VAULT_CACERT=${VAULT_CACERT_IN_CONTAINER} (default: /vault/certs/ca.crt, with fallback)
 #   - Reads the AppRole role_id and generates a secret_id
 #   - Writes host files used for Vault Agent auto-auth bootstrapping:
 #       <OUT_DIR>/role_id
@@ -29,13 +28,13 @@
 #
 # Optional env vars:
 #   VAULT_CONTAINER=vault_production_node          (default: vault_production_node)
-#   ROLE_NAME=postgres_pgadmin_agent              (default: postgres_pgadmin_agent)
+#   ROLE_NAME=postgres_pgadmin_agent                  (default: postgres_pgadmin_agent)
 #   OUT_DIR=<repo>/container_data/vault/approle/<ROLE_NAME>
-#   ROTATE_SECRET_ID=1                            (default: 1; set 0 to keep existing secret_id if present)
+#   ROTATE_SECRET_ID=1                             (default: 1; set 0 to keep existing secret_id if present)
 #
 #   # TLS behavior for the in-container Vault CLI:
 #   VAULT_ADDR_IN_CONTAINER=https://vault_production_node:8200   (default)
-#   VAULT_CACERT_IN_CONTAINER=/vault/certs/cert.crt              (default)
+#   VAULT_CACERT_IN_CONTAINER=/vault/certs/ca.crt                (default; if missing, falls back to /vault/certs/cert.crt if present)
 #   VAULT_SKIP_VERIFY_IN_CONTAINER=0                             (default: 0; set 1 only if you must)
 #
 #   # Token file locations (host-side)
@@ -49,6 +48,7 @@
 #     - Set VAULT_SKIP_VERIFY_IN_CONTAINER=1 (not recommended, but available).
 
 set -euo pipefail
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd -P)}"
 
@@ -58,7 +58,7 @@ OUT_DIR="${OUT_DIR:-${REPO_ROOT}/container_data/vault/approle/${ROLE_NAME}}"
 ROTATE_SECRET_ID="${ROTATE_SECRET_ID:-1}"
 
 VAULT_ADDR_IN_CONTAINER="${VAULT_ADDR_IN_CONTAINER:-https://vault_production_node:8200}"
-VAULT_CACERT_IN_CONTAINER="${VAULT_CACERT_IN_CONTAINER:-/vault/certs/cert.crt}"
+VAULT_CACERT_IN_CONTAINER="${VAULT_CACERT_IN_CONTAINER:-/vault/certs/ca.crt}"
 VAULT_SKIP_VERIFY_IN_CONTAINER="${VAULT_SKIP_VERIFY_IN_CONTAINER:-0}"
 
 BOOTSTRAP_DIR_DEFAULT="${REPO_ROOT}/backend/app/security/configuration_files/vault/bootstrap"
@@ -125,6 +125,25 @@ container_running() {
   docker ps --format '{{.Names}}' | grep -qx "${VAULT_CONTAINER}"
 }
 
+maybe_fix_cacert_path_in_container() {
+  # If the configured CA cert path doesn't exist in the container, attempt a safe fallback.
+  if docker exec "${VAULT_CONTAINER}" sh -lc "test -f '${VAULT_CACERT_IN_CONTAINER}'" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Common fallback used in some layouts
+  if docker exec "${VAULT_CONTAINER}" sh -lc "test -f '/vault/certs/cert.crt'" >/dev/null 2>&1; then
+    echo "WARNING: VAULT_CACERT_IN_CONTAINER '${VAULT_CACERT_IN_CONTAINER}' not found in container; using /vault/certs/cert.crt" >&2
+    VAULT_CACERT_IN_CONTAINER="/vault/certs/cert.crt"
+    return 0
+  fi
+
+  echo "WARNING: Unable to verify CA cert path inside container." >&2
+  echo "         CA:   ${VAULT_CACERT_IN_CONTAINER}" >&2
+  echo "         You may need to set VAULT_CACERT_IN_CONTAINER explicitly." >&2
+  return 0
+}
+
 vault_in_container() {
   # Runs `vault ...` inside the Vault container using docker exec.
   # All connectivity is forced to VAULT_ADDR_IN_CONTAINER by container name.
@@ -157,6 +176,8 @@ main() {
     echo "Start it, e.g.: docker compose -f docker-compose.prod.yml up -d vault_production_node" >&2
     exit 1
   fi
+
+  maybe_fix_cacert_path_in_container
 
   VAULT_TOKEN="$(load_token)"
   export VAULT_TOKEN
