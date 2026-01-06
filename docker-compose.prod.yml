@@ -19,6 +19,8 @@ networks:
     ipam:
       config:
         - subnet: 172.30.20.0/24
+  public_net:
+    driver: bridge  # Standard bridge allows port mapping
 
 services:
   # From the project root (~/NETWORK_TOOLS) to start all containers
@@ -177,11 +179,18 @@ services:
 
 
   # docker compose -f docker-compose.prod.yml up -d keycloak
-
+  #
+  # Force rebuild
+  # docker compose -f docker-compose.prod.yml up -d keycloak --force-recreate --no-deps keycloak
+  #
   keycloak:
     networks:
       db_net:
         ipv4_address: 172.30.20.30
+      public_net:
+    ports:
+      - "8080:8080" # Expose if you want http for testing (Needs to be enabled in the env variables)
+      - "8443:8443"
     image: quay.io/keycloak/keycloak:26.4.7
     container_name: keycloak
     restart: unless-stopped
@@ -199,9 +208,6 @@ services:
       KC_HOSTNAME: "https://keycloak.yourdomain.edu"
       KC_HTTPS_CERTIFICATE_FILE: "/run/vault/tls/server.crt"
       KC_HTTPS_CERTIFICATE_KEY_FILE: "/run/vault/tls/server.key"
-    ports:
-      - "8080:8080" # Expose if you want http for testing (Needs to be enabled in the env variables)
-      - "8443:8443"
     logging:
       driver: json-file
       options:
@@ -273,7 +279,7 @@ services:
     #   - "5432:5432"
     # Optional for local-only admin:
     ports:
-      - "127.0.0.1:5432:5432"
+      - "5432:5432"
     networks:
       db_net:
         ipv4_address: 172.30.20.10
@@ -305,10 +311,7 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
-    command: >
-      postgres
-      -c config_file=/etc/postgres/postgres.conf
-      -c hba_file=/etc/postgres/pg_hba.conf
+    command: ["postgres", "-c", "config_file=/etc/postgres/postgres.conf", "-c", "hba_file=/etc/postgres/pg_hba.conf"]
 
   # docker compose -f docker-compose.prod.yml up -d pgadmin
 
@@ -316,6 +319,10 @@ services:
     networks:
       db_net:
         ipv4_address: 172.30.20.20
+      public_net:
+    ports:
+      - "8081:80"
+      - "8444:443"
     image: dpage/pgadmin4:9.11
     container_name: pgadmin
     restart: unless-stopped
@@ -359,5 +366,3 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
-    ports:
-      - "8081:443"

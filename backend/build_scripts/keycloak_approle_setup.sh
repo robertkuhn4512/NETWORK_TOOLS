@@ -1,296 +1,247 @@
 #!/usr/bin/env bash
-#------------------------------------------------------------------------------
+#
 # keycloak_approle_setup.sh
 #
-# Notes / How to run
-# -----------------------------------------------------------------------------
-# This script creates/updates the Vault policy + AppRole for the Keycloak Vault
-# Agent and exports role_id/secret_id to the host for Docker volume mounts.
+# Notes / How to run:
+#   1) Ensure Vault is running (example):
+#        docker compose -f docker-compose.prod.yml up -d vault_production_node
 #
-# IMPORTANT (read-only Vault container rootfs):
-# - This script DOES NOT docker-cp anything into the Vault container.
-# - It uses a short-lived Vault CLI container (hashicorp/vault) to talk to your
-#   running Vault server over the Vault container's network namespace.
-# - This avoids errors like: "container rootfs is marked read-only".
+#   2) Ensure a Vault token is available via ONE of these host-side files:
+#        ./backend/app/security/configuration_files/vault/bootstrap/root_token
+#        ./backend/app/security/configuration_files/vault/bootstrap/root_token.json   (expects .root_token)
 #
-# Run (recommended):
-#   cd "$HOME/NETWORK_TOOLS"
-#   bash ./backend/build_scripts/keycloak_approle_setup.sh \
-#     --ca-cert "./backend/app/security/configuration_files/vault/certs/ca.crt"
+#      If neither file exists, the script will securely prompt you (input hidden).
 #
-# Output files:
-#   ./container_data/vault/approle/keycloak_agent/role_id
-#   ./container_data/vault/approle/keycloak_agent/secret_id
+#   3) Run:
+#        chmod +x ./backend/build_scripts/keycloak_approle_setup.sh
+#        ROLE_NAME=keycloak_agent ./backend/build_scripts/keycloak_approle_setup.sh
 #
-# Requirements:
-# - docker (host)
-# - jq (host)
-# - Vault server running in container (default name: vault_production_node)
+# What this script does:
+#   - Executes *all* Vault CLI operations via docker exec into: vault_production_node
+#   - Forces the in-container Vault CLI to talk to:
+#       VAULT_ADDR=${VAULT_ADDR_IN_CONTAINER}     (default: https://vault_production_node:8200)
+#       VAULT_CACERT=${VAULT_CACERT_IN_CONTAINER} (default: /vault/certs/ca.crt, with fallback)
+#   - Reads the AppRole role_id and generates a secret_id
+#   - Writes host files used for Vault Agent auto-auth bootstrapping:
+#       <OUT_DIR>/role_id
+#       <OUT_DIR>/secret_id
 #
-# Security:
-# - Uses an admin/root token only for admin operations (policy/AppRole/secret-id).
-# - Prompts for token if bootstrap token file is missing/empty.
-# - Writes role_id/secret_id with umask 077 and chmod 600; role dir chmod 700.
-#------------------------------------------------------------------------------
+# Optional env vars:
+#   VAULT_CONTAINER=vault_production_node          (default: vault_production_node)
+#   ROLE_NAME=keycloak_agent                  (default: keycloak_agent)
+#   OUT_DIR=<repo>/container_data/vault/approle/<ROLE_NAME>
+#   ROTATE_SECRET_ID=1                             (default: 1; set 0 to keep existing secret_id if present)
+#
+#   # TLS behavior for the in-container Vault CLI:
+#   VAULT_ADDR_IN_CONTAINER=https://vault_production_node:8200   (default)
+#   VAULT_CACERT_IN_CONTAINER=/vault/certs/ca.crt                (default; if missing, falls back to /vault/certs/cert.crt if present)
+#   VAULT_SKIP_VERIFY_IN_CONTAINER=0                             (default: 0; set 1 only if you must)
+#
+#   # Token file locations (host-side)
+#   ROOT_TOKEN_FILE=/custom/path/root_token
+#   ROOT_TOKEN_JSON=/custom/path/root_token.json
+#
+# Important:
+#   If your Vault server certificate does NOT include "vault_production_node" in its SANs/CN,
+#   TLS hostname verification may fail. In that case either:
+#     - Regenerate the cert with "vault_production_node" as a SAN (recommended), OR
+#     - Set VAULT_SKIP_VERIFY_IN_CONTAINER=1 (not recommended, but available).
 
 set -euo pipefail
-IFS=$' \t\n'
 
-# ------------------------------- helpers -------------------------------------
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd -P)}"
 
-log()  { printf '%s\n' "INFO: $*"; }
-warn() { printf '%s\n' "WARN: $*" >&2; }
-err()  { printf '%s\n' "ERROR: $*" >&2; exit 1; }
+VAULT_CONTAINER="${VAULT_CONTAINER:-vault_production_node}"
+ROLE_NAME="${ROLE_NAME:-keycloak_agent}"
+OUT_DIR="${OUT_DIR:-${REPO_ROOT}/container_data/vault/approle/${ROLE_NAME}}"
+ROTATE_SECRET_ID="${ROTATE_SECRET_ID:-1}"
 
-need_cmd() { command -v "$1" >/dev/null 2>&1 || err "Missing required command: $1"; }
+VAULT_ADDR_IN_CONTAINER="${VAULT_ADDR_IN_CONTAINER:-https://vault_production_node:8200}"
+VAULT_CACERT_IN_CONTAINER="${VAULT_CACERT_IN_CONTAINER:-/vault/certs/ca.crt}"
+VAULT_SKIP_VERIFY_IN_CONTAINER="${VAULT_SKIP_VERIFY_IN_CONTAINER:-0}"
 
-usage() {
-  cat <<'USAGE'
-Usage: keycloak_approle_setup.sh [options]
+BOOTSTRAP_DIR_DEFAULT="${REPO_ROOT}/backend/app/security/configuration_files/vault/bootstrap"
+ROOT_TOKEN_FILE="${ROOT_TOKEN_FILE:-${BOOTSTRAP_DIR_DEFAULT}/root_token}"
+ROOT_TOKEN_JSON="${ROOT_TOKEN_JSON:-${BOOTSTRAP_DIR_DEFAULT}/root_token.json}"
 
-Vault target:
-  --vault-container <name>    Vault container name (default: vault_production_node)
-  --vault-addr <url>          Vault address as seen FROM INSIDE that container's network namespace
-                              (default: https://127.0.0.1:8200)
-  --vault-cli-image <image>   Vault CLI image to use (default: hashicorp/vault:1.21.1)
+need_bin() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing required binary: $1" >&2; exit 1; }; }
+need_bin docker
+need_bin sed
 
-TLS:
-  --ca-cert <path>            Host path to Vault CA cert (recommended)
-  --tls-skip-verify           Skip TLS verification (NOT recommended)
-
-Role/policy:
-  --role-name <name>          AppRole name (default: keycloak_agent)
-  --policy-name <name>        Policy name (default: keycloak_agent)
-  --policy-file <path>        Host path to policy HCL (default derived from repo)
-
-Output:
-  --role-dir <path>           Host directory to write role_id/secret_id
-                              (default: $HOME/NETWORK_TOOLS/container_data/vault/approle/<role-name>)
-
-Token:
-  --token-file <path>         Host path to root/admin token file
-                              (default: $HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token)
-  --prompt-token              Always prompt for token (ignores --token-file)
-
-Hardening knobs (optional):
-  --token-ttl <dur>           (default: 1h)
-  --token-max-ttl <dur>       (default: 24h)
-  --secret-id-ttl <dur>       (default: 24h)
-  --secret-id-num-uses <n>    (default: 0 => unlimited; consider setting to 1 for one-time bootstrap)
-  --token-num-uses <n>        (default: 0 => unlimited)
-
-Help:
-  -h, --help
-
-USAGE
+trim() {
+  local t="${1:-}"
+  t="${t//$'\r'/}"
+  t="${t//$'\n'/}"
+  # shellcheck disable=SC2001
+  t="$(echo -n "$t" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  echo -n "$t"
 }
 
-# ------------------------------ defaults -------------------------------------
-
-need_cmd docker
-need_cmd jq
-
-ROOT_DIR="${HOME}/NETWORK_TOOLS"
-
-VAULT_CONTAINER="vault_production_node"
-VAULT_ADDR="https://vault_production_node:8200"
-VAULT_CLI_IMAGE="hashicorp/vault:1.21.1"
-
-DEFAULT_CA_CERT="${ROOT_DIR}/backend/app/security/configuration_files/vault/certs/ca.crt"
-CA_CERT="${DEFAULT_CA_CERT}"
-TLS_SKIP_VERIFY=0
-
-ROLE_NAME="keycloak_agent"
-POLICY_NAME="keycloak_agent"
-DEFAULT_POLICY_FILE="${ROOT_DIR}/backend/app/keycloak/vault_agent/keycloak_agent_policy.hcl"
-POLICY_FILE="${DEFAULT_POLICY_FILE}"
-
-TOKEN_FILE="${ROOT_DIR}/backend/app/security/configuration_files/vault/bootstrap/root_token"
-PROMPT_TOKEN=0
-
-TOKEN_TTL="1h"
-TOKEN_MAX_TTL="24h"
-SECRET_ID_TTL="24h"
-SECRET_ID_NUM_USES="0"
-TOKEN_NUM_USES="0"
-
-ROLE_DIR=""
-
-# ------------------------------ arg parse ------------------------------------
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --vault-container) VAULT_CONTAINER="${2:-}"; shift 2;;
-    --vault-addr) VAULT_ADDR="${2:-}"; shift 2;;
-    --vault-cli-image) VAULT_CLI_IMAGE="${2:-}"; shift 2;;
-
-    --ca-cert) CA_CERT="${2:-}"; shift 2;;
-    --tls-skip-verify) TLS_SKIP_VERIFY=1; shift 1;;
-
-    --role-name) ROLE_NAME="${2:-}"; shift 2;;
-    --policy-name) POLICY_NAME="${2:-}"; shift 2;;
-    --policy-file) POLICY_FILE="${2:-}"; shift 2;;
-
-    --role-dir) ROLE_DIR="${2:-}"; shift 2;;
-
-    --token-file) TOKEN_FILE="${2:-}"; shift 2;;
-    --prompt-token) PROMPT_TOKEN=1; shift 1;;
-
-    --token-ttl) TOKEN_TTL="${2:-}"; shift 2;;
-    --token-max-ttl) TOKEN_MAX_TTL="${2:-}"; shift 2;;
-    --secret-id-ttl) SECRET_ID_TTL="${2:-}"; shift 2;;
-    --secret-id-num-uses) SECRET_ID_NUM_USES="${2:-}"; shift 2;;
-    --token-num-uses) TOKEN_NUM_USES="${2:-}"; shift 2;;
-
-    -h|--help) usage; exit 0;;
-    *) err "Unknown argument: $1 (use --help)";;
-  esac
-done
-
-if [[ -z "${ROLE_DIR}" ]]; then
-  ROLE_DIR="${ROOT_DIR}/container_data/vault/approle/${ROLE_NAME}"
-fi
-
-# ------------------------------ preflight ------------------------------------
-
-if ! docker inspect "${VAULT_CONTAINER}" >/dev/null 2>&1; then
-  err "Vault container not found: ${VAULT_CONTAINER}"
-fi
-
-if [[ "$(docker inspect -f '{{.State.Running}}' "${VAULT_CONTAINER}")" != "true" ]]; then
-  err "Vault container is not running: ${VAULT_CONTAINER}"
-fi
-
-[[ -f "${POLICY_FILE}" ]] || err "Policy file not found: ${POLICY_FILE}"
-
-if [[ "${TLS_SKIP_VERIFY}" -eq 0 ]]; then
-  [[ -f "${CA_CERT}" ]] || err "CA cert not found: ${CA_CERT}. Provide --ca-cert or use --tls-skip-verify (not recommended)."
-fi
-
-# --------------------------- token acquisition --------------------------------
-
-VAULT_TOKEN=""
-
-token_from_file() {
-  [[ -f "${TOKEN_FILE}" ]] || return 1
-  VAULT_TOKEN="$(tr -d '\r\n' < "${TOKEN_FILE}" || true)"
-  [[ -n "${VAULT_TOKEN}" ]] || return 2
-  return 0
-}
-
-token_prompt() {
-  local t=""
-  read -r -s -p "Vault admin/root token (input hidden): " t
-  echo ""
-  [[ -n "${t}" ]] || return 1
-  VAULT_TOKEN="${t}"
-  return 0
-}
-
-if [[ "${PROMPT_TOKEN}" -eq 1 ]]; then
-  token_prompt || err "No token provided."
-else
-  if ! token_from_file; then
-    warn "Token file not found/empty: ${TOKEN_FILE}"
-    token_prompt || err "No token provided."
+load_token() {
+  # 1) plain token file
+  if [[ -f "${ROOT_TOKEN_FILE}" && -s "${ROOT_TOKEN_FILE}" ]]; then
+    local t
+    t="$(trim "$(cat "${ROOT_TOKEN_FILE}")")"
+    if [[ -n "${t}" ]]; then
+      echo -n "${t}"
+      return 0
+    fi
   fi
-fi
 
-# ----------------------------- vault cli runner -------------------------------
+  # 2) json token file (expects .root_token)
+  if [[ -f "${ROOT_TOKEN_JSON}" && -s "${ROOT_TOKEN_JSON}" ]]; then
+    need_bin jq
+    local t=""
+    t="$(jq -r '.root_token // empty' "${ROOT_TOKEN_JSON}" 2>/dev/null || true)"
+    t="$(trim "${t}")"
+    if [[ -n "${t}" ]]; then
+      echo -n "${t}"
+      return 0
+    fi
+  fi
 
-# Run a Vault CLI command in a short-lived container that shares the Vault server's
-# network namespace. This avoids writing into the Vault server container filesystem.
-vault_cli() {
-  local cmd="$1"
+  # 3) interactive prompt
+  if [[ -t 0 ]]; then
+    local prompted=""
+    read -r -s -p "Enter Vault token (input hidden): " prompted
+    echo >&2
+    prompted="$(trim "${prompted}")"
+    if [[ -n "${prompted}" ]]; then
+      echo -n "${prompted}"
+      return 0
+    fi
+  fi
 
-  if [[ "${TLS_SKIP_VERIFY}" -eq 1 ]]; then
-    docker run --rm \
-      --network "container:${VAULT_CONTAINER}" \
-      -e VAULT_ADDR="${VAULT_ADDR}" \
-      -e VAULT_SKIP_VERIFY="1" \
-      -e VAULT_TOKEN="${VAULT_TOKEN}" \
-      "${VAULT_CLI_IMAGE}" sh -lc "${cmd}"
+  echo "ERROR: Could not obtain a Vault token." >&2
+  echo "Looked for:" >&2
+  echo "  - ${ROOT_TOKEN_FILE}" >&2
+  echo "  - ${ROOT_TOKEN_JSON}" >&2
+  echo "Run interactively or create one of the files above." >&2
+  exit 1
+}
+
+container_running() {
+  docker ps --format '{{.Names}}' | grep -qx "${VAULT_CONTAINER}"
+}
+
+maybe_fix_cacert_path_in_container() {
+  # If the configured CA cert path doesn't exist in the container, attempt a safe fallback.
+  if docker exec "${VAULT_CONTAINER}" sh -lc "test -f '${VAULT_CACERT_IN_CONTAINER}'" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Common fallback used in some layouts
+  if docker exec "${VAULT_CONTAINER}" sh -lc "test -f '/vault/certs/cert.crt'" >/dev/null 2>&1; then
+    echo "WARNING: VAULT_CACERT_IN_CONTAINER '${VAULT_CACERT_IN_CONTAINER}' not found in container; using /vault/certs/cert.crt" >&2
+    VAULT_CACERT_IN_CONTAINER="/vault/certs/cert.crt"
+    return 0
+  fi
+
+  echo "WARNING: Unable to verify CA cert path inside container." >&2
+  echo "         CA:   ${VAULT_CACERT_IN_CONTAINER}" >&2
+  echo "         You may need to set VAULT_CACERT_IN_CONTAINER explicitly." >&2
+  return 0
+}
+
+vault_in_container() {
+  # Runs `vault ...` inside the Vault container using docker exec.
+  # All connectivity is forced to VAULT_ADDR_IN_CONTAINER by container name.
+  local -a exec_env
+  exec_env=(
+    -e "VAULT_TOKEN=${VAULT_TOKEN}"
+    -e "VAULT_ADDR=${VAULT_ADDR_IN_CONTAINER}"
+    -e "VAULT_CACERT=${VAULT_CACERT_IN_CONTAINER}"
+  )
+
+  if [[ "${VAULT_SKIP_VERIFY_IN_CONTAINER}" == "1" ]]; then
+    exec_env+=(-e "VAULT_SKIP_VERIFY=true")
+  fi
+
+  docker exec "${exec_env[@]}" "${VAULT_CONTAINER}" vault "$@"
+}
+
+# Temp files must be global (EXIT trap runs after locals are out of scope, and set -u would error)
+tmp_role_id=""
+tmp_secret_id=""
+cleanup() {
+  [[ -n "${tmp_role_id:-}" ]] && rm -f -- "${tmp_role_id}" || true
+  [[ -n "${tmp_secret_id:-}" ]] && rm -f -- "${tmp_secret_id}" || true
+}
+trap cleanup EXIT
+
+main() {
+  if ! container_running; then
+    echo "ERROR: Vault container '${VAULT_CONTAINER}' is not running." >&2
+    echo "Start it, e.g.: docker compose -f docker-compose.prod.yml up -d vault_production_node" >&2
+    exit 1
+  fi
+
+  maybe_fix_cacert_path_in_container
+
+  VAULT_TOKEN="$(load_token)"
+  export VAULT_TOKEN
+
+  umask 077
+  mkdir -p "${OUT_DIR}"
+  chmod 700 "${OUT_DIR}"
+  tmp_role_id="$(mktemp)"
+  tmp_secret_id="$(mktemp)"
+
+  # Verify Vault is reachable and unsealed (best-effort; gives better errors)
+  if command -v jq >/dev/null 2>&1; then
+    local status_json sealed
+    status_json="$(vault_in_container status -format=json 2>/dev/null || true)"
+    if [[ -n "${status_json}" ]]; then
+      sealed="$(echo "${status_json}" | jq -r '.sealed // empty' 2>/dev/null || true)"
+      if [[ "${sealed}" == "true" ]]; then
+        echo "ERROR: Vault is sealed. Unseal it before exporting AppRole credentials." >&2
+        exit 1
+      fi
+    else
+      echo "WARNING: Unable to read Vault status as JSON. Continuing, but auth may fail." >&2
+      echo "         Addr: ${VAULT_ADDR_IN_CONTAINER}" >&2
+      echo "         CA:   ${VAULT_CACERT_IN_CONTAINER}" >&2
+    fi
   else
-    docker run --rm \
-      --network "container:${VAULT_CONTAINER}" \
-      -v "${CA_CERT}:/tmp/vault_ca.crt:ro" \
-      -e VAULT_ADDR="${VAULT_ADDR}" \
-      -e VAULT_CACERT="/tmp/vault_ca.crt" \
-      -e VAULT_TOKEN="${VAULT_TOKEN}" \
-      "${VAULT_CLI_IMAGE}" sh -lc "${cmd}"
+    # jq not available; fall back to simple status
+    if ! vault_in_container status >/dev/null 2>&1; then
+      echo "WARNING: 'vault status' failed inside container '${VAULT_CONTAINER}'." >&2
+      echo "         Addr: ${VAULT_ADDR_IN_CONTAINER}" >&2
+      echo "         CA:   ${VAULT_CACERT_IN_CONTAINER}" >&2
+    fi
   fi
+
+  # Read role_id
+  vault_in_container read -field=role_id "auth/approle/role/${ROLE_NAME}/role-id" > "${tmp_role_id}"
+  if [[ ! -s "${tmp_role_id}" ]]; then
+    echo "ERROR: role_id read returned empty output." >&2
+    echo "       Path: auth/approle/role/${ROLE_NAME}/role-id" >&2
+    exit 1
+  fi
+
+  # Generate or reuse secret_id
+  if [[ "${ROTATE_SECRET_ID}" == "0" && -s "${OUT_DIR}/secret_id" ]]; then
+    echo "Keeping existing secret_id at: ${OUT_DIR}/secret_id (ROTATE_SECRET_ID=0)"
+  else
+    vault_in_container write -field=secret_id -f "auth/approle/role/${ROLE_NAME}/secret-id" > "${tmp_secret_id}"
+    if [[ ! -s "${tmp_secret_id}" ]]; then
+      echo "ERROR: secret_id generation returned empty output." >&2
+      echo "       Path: auth/approle/role/${ROLE_NAME}/secret-id" >&2
+      exit 1
+    fi
+  fi
+
+  mv -f "${tmp_role_id}" "${OUT_DIR}/role_id"
+  chmod 600 "${OUT_DIR}/role_id"
+
+  if [[ -s "${tmp_secret_id}" ]]; then
+    mv -f "${tmp_secret_id}" "${OUT_DIR}/secret_id"
+    chmod 600 "${OUT_DIR}/secret_id"
+  fi
+
+  echo "Wrote AppRole bootstrap files:"
+  ls -l "${OUT_DIR}/role_id" "${OUT_DIR}/secret_id" 2>/dev/null || true
 }
 
-# Validate token early (fail fast)
-if ! vault_cli "vault token lookup >/dev/null 2>&1"; then
-  err "Vault token lookup failed. Token invalid, expired, or VAULT_ADDR/CA mismatch."
-fi
-
-log "Vault connectivity OK (via CLI container) using VAULT_ADDR='${VAULT_ADDR}'."
-
-# ------------------------ enable approle if needed ----------------------------
-
-if ! vault_cli "vault auth list" | grep -qE '^approle/'; then
-  log "AppRole auth not enabled; enabling it now."
-  vault_cli "vault auth enable approle" >/dev/null
-else
-  log "AppRole auth already enabled."
-fi
-
-# --------------------------- write policy (stdin) -----------------------------
-
-log "Writing policy '${POLICY_NAME}' from: ${POLICY_FILE}"
-# Use '-' to read policy from stdin; no file copies into Vault container.
-if [[ "${TLS_SKIP_VERIFY}" -eq 1 ]]; then
-  cat "${POLICY_FILE}" | docker run --rm -i \
-    --network "container:${VAULT_CONTAINER}" \
-    -e VAULT_ADDR="${VAULT_ADDR}" \
-    -e VAULT_SKIP_VERIFY="1" \
-    -e VAULT_TOKEN="${VAULT_TOKEN}" \
-    "${VAULT_CLI_IMAGE}" sh -lc "vault policy write '${POLICY_NAME}' -"
-else
-  cat "${POLICY_FILE}" | docker run --rm -i \
-    --network "container:${VAULT_CONTAINER}" \
-    -v "${CA_CERT}:/tmp/vault_ca.crt:ro" \
-    -e VAULT_ADDR="${VAULT_ADDR}" \
-    -e VAULT_CACERT="/tmp/vault_ca.crt" \
-    -e VAULT_TOKEN="${VAULT_TOKEN}" \
-    "${VAULT_CLI_IMAGE}" sh -lc "vault policy write '${POLICY_NAME}' -"
-fi
-
-# --------------------------- write role ---------------------------------------
-
-log "Creating/updating AppRole '${ROLE_NAME}' (policy: ${POLICY_NAME})"
-vault_cli "\
-  vault write auth/approle/role/${ROLE_NAME} \
-    token_policies='${POLICY_NAME}' \
-    token_ttl='${TOKEN_TTL}' \
-    token_max_ttl='${TOKEN_MAX_TTL}' \
-    token_num_uses='${TOKEN_NUM_USES}' \
-    secret_id_ttl='${SECRET_ID_TTL}' \
-    secret_id_num_uses='${SECRET_ID_NUM_USES}' \
-    bind_secret_id='true' \
-" >/dev/null
-
-# ---------------------- export role_id / secret_id ----------------------------
-
-mkdir -p "${ROLE_DIR}"
-chmod 700 "${ROLE_DIR}" || true
-
-log "Exporting role_id + new secret_id to: ${ROLE_DIR}"
-
-ROLE_ID_JSON="$(vault_cli "vault read -format=json auth/approle/role/${ROLE_NAME}/role-id")"
-ROLE_ID="$(printf '%s' "${ROLE_ID_JSON}" | jq -r '.data.role_id // empty')"
-[[ -n "${ROLE_ID}" ]] || err "Failed to parse role_id from Vault output."
-
-SECRET_ID_JSON="$(vault_cli "vault write -format=json -f auth/approle/role/${ROLE_NAME}/secret-id")"
-SECRET_ID="$(printf '%s' "${SECRET_ID_JSON}" | jq -r '.data.secret_id // empty')"
-[[ -n "${SECRET_ID}" ]] || err "Failed to parse secret_id from Vault output."
-
-umask 077
-printf '%s\n' "${ROLE_ID}" > "${ROLE_DIR}/role_id"
-printf '%s\n' "${SECRET_ID}" > "${ROLE_DIR}/secret_id"
-chmod 600 "${ROLE_DIR}/role_id" "${ROLE_DIR}/secret_id" || true
-
-log "Done."
-log "Next: docker compose -f docker-compose.prod.yml -f docker-compose.keycloak.prod.yml up -d vault_agent_keycloak"
+main "$@"

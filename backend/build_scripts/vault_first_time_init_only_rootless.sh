@@ -18,6 +18,12 @@
 #     #   --no-setup-postgres-pgadmin-approle
 #
 #     Optional (first-time init convenience; postgres/pgAdmin Vault Agent):
+#
+#     Optional (first-time init convenience; Keycloak Vault Agent):
+#       - Enable AppRole auth (if not already enabled) unless --no-setup-keycloak-approle
+#       - Create a baseline ACL policy (default: keycloak_read)
+#       - Create a baseline AppRole role bound to that policy (default: keycloak_agent)
+
 #       - Enable AppRole auth (if not already enabled) unless --no-setup-postgres-pgadmin-approle
 #       - Create a baseline ACL policy (default: postgres_pgadmin_read)
 #       - Create a baseline AppRole role bound to that policy (default: postgres_pgadmin_agent)
@@ -93,6 +99,15 @@ AppRole + ACL bootstrap (first-time convenience; postgres/pgAdmin Vault Agent):
   --postgres-pgadmin-kv-mount NAME      Default: app_network_tools_secrets
   --postgres-pgadmin-kv-version 1|2     Default: 2
 
+AppRole + ACL bootstrap (first-time convenience; Keycloak Vault Agent):
+  --no-setup-keycloak-approle            Skip enabling AppRole + creating the Keycloak policy/role
+  --force-keycloak-approle               Re-write the policy/role even if they already exist
+  --keycloak-role-name NAME              Default: keycloak_agent
+  --keycloak-policy-name NAME            Default: keycloak_read
+  --keycloak-kv-mount NAME               Default: app_network_tools_secrets
+  --keycloak-kv-version 1|2              Default: 2
+
+
 Pretty output:
   --no-pretty-output              Disable pretty JSON formatting (writes unseal_keys.json compact)
   --no-print-artifact-contents    Do NOT print the contents of the key/token JSON files to the terminal
@@ -137,6 +152,19 @@ AUDIT_DESCRIPTION=""
 AUDIT_TOKEN_FILE=""
 
 # AppRole + ACL bootstrap (postgres/pgAdmin Vault Agent)
+# AppRole + ACL bootstrap (Keycloak Vault Agent)
+SETUP_KEYCLOAK_APPROLE=1
+FORCE_KEYCLOAK_APPROLE=0
+KEYCLOAK_ROLE_NAME="keycloak_agent"
+KEYCLOAK_POLICY_NAME="keycloak_read"
+KEYCLOAK_KV_MOUNT="app_network_tools_secrets"
+KEYCLOAK_KV_VERSION="2"
+KEYCLOAK_TOKEN_TTL="1h"
+KEYCLOAK_TOKEN_MAX_TTL="4h"
+KEYCLOAK_SECRET_ID_TTL="24h"
+KEYCLOAK_SECRET_ID_NUM_USES="1"
+KEYCLOAK_SETUP_DONE=0
+
 SETUP_POSTGRES_PGADMIN_APPROLE=1
 FORCE_POSTGRES_PGADMIN_APPROLE=0
 POSTGRES_PGADMIN_ROLE_NAME="postgres_pgadmin_agent"
@@ -511,15 +539,25 @@ setup_postgres_pgadmin_approle_if_needed() {
 
   local policy_hcl
   policy_hcl="$(cat <<HCL
-path "${kv_prefix}/postgres" {
+# Read secrets (KV v1 or KV v2 data paths)
+path "${kv_prefix}/postgres*" {
   capabilities = ["read"]
 }
 
-path "${kv_prefix}/pgadmin" {
+path "${kv_prefix}/pgadmin*" {
   capabilities = ["read"]
 }
+
+# If KV v2, allow listing metadata (helps `vault kv list`/UI and some tooling)
+path "${POSTGRES_PGADMIN_KV_MOUNT}/metadata/postgres*" {
+  capabilities = ["list"]
+}
+
+path "${POSTGRES_PGADMIN_KV_MOUNT}/metadata/pgadmin*" {
+  capabilities = ["list"]
+}
 HCL
-)"
+)
 
   # 1) Ensure ACL policy exists (or force re-write).
   local need_policy=0
@@ -586,6 +624,121 @@ HCL
 
   POSTGRES_PGADMIN_SETUP_DONE=1
 }
+
+setup_keycloak_approle_if_needed() {
+  (( SETUP_KEYCLOAK_APPROLE )) || { log "Keycloak AppRole + ACL bootstrap disabled (--no-setup-keycloak-approle)."; return 0; }
+
+  # Root token is required for sys/auth + sys/policy + AppRole role management.
+  if [[ ! -f "$ROOT_TOKEN_FILE" ]]; then
+    log "WARN: Root token file not found ($ROOT_TOKEN_FILE). Skipping Keycloak AppRole bootstrap."
+    return 0
+  fi
+
+  local token=""
+  token="$(cat "$ROOT_TOKEN_FILE" 2>/dev/null || true)"
+  token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+  # Fallbacks (in case the plain file was written but read failed for any reason)
+  if [[ -z "$token" && -f "$ROOT_TOKEN_JSON_FILE" ]]; then
+    token="$(jq -r '.root_token // empty' "$ROOT_TOKEN_JSON_FILE" 2>/dev/null || true)"
+    token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  fi
+  if [[ -z "$token" && -f "$UNSEAL_KEYS_FILE" ]]; then
+    token="$(jq -r '.root_token // empty' "$UNSEAL_KEYS_FILE" 2>/dev/null || true)"
+    token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  fi
+
+  [[ -n "$token" ]] || { log "WARN: Root token not available; skipping Keycloak AppRole bootstrap."; return 0; }
+
+  # Determine KV prefix for policy. KV v2 uses <mount>/data/<path>.
+  local kv_prefix
+  if [[ "${KEYCLOAK_KV_VERSION}" == "2" ]]; then
+    kv_prefix="${KEYCLOAK_KV_MOUNT}/data"
+  else
+    kv_prefix="${KEYCLOAK_KV_MOUNT}"
+  fi
+
+  local policy_hcl
+  policy_hcl="$(cat <<HCL
+# Read secrets (KV v1 or KV v2 data paths)
+path "${kv_prefix}/keycloak*" {
+  capabilities = ["read"]
+}
+
+# If KV v2, allow listing metadata (helps `vault kv list`/UI and some tooling)
+path "${KEYCLOAK_KV_MOUNT}/metadata/keycloak*" {
+  capabilities = ["list"]
+}
+HCL
+)"
+
+  # 1) Ensure ACL policy exists (or force re-write).
+  local need_policy=0
+  request_authed "$token" GET "/v1/sys/policy/${KEYCLOAK_POLICY_NAME}"
+  if [[ "$HTTP_CODE" == "404" ]]; then
+    need_policy=1
+  elif [[ "$HTTP_CODE" =~ ^2 ]]; then
+    need_policy=0
+  else
+    die "policy read failed (${HTTP_CODE}): ${RESP_JSON}"
+  fi
+
+  if (( FORCE_KEYCLOAK_APPROLE )) || (( need_policy )); then
+    local policy_body
+    policy_body="$(jq -n --arg pol "$policy_hcl" '{policy:$pol}')"
+    request_authed "$token" PUT "/v1/sys/policy/${KEYCLOAK_POLICY_NAME}" "$policy_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "policy write failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Ensured ACL policy: ${KEYCLOAK_POLICY_NAME}"
+  else
+    log "ACL policy already exists: ${KEYCLOAK_POLICY_NAME}"
+  fi
+
+  # 2) Ensure AppRole auth method is enabled at approle/.
+  request_authed "$token" GET "/v1/sys/auth"
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "sys/auth read failed (${HTTP_CODE}): ${RESP_JSON}"
+
+  if jq -e '.data["approle/"]? // empty' <<<"$RESP_JSON" >/dev/null 2>&1; then
+    log "Auth method already enabled: approle/"
+  else
+    local auth_body
+    auth_body="$(jq -n --arg t "approle" --arg d "AppRole auth (bootstrap)" '{type:$t, description:$d}')"
+    request_authed "$token" POST "/v1/sys/auth/approle" "$auth_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "auth enable approle failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Enabled auth method: approle/"
+  fi
+
+  # 3) Ensure the AppRole role exists (or force re-write).
+  local need_role=0
+  request_authed "$token" GET "/v1/auth/approle/role/${KEYCLOAK_ROLE_NAME}/role-id"
+  if [[ "$HTTP_CODE" == "404" ]]; then
+    need_role=1
+  elif [[ "$HTTP_CODE" =~ ^2 ]]; then
+    need_role=0
+  else
+    die "approle role-id read failed (${HTTP_CODE}): ${RESP_JSON}"
+  fi
+
+  if (( FORCE_KEYCLOAK_APPROLE )) || (( need_role )); then
+    local role_body
+    role_body="$(jq -n \
+      --arg pol "${KEYCLOAK_POLICY_NAME}" \
+      --arg token_ttl "${KEYCLOAK_TOKEN_TTL}" \
+      --arg token_max_ttl "${KEYCLOAK_TOKEN_MAX_TTL}" \
+      --arg secret_id_ttl "${KEYCLOAK_SECRET_ID_TTL}" \
+      --argjson secret_id_num_uses "${KEYCLOAK_SECRET_ID_NUM_USES}" \
+      '{token_policies:[$pol], token_ttl:$token_ttl, token_max_ttl:$token_max_ttl, secret_id_ttl:$secret_id_ttl, secret_id_num_uses:$secret_id_num_uses}')"
+
+    request_authed "$token" POST "/v1/auth/approle/role/${KEYCLOAK_ROLE_NAME}" "$role_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "approle role write failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Ensured AppRole role: ${KEYCLOAK_ROLE_NAME} (policy: ${KEYCLOAK_POLICY_NAME})"
+  else
+    log "AppRole role already exists: ${KEYCLOAK_ROLE_NAME}"
+  fi
+
+  KEYCLOAK_SETUP_DONE=1
+}
+
+
 compose_up() {
   [[ -f "$COMPOSE_FILE" ]] || die "Compose file missing: $COMPOSE_FILE"
   local -a cmd=(docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d)
@@ -764,6 +917,7 @@ main() {
   unseal_if_needed
   enable_file_audit_if_needed
   setup_postgres_pgadmin_approle_if_needed
+  setup_keycloak_approle_if_needed
   print_bootstrap_artifacts_instructions
   print_bootstrap_artifacts_contents
 
@@ -785,6 +939,11 @@ main() {
     --arg postgres_pgadmin_role_name "$POSTGRES_PGADMIN_ROLE_NAME" \
     --arg postgres_pgadmin_policy_name "$POSTGRES_PGADMIN_POLICY_NAME" \
     --argjson postgres_pgadmin_setup_done "$POSTGRES_PGADMIN_SETUP_DONE" \
+    --arg keycloak_role_name "$KEYCLOAK_ROLE_NAME" \
+    --arg keycloak_policy_name "$KEYCLOAK_POLICY_NAME" \
+    --argjson keycloak_setup_done "$KEYCLOAK_SETUP_DONE" \
+    --argjson keycloak_setup_enabled "$SETUP_KEYCLOAK_APPROLE" \
+    --argjson keycloak_setup_force "$FORCE_KEYCLOAK_APPROLE" \
     --argjson postgres_pgadmin_setup_enabled "$SETUP_POSTGRES_PGADMIN_APPROLE" \
     --argjson postgres_pgadmin_setup_force "$FORCE_POSTGRES_PGADMIN_APPROLE" \
     '{
@@ -803,6 +962,13 @@ main() {
         setup_done: ($postgres_pgadmin_setup_done == 1),
         role_name: $postgres_pgadmin_role_name,
         policy_name: $postgres_pgadmin_policy_name
+      },
+      keycloak_approle_bootstrap: {
+        enabled: ($keycloak_setup_enabled == 1),
+        force: ($keycloak_setup_force == 1),
+        setup_done: ($keycloak_setup_done == 1),
+        role_name: $keycloak_role_name,
+        policy_name: $keycloak_policy_name
       },
       print_artifact_contents: ($print_artifact_contents == 1),
       audit: { enabled: ($enable_audit == 1), path: $audit_path, file_path: $audit_file_path },

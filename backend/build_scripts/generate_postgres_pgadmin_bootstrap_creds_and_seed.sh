@@ -1374,16 +1374,50 @@ resolve_postgres_admin_creds() {
 
 if [[ "${APPLY_TO_POSTGRES}" -eq 1 ]]; then
   need_cmd docker
+  need_cmd jq
 
-  # Re-fetch from Vault before applying if we can (source-of-truth)
-  if [[ "${PREFER_VAULT}" -eq 1 ]]; then
-    vault_try_load_from_vault || true
+  # ---------------------------------------------------------------------------
+  # APPLY-TO-POSTGRES IS VAULT-AUTHORITATIVE
+  #
+  # Contract:
+  #   - Vault is the source of truth.
+  #   - We read credentials from Vault, then validate they work against Postgres.
+  #   - If the "master/admin" credentials from Vault cannot authenticate, FAIL.
+  #   - If master works, converge required DB objects (create if missing, update
+  #     role passwords to match Vault values).
+  # ---------------------------------------------------------------------------
+
+  vault_token_acquire_if_needed || err "Vault token is required for --apply-to-postgres (Vault is source-of-truth). Provide ${TOKEN_FILE} or use --prompt-token."
+
+  # Load the current values from Vault (do not rely on /run/vault or local files for apply)
+  vault_try_load_from_vault || true
+
+  local postgres_path keycloak_path fastapi_path
+  postgres_path="$(prefixed_path "postgres")"
+  keycloak_path="$(prefixed_path "keycloak_postgres")"
+  fastapi_path="$(prefixed_path "fastapi_postgres")"
+
+  [[ -n "${POSTGRES_DB}" && -n "${POSTGRES_USER}" && -n "${POSTGRES_PASSWORD}" ]] || err "Missing required Postgres admin values from Vault. Expected keys POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD at: ${VAULT_ADDR%/}/v1/${VAULT_MOUNT}/data/${postgres_path}"
+
+  if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
+    [[ -n "${KEYCLOAK_DB_URL_DATABASE}" && -n "${KEYCLOAK_DB_USERNAME}" && -n "${KEYCLOAK_DB_PASSWORD}" ]] || err "Missing required Keycloak Postgres values from Vault. Expected keys KC_DB_URL_DATABASE/KC_DB_USERNAME/KC_DB_PASSWORD at: ${VAULT_ADDR%/}/v1/${VAULT_MOUNT}/data/${keycloak_path}"
   fi
 
+  if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
+    # FastAPI is optional, but if enabled we require the minimum fields.
+    [[ -n "${FASTAPI_DB_URL_DATABASE}" && -n "${FASTAPI_DB_USERNAME}" && -n "${FASTAPI_DB_PASSWORD}" ]] || err "Missing required FastAPI Postgres values from Vault. Expected keys FASTAPI_DB_URL_DATABASE/FASTAPI_DB_USERNAME/FASTAPI_DB_PASSWORD at: ${VAULT_ADDR%/}/v1/${VAULT_MOUNT}/data/${fastapi_path}"
+  fi
+
+  # Master/admin creds are whatever Vault says they are.
+  POSTGRES_ADMIN_USER="${POSTGRES_USER}"
+  POSTGRES_ADMIN_PASSWORD="${POSTGRES_PASSWORD}"
+  POSTGRES_ADMIN_CREDS_SOURCE="vault:${VAULT_MOUNT}/${postgres_path}"
+
   log "Applying Postgres objects in container: ${POSTGRES_CONTAINER}"
-  log "  network_tools: role=${POSTGRES_USER} db=${POSTGRES_DB}"
+  log "  master/admin:   user=${POSTGRES_ADMIN_USER} db=${POSTGRES_ADMIN_DB} (source=${POSTGRES_ADMIN_CREDS_SOURCE})"
+  log "  network_tools:  role=${POSTGRES_USER} db=${POSTGRES_DB}"
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
-    log "  keycloak:      role=${KEYCLOAK_DB_USERNAME} db=${KEYCLOAK_DB_URL_DATABASE} schema=${KEYCLOAK_DB_SCHEMA}"
+    log "  keycloak:       role=${KEYCLOAK_DB_USERNAME} db=${KEYCLOAK_DB_URL_DATABASE} schema=${KEYCLOAK_DB_SCHEMA}"
   fi
 
   if ! postgres_is_running; then
@@ -1404,37 +1438,52 @@ if [[ "${APPLY_TO_POSTGRES}" -eq 1 ]]; then
     else
       err "Postgres is not running and --no-auto-start-postgres was set."
     fi
+
+    wait_for_postgres || err "Postgres did not become ready inside ${POSTGRES_CONTAINER}"
   fi
 
-  log "Waiting for Postgres readiness (up to ${WAIT_POSTGRES_SECONDS}s)..."
-  wait_for_postgres_ready "${WAIT_POSTGRES_SECONDS}" || err "Postgres not ready within ${WAIT_POSTGRES_SECONDS}s"
-  resolve_postgres_admin_creds "${WAIT_VAULT_CREDS_SECONDS}"
-  log "Using Postgres admin credentials: user=${POSTGRES_ADMIN_USER} (source=${POSTGRES_ADMIN_CREDS_SOURCE})"
-
-  docker exec -i -u postgres \
-    -e POSTGRES_ADMIN_DB="${POSTGRES_ADMIN_DB}" \
-    -e ADMIN_USER="${POSTGRES_ADMIN_USER}" \
-    -e ADMIN_PASS="${POSTGRES_ADMIN_PASSWORD}" \
-    -e NT_DB="${POSTGRES_DB}" \
-    -e NT_USER="${POSTGRES_USER}" \
-    -e NT_PASS="${POSTGRES_PASSWORD}" \
-    -e INCLUDE_FASTAPI="${INCLUDE_FASTAPI}" \
-    -e FASTAPI_DB="${FASTAPI_DB_URL_DATABASE}" \
-    -e FASTAPI_USER="${FASTAPI_DB_USERNAME}" \
-    -e FASTAPI_PASS="${FASTAPI_DB_PASSWORD}" \
-    -e FASTAPI_SCHEMA="${FASTAPI_DB_SCHEMA}" \
-    -e INCLUDE_KEYCLOAK="${INCLUDE_KEYCLOAK}" \
-    -e KC_DB="${KEYCLOAK_DB_URL_DATABASE}" \
-    -e KC_USER="${KEYCLOAK_DB_USERNAME}" \
-    -e KC_PASS="${KEYCLOAK_DB_PASSWORD}" \
-    -e KC_SCHEMA="${KEYCLOAK_DB_SCHEMA}" \
-    "${POSTGRES_CONTAINER}" bash -s -- <<'EOS'
+  # NOTE: We intentionally do NOT fall back to peer/trust auth here.
+  # If Vault admin creds do not authenticate, we fail out as requested.
+  docker exec     -e ADMIN_USER="${POSTGRES_ADMIN_USER}"     -e ADMIN_PASS="${POSTGRES_ADMIN_PASSWORD}"     -e POSTGRES_ADMIN_DB="${POSTGRES_ADMIN_DB}"     -e NT_DB="${POSTGRES_DB}"     -e NT_USER="${POSTGRES_USER}"     -e NT_PASS="${POSTGRES_PASSWORD}"     -e INCLUDE_FASTAPI="${INCLUDE_FASTAPI}"     -e FASTAPI_DB="${FASTAPI_DB_URL_DATABASE}"     -e FASTAPI_USER="${FASTAPI_DB_USERNAME}"     -e FASTAPI_PASS="${FASTAPI_DB_PASSWORD}"     -e FASTAPI_SCHEMA="${FASTAPI_DB_SCHEMA}"     -e INCLUDE_KEYCLOAK="${INCLUDE_KEYCLOAK}"     -e KC_DB="${KEYCLOAK_DB_URL_DATABASE}"     -e KC_USER="${KEYCLOAK_DB_USERNAME}"     -e KC_PASS="${KEYCLOAK_DB_PASSWORD}"     -e KC_SCHEMA="${KEYCLOAK_DB_SCHEMA}"     "${POSTGRES_CONTAINER}" bash -s -- <<'EOS'
 set -euo pipefail
 
 # DB authentication (non-interactive)
+POSTGRES_ADMIN_DB="${POSTGRES_ADMIN_DB:-postgres}"
+
 ADMIN_USER="${ADMIN_USER:?missing ADMIN_USER}"
 ADMIN_PASS="${ADMIN_PASS:-}"
-[[ -n "${ADMIN_PASS}" ]] && export PGPASSWORD="${ADMIN_PASS}"
+
+# Prefer TCP to localhost so we hit host/hostssl rules (not "local" peer),
+# which avoids peer-auth failures when local connections are configured as peer.
+PSQL_HOST="${PSQL_HOST:-127.0.0.1}"
+PSQL_PORT="${PSQL_PORT:-5432}"
+export PGSSLMODE="${PGSSLMODE:-require}"
+
+psql_conn_flags_tcp=(--host="${PSQL_HOST}" --port="${PSQL_PORT}")
+
+psql_try_tcp() {
+  local user="$1"
+  local pass="$2"
+  if [[ -n "${pass}" ]]; then
+    PGPASSWORD="${pass}" psql -v ON_ERROR_STOP=1 --no-password "${psql_conn_flags_tcp[@]}" --username="${user}" --dbname="${POSTGRES_ADMIN_DB}" -c "SELECT 1" >/dev/null 2>&1
+  else
+    psql -v ON_ERROR_STOP=1 --no-password "${psql_conn_flags_tcp[@]}" --username="${user}" --dbname="${POSTGRES_ADMIN_DB}" -c "SELECT 1" >/dev/null 2>&1
+  fi
+}
+
+if ! psql_try_tcp "${ADMIN_USER}" "${ADMIN_PASS}"; then
+  echo "ERROR: Vault master/admin credentials failed to authenticate to Postgres."
+  echo "  user=${ADMIN_USER} db=${POSTGRES_ADMIN_DB} host=${PSQL_HOST} port=${PSQL_PORT} sslmode=${PGSSLMODE}"
+  echo "  This is an intentional hard-fail. Fix the mismatch (Vault vs Postgres) or pg_hba.conf, then re-run."
+  exit 2
+fi
+
+export PGPASSWORD="${ADMIN_PASS}"
+echo "INFO: Postgres apply auth verified: ${ADMIN_USER} via TCP (${PSQL_HOST}:${PSQL_PORT}, sslmode=${PGSSLMODE})"
+
+psql_admin() {
+  psql -v ON_ERROR_STOP=1 --no-password "${psql_conn_flags_tcp[@]}" --username="${ADMIN_USER}" "$@"
+}
 
 apply_role_and_db() {
   local dbname="$1"
@@ -1445,8 +1494,7 @@ apply_role_and_db() {
   # NOTE:
   #   psql variable substitution does not occur inside dollar-quoted strings (e.g., DO $$ ... $$).
   #   Use plain SQL + \gexec for idempotent creation with proper quoting via format(%I/%L).
-  psql -v ON_ERROR_STOP=1 --username="${ADMIN_USER}" --dbname="${admin_db}" \
-    --set=db_name="${dbname}" --set=role_name="${username}" --set=role_pass="${password}" <<'SQL'
+  psql_admin --dbname="${admin_db}"     --set=db_name="${dbname}" --set=role_name="${username}" --set=role_pass="${password}" <<'SQL'
 -- Create role if missing
 SELECT format('CREATE ROLE %I LOGIN PASSWORD %L;', :'role_name', :'role_pass')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role_name')
@@ -1465,96 +1513,121 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db_name')
 SELECT format('ALTER DATABASE %I OWNER TO %I;', :'db_name', :'role_name')
 \gexec
 
-SELECT format('GRANT ALL PRIVILEGES ON DATABASE %I TO %I;', :'db_name', :'role_name')
+SELECT format('GRANT CONNECT, TEMPORARY ON DATABASE %I TO %I;', :'db_name', :'role_name')
 \gexec
 SQL
 }
-
 
 apply_schema() {
   local dbname="$1"
   local schema="$2"
-  local username="$3"
+  local owner_role="$3"
 
-  # See note above: avoid DO $$ blocks to allow psql variable substitution.
-  psql -v ON_ERROR_STOP=1 --username="${ADMIN_USER}" --dbname="${dbname}" \
-    --set=schema_name="${schema}" --set=role_name="${username}" <<'SQL'
-SELECT format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION %I;', :'schema_name', :'role_name')
+  psql_admin --dbname="${dbname}"     --set=schema_name="${schema}" --set=owner_role="${owner_role}" <<'SQL'
+-- Create schema if missing and ensure ownership
+SELECT format('CREATE SCHEMA %I AUTHORIZATION %I;', :'schema_name', :'owner_role')
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM information_schema.schemata
+  WHERE schema_name = :'schema_name'
+)
 \gexec
 
-SELECT format('GRANT ALL ON SCHEMA %I TO %I;', :'schema_name', :'role_name')
+SELECT format('ALTER SCHEMA %I OWNER TO %I;', :'schema_name', :'owner_role')
+\gexec
+
+-- Allow owner_role to use/create in the schema (belt-and-suspenders)
+SELECT format('GRANT USAGE, CREATE ON SCHEMA %I TO %I;', :'schema_name', :'owner_role')
 \gexec
 SQL
 }
 
-
 apply_app_dml_user() {
+  # Creates a DML-only user for an application schema (tables/sequences) in an existing DB.
+  # Args:
+  #   1) dbname
+  #   2) schema_name
+  #   3) role_name
+  #   4) role_pass
+  #   5) owner_role (role that owns the schema objects; we set default privileges for future objects)
   local dbname="$1"
-  local schema_name="$2"
+  local schema="$2"
   local username="$3"
   local password="$4"
   local owner_role="$5"
   local admin_db="${POSTGRES_ADMIN_DB}"
 
-  # Create/rotate role password, grant CONNECT (and TEMP) at the database level
-  psql -v ON_ERROR_STOP=1 --username="${ADMIN_USER}" --dbname="${admin_db}" \
-    --set=db_name="${dbname}" --set=role_name="${username}" --set=role_pass="${password}" <<'SQL'
--- Create role if missing
+  # Create role if missing + set password at admin DB scope
+  psql_admin --dbname="${admin_db}"     --set=role_name="${username}" --set=role_pass="${password}" <<'SQL'
 SELECT format('CREATE ROLE %I LOGIN PASSWORD %L;', :'role_name', :'role_pass')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role_name')
 \gexec
 
--- Ensure password is set/updated (idempotent)
 SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L;', :'role_name', :'role_pass')
-\gexec
-
--- Allow the role to connect to the DB (and use temp tables)
-SELECT format('GRANT CONNECT, TEMPORARY ON DATABASE %I TO %I;', :'db_name', :'role_name')
 \gexec
 SQL
 
-  # Grant DML on existing objects and set default privileges for future objects
-  psql -v ON_ERROR_STOP=1 --username="${ADMIN_USER}" --dbname="${dbname}" \
-    --set=schema_name="${schema_name}" --set=role_name="${username}" --set=owner_role="${owner_role}" <<'SQL'
--- IMPORTANT: Prevent accidental DDL in public by removing CREATE from PUBLIC.
--- (Schema owners retain CREATE automatically; grant CREATE explicitly if desired.)
-SELECT format('REVOKE CREATE ON SCHEMA %I FROM PUBLIC;', :'schema_name')
+  # Schema grants within target DB
+  psql_admin --dbname="${dbname}"     --set=schema_name="${schema}" --set=role_name="${username}" --set=owner_role="${owner_role}" <<'SQL'
+-- Ensure schema exists (do not change owner here)
+SELECT format('CREATE SCHEMA %I;', :'schema_name')
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM information_schema.schemata
+  WHERE schema_name = :'schema_name'
+)
 \gexec
 
--- Ensure schema usage
+-- Current objects
 SELECT format('GRANT USAGE ON SCHEMA %I TO %I;', :'schema_name', :'role_name')
 \gexec
-
--- Existing objects
 SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I;', :'schema_name', :'role_name')
 \gexec
-
 SELECT format('GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA %I TO %I;', :'schema_name', :'role_name')
 \gexec
 
 -- Future objects created by the owner role
 SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I;', :'owner_role', :'schema_name', :'role_name')
 \gexec
-
 SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I;', :'owner_role', :'schema_name', :'role_name')
 \gexec
 SQL
 }
 
+NT_DB="${NT_DB:?missing NT_DB}"
+NT_USER="${NT_USER:?missing NT_USER}"
+NT_PASS="${NT_PASS:?missing NT_PASS}"
 
 apply_role_and_db "${NT_DB}" "${NT_USER}" "${NT_PASS}"
 echo "INFO: Ensured network_tools role/db exist: user=${NT_USER} db=${NT_DB}"
 
 if [[ "${INCLUDE_FASTAPI}" == "1" ]]; then
+  FASTAPI_DB="${FASTAPI_DB:?missing FASTAPI_DB}"
+  FASTAPI_SCHEMA="${FASTAPI_SCHEMA:-public}"
+  FASTAPI_USER="${FASTAPI_USER:?missing FASTAPI_USER}"
+  FASTAPI_PASS="${FASTAPI_PASS:?missing FASTAPI_PASS}"
   apply_app_dml_user "${FASTAPI_DB}" "${FASTAPI_SCHEMA}" "${FASTAPI_USER}" "${FASTAPI_PASS}" "${NT_USER}"
   echo "INFO: Ensured fastapi DML grants: user=${FASTAPI_USER} db=${FASTAPI_DB} schema=${FASTAPI_SCHEMA}"
 fi
 
-
 if [[ "${INCLUDE_KEYCLOAK}" == "1" ]]; then
+  KC_DB="${KC_DB:?missing KC_DB}"
+  KC_USER="${KC_USER:?missing KC_USER}"
+  KC_PASS="${KC_PASS:?missing KC_PASS}"
+  KC_SCHEMA="${KC_SCHEMA:-keycloak}"
+
+  # Create/ensure the DB and role, then ensure the schema exists and is owned by the Keycloak role.
   apply_role_and_db "${KC_DB}" "${KC_USER}" "${KC_PASS}"
   apply_schema "${KC_DB}" "${KC_SCHEMA}" "${KC_USER}"
   echo "INFO: Ensured keycloak role/db/schema exist: user=${KC_USER} db=${KC_DB} schema=${KC_SCHEMA}"
+
+  # Verify Keycloak credentials can authenticate (Vault authoritative).
+  if ! PGPASSWORD="${KC_PASS}" psql -v ON_ERROR_STOP=1 --no-password "${psql_conn_flags_tcp[@]}" --username="${KC_USER}" --dbname="${KC_DB}" -c "SELECT 1" >/dev/null 2>&1; then
+    echo "ERROR: Keycloak credentials from Vault failed to authenticate after apply."
+    echo "  user=${KC_USER} db=${KC_DB} host=${PSQL_HOST} port=${PSQL_PORT} sslmode=${PGSSLMODE}"
+    exit 3
+  fi
+  echo "INFO: Verified keycloak login works with Vault credentials."
 fi
 EOS
 
