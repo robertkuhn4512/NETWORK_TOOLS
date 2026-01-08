@@ -59,32 +59,33 @@ services:
     image: nginx:1.27-alpine
     container_name: nginx_gateway
     restart: unless-stopped
-    #depends_on:
-      # - keycloak
-      # - vault_production_node
+    depends_on:
+       - keycloak
+       - vault_production_node
       # - fastapi_api   # uncomment once FastAPI service exists
-      # - pgadmin
+       - pgadmin
     networks:
       public_net:
     ports:
       - "${PUBLIC_HTTP_PORT}:8080"
       - "${PUBLIC_HTTPS_PORT}:8443"
-    #read_only: true
-    user: root
-    #tmpfs:
-    #  - /var/cache/nginx:uid=101,gid=101,mode=0700
-    #  - /var/run:uid=101,gid=101,mode=0700
-    #  - /etc/nginx/conf.d:uid=101,gid=101,mode=0775
-    #  - /tmp:uid=101,gid=101,mode=1777
+    read_only: true
+    user: "0:0"
+    tmpfs:
+      - /etc/nginx/conf.d:rw,nosuid,nodev,noexec,mode=0755,uid=0,gid=0
+      - /var/cache/nginx:rw,nosuid,nodev,noexec,mode=0755,uid=0,gid=0
+      - /var/run:rw,nosuid,nodev,noexec,mode=0755,uid=0,gid=0
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777,uid=0,gid=0
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     cap_add:
-      - NET_BIND_SERVICE
       - CHOWN   # Required for entrypoint to adjust permissions if needed
       - SETGID  # Required for nginx to drop privileges
       - SETUID  # Required for nginx to drop privileges
+      # NET_BIND_SERVICE is NOT needed for 8080/8443 inside the container.
+      # Add it only if you change nginx to listen on 80/443 inside the container.
     volumes:
       - ./backend/app/nginx/templates:/etc/nginx/templates:ro
       - ./backend/app/nginx/certs:/etc/nginx/certs:ro
@@ -421,7 +422,6 @@ services:
     env_file:
       - .env
     environment:
-      PGADMIN_ENABLE_TLS: "False"
       PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
       PGADMIN_DEFAULT_PASSWORD_FILE: "/run/vault/pgadmin_password"
       PGADMIN_SERVER_JSON_FILE: "/run/vault/servers.json"
@@ -441,8 +441,7 @@ services:
         max-file: "5"
     healthcheck:
       test: [ "CMD-SHELL",
-        "test -s /certs/server.cert \
-              && test -s /certs/server.key \
+        "test -s 
               && test -s /run/vault/postgres_db \
               && test -s /run/vault/postgres_user \
               && test -s /run/vault/postgres_password \
