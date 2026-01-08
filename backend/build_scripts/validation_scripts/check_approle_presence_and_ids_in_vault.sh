@@ -213,7 +213,7 @@ VAULT_TOKEN_FILE_DEFAULT="${BOOTSTRAP_DIR}/root_token"
 VAULT_TOKEN_FILE="${VAULT_ROOT_TOKEN_FILE:-${ROOT_TOKEN_FILE:-${VAULT_TOKEN_FILE:-${VAULT_TOKEN_FILE_DEFAULT}}}}"
 
 [[ -r "$VAULT_TOKEN_FILE" ]] || die "Vault root token file not found/readable: ${VAULT_TOKEN_FILE}"
-VAULT_TOKEN="$(cat "$VAULT_TOKEN_FILE")
+VAULT_TOKEN="$(tr -d '\r\n' < "$VAULT_TOKEN_FILE")"
 
 ROLE_BASE_DIR="${REPO_ROOT}/container_data/vault/approle"
 

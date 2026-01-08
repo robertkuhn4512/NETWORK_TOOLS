@@ -41,25 +41,26 @@ the rest of the containers (Specifically NGINX)
 
 
 ---
-(Not In Use anymore) <br>
-1`./backend/build_scripts/generate_local_vault_certs.sh`
-2`./backend/build_scripts/generate_local_postgres_certs.sh`
-3`./backend/build_scripts/generate_local_pgadmin_certs.sh`
-4`./backend/build_scripts/generate_local_keycloak_certs.sh`
+
+Legacy / not in use (kept for reference):
+- `./backend/build_scripts/generate_local_vault_certs.sh`
+- `./backend/build_scripts/generate_local_postgres_certs.sh`
+- `./backend/build_scripts/generate_local_pgadmin_certs.sh`
+- `./backend/build_scripts/generate_local_keycloak_certs.sh`
 ---
 
----
 >NOTE: This build is going off my one domain setup. This can be set / changed in the .env file.
 
-1`./backend/build_scripts/generate_local_networkengineertools_certs.sh`
-2`./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*  
-3`./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh`  
-4`./backend/build_scripts/postgress_approle_setup.sh` (Step 2 must create the approle auth method or this will fail)  
-5`./backend/build_scripts/keycloak_approle_setup.sh` (Step 2 must create the approle auth method or this will fail)  
+---
+1. `./backend/build_scripts/generate_local_networkengineertools_certs.sh`
+2. `./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*
+3. `./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh`
+4. `./backend/build_scripts/postgress_approle_setup.sh` *(Step 2 must create the AppRole auth method or this will fail.)*
+5. `./backend/build_scripts/keycloak_approle_setup.sh` *(Step 2 must create the AppRole auth method or this will fail.)*
 ---
 
 ### 1.0 Initial BASE File system structure
-```text
+```bash
 developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 .
 |-- backend
@@ -152,7 +153,7 @@ bash $HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_networkengineertoo
 
 >NOTE: The new directory structure below<br>
 > Walkthrough video [can be found here](https://youtu.be/w5MW_b8s0Rc)
-```text
+```bash
 developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 .
 |-- backend
@@ -285,6 +286,28 @@ chmod +x ./backend/build_scripts/postgress_approle_setup.sh
 ROLE_NAME=postgres_pgadmin_agent ./backend/build_scripts/postgress_approle_setup.sh
 ```
 
+>NOTE: There is a helper script that will query vault and show you the values stored there as well as the local copies.
+> This helps ensure vault is ready to bring up the vault_agent containers
+
+```bash
+bash ./backend/build_scripts/validation_scripts/check_approle_presence_and_ids_in_vault.sh
+```
+<br>
+
+>Example output below
+
+```bash
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ bash ./backend/build_scripts/validation_scripts/check_approle_presence_and_ids_in_vault.sh
+INFO: Loading env defaults from: /home/developer_network_tools/NETWORK_TOOLS/.env
+INFO: WARN: VAULT_CACERT_IN_CONTAINER '/vault/certs/ca.crt' not found in container; using /vault/certs/cert.crt
+
+postgres_pgadmin_agent role_id (host):  8b1fa843-462e-5d0e-29f7-eb6f8c8f1dd8
+postgres_pgadmin_agent role_id (vault): 8b1fa843-462e-5d0e-29f7-eb6f8c8f1dd8
+
+keycloak_agent role_id (host):  8ba04cd6-1f55-505c-65e6-c89823db8575
+keycloak_agent role_id (vault): 8ba04cd6-1f55-505c-65e6-c89823db8575
+```
+
 >NOTE: A few points on the approle scripts
 
 ```text
@@ -384,6 +407,11 @@ chmod +x ./backend/build_scripts/seed_postgres_with_vault_credentials.sh
 
 ### 2.5 Start pgAdmin
 
+>NOTE: pgAdmin configurations include a servers.json file that gets populated with the main postgres database information 
+> so it will connect to it automatically. Right now, it will connect with the root account. In future updates, there will be 
+> user accounts created with limited access. This is just part of the init process for testing. In practice, the root account should be behind the vault
+> and locked behind a key.
+
 ```bash
 docker compose -f docker-compose.prod.yml up -d pgadmin
 docker compose -f docker-compose.prod.yml ps
@@ -405,8 +433,10 @@ docker logs --tail 200 -f keycloak
 > -Keycloak
 > -FastAPI
 > -PGadmin
-```bash
 
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate nginx_gateway
+docker logs --tail 200 -f nginx_gateway
 ```
 
 ---
@@ -512,6 +542,48 @@ docker logs --tail 200 -f keycloak
 
 ---
 
+
+---
+
+## 5. Validate GUI access to the containers through NGINX and access via the credentials saved in the vault.
+
+Access via the bootstrapped root token at first. 
+
+```bash
+cat ./backend/app/security/configuration_files/vault/bootstrap/root_token
+```
+
+URL<br>
+
+https://vault.networkengineertools.com:8200
+
+Vault Path
+
+Secrets<br>
+app_network_tools_secrets<br>
+keycloak_bootstrap<br>
+KC_BOOTSTRAP_ADMIN_PASSWORD<br>
+KC_BOOTSTRAP_ADMIN_USERNAME<br>
+
+URL
+
+https://auth.networkengineertools.com:8443
+
+
+Vault Path
+
+Secrets<br>
+app_network_tools_secrets<br>
+pgadmin<br>
+PGADMIN_DEFAULT_EMAIL<br>
+PGADMIN_DEFAULT_PASSWORD<br>
+
+URL
+
+https://pgadmin.networkengineertools.com:8443
+
+---
+
 ## Appendix A — Troubleshooting / Gotchas
 
 ### A.1 pgAdmin prompts for the database password even though `PasswordExecCommand` is set in `servers.json`
@@ -559,4 +631,120 @@ Option 2: Load/replace servers using the setup tooling:
 docker exec -it pgadmin sh -lc '
   python /pgadmin4/setup.py load-servers /pgadmin4/servers.json --replace
 '
+```
+
+
+## Appendix C - Final Directory Structure (Prior to removing sensitive files)
+```bash
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
+.
+|-- backend
+|   |-- app
+|   |   |-- fastapi
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           `-- fastapi_secrets.json.ctmpl
+|   |   |-- keycloak
+|   |   |   |-- bin
+|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       |-- keycloak_agent_policy.hcl
+|   |   |       `-- templates
+|   |   |           |-- keycloak.env.ctmpl
+|   |   |           |-- keycloak_tls.crt.ctmpl
+|   |   |           `-- keycloak_tls.key.ctmpl
+|   |   |-- nginx
+|   |   |   |-- certs
+|   |   |   |   |-- ca.crt
+|   |   |   |   |-- ca.key
+|   |   |   |   |-- ca.srl
+|   |   |   |   |-- cert.crt
+|   |   |   |   |-- cert.key
+|   |   |   |   `-- cert.leaf.crt
+|   |   |   `-- templates
+|   |   |       |-- networktools.conf.template
+|   |   |       `-- vault.conf.template
+|   |   |-- pgadmin
+|   |   |   `-- certs
+|   |   |-- postgres
+|   |   |   |-- certs
+|   |   |   |-- config
+|   |   |   |   |-- pg_hba.conf
+|   |   |   |   `-- postgres.conf
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           |-- pgadmin_password.ctmpl
+|   |   |           |-- postgres_db.ctmpl
+|   |   |           |-- postgres_password.ctmpl
+|   |   |           |-- postgres_user.ctmpl
+|   |   |           `-- servers.json.ctmpl
+|   |   |-- routers
+|   |   `-- security
+|   |       `-- configuration_files
+|   |           `-- vault
+|   |               |-- bootstrap
+|   |               |   |-- postgres_pgadmin_credentials.json
+|   |               |   |-- postgres_pgadmin.env
+|   |               |   |-- root_token
+|   |               |   |-- root_token.json
+|   |               |   |-- seeded_secrets_all.json
+|   |               |   |-- seed_kv_spec.postgres_pgadmin.json
+|   |               |   `-- unseal_keys.json
+|   |               |-- certs
+|   |               |   |-- ca.crt
+|   |               |   |-- cert.crt
+|   |               |   `-- cert.key
+|   |               |-- config
+|   |               |   |-- certs
+|   |               |   |-- keycloak_kv_read.hcl
+|   |               |   |-- postgres_pgadmin_kv_read.hcl
+|   |               |   `-- vault_configuration_primary_node.hcl
+|   |               `-- Dockerfile
+|   |-- build_scripts
+|   |   |-- generate_local_keycloak_certs.sh
+|   |   |-- generate_local_networkengineertools_certs.sh
+|   |   |-- generate_local_pgadmin_certs.sh
+|   |   |-- generate_local_postgres_certs.sh
+|   |   |-- generate_local_vault_certs.sh
+|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- guides
+|   |   |   |-- seed_kv_spec.example.json
+|   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- keycloak_approle_setup.sh
+|   |   |-- postgress_approle_setup.sh
+|   |   |-- seed_postgres_with_vault_credentials.sh
+|   |   |-- startover_scripts
+|   |   |   `-- reset_network_tools_docker.sh
+|   |   |-- validation_scripts
+|   |   |   |-- check_approle_presence_and_ids_in_vault.sh
+|   |   |   |-- postgres_inventory.sh
+|   |   |   `-- read_postgres_pgadmin_approle.sh
+|   |   |-- vault_first_time_init_only_rootless.sh
+|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+|   `-- nginx
+|-- container_data
+|   `-- vault
+|       |-- approle
+|       |   |-- keycloak_agent
+|       |   |   |-- role_id
+|       |   |   `-- secret_id
+|       |   `-- postgres_pgadmin_agent
+|       |       |-- role_id
+|       |       `-- secret_id
+|       `-- data
+|           |-- logs
+|           |   `-- audit.log
+|           |-- raft
+|           |   |-- raft.db
+|           |   `-- snapshots
+|           `-- vault.db
+|-- docker-compose.prod.yml
+|-- frontend
+|-- LICENSE
+|-- README.full.md
+`-- README.md
 ```
