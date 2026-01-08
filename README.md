@@ -60,6 +60,9 @@ bash ./backend/build_scripts/generate_local_vault_certs.sh
 bash ./backend/build_scripts/generate_local_postgres_certs.sh
 bash ./backend/build_scripts/generate_local_pgadmin_certs.sh
 bash ./backend/build_scripts/generate_local_keycloak_certs.sh
+
+# Use this instead - The rest are left here for reference.
+bash $HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_networkengineertools_certs.sh
 ```
 
 # First-time Vault only (creates root_token + init json artifacts)
