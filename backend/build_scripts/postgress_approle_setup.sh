@@ -3,6 +3,14 @@
 # postgress_approle_setup.sh
 #
 # Notes / How to run:
+#   - Env: auto-loads <repo-root>/.env by default.
+#     Optional flags: --env-file PATH | --no-env-file | --env-override
+#   - If PRIMARY_VAULT_SERVER_FQDN_FULL is set, the script will prefer Vault TLS hostname:
+#       ${PRIMARY_VAULT_SERVER_FQDN_FULL}
+#     else if PRIMARY_SERVER_FQDN is set, it will prefer:
+#       vault.${PRIMARY_SERVER_FQDN}
+#     and will fall back to the Vault container name for routing when needed
+#     (while preserving TLS hostname verification via VAULT_TLS_SERVER_NAME).
 #   1) Ensure Vault is running (example):
 #        docker compose -f docker-compose.prod.yml up -d vault_production_node
 #
@@ -48,16 +56,119 @@
 #     - Set VAULT_SKIP_VERIFY_IN_CONTAINER=1 (not recommended, but available).
 
 set -euo pipefail
+# -----------------------------------------------------------------------------
+# Env loading (default: <repo-root>/.env)
+# -----------------------------------------------------------------------------
+# This script will prefer values provided via environment variables (including .env),
+# and only fall back to Docker container names when needed.
+#
+# Security note: .env is treated as data (KEY=VALUE). Lines that do not match this
+# format are ignored; no code is executed.
+
+log()  { echo "INFO: $*" >&2; }
+warn() { echo "INFO: WARN: $*" >&2; }
+err()  { echo "ERROR: $*" >&2; }
+die()  { err "$*"; exit 1; }
+
+dotenv_load() {
+  local env_file="$1"
+  local override="${2:-0}"   # 0 = do not override non-empty vars; 1 = override
+  [[ -n "${env_file}" && -f "${env_file}" ]] || return 0
+
+  local line key val
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    # strip CR and ignore comments/blank
+    line="${line//$'\r'/}"
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ "${line}" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+
+    key="${BASH_REMATCH[1]}"
+    val="${BASH_REMATCH[2]}"
+
+    # trim leading/trailing whitespace
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+
+    # drop surrounding quotes if present
+    if [[ "${val}" =~ ^\"(.*)\"$ ]]; then val="${BASH_REMATCH[1]}"; fi
+    if [[ "${val}" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
+
+    if [[ "${override}" == "1" ]]; then
+      export "${key}=${val}"
+    else
+      # only set if empty/unset
+      if [[ -z "${!key:-}" ]]; then
+        export "${key}=${val}"
+      fi
+    fi
+  done < "${env_file}"
+}
+
+# Pre-parse env options so that .env can affect defaults, while CLI args still win.
+ENV_FILE=""
+ENV_DISABLE=0
+ENV_OVERRIDE=0
+for ((i=1; i<=$#; i++)); do
+  case "${!i}" in
+    --env-file)
+      j=$((i+1))
+      ENV_FILE="${!j:-}"
+      ;;
+    --no-env-file)
+      ENV_DISABLE=1
+      ;;
+    --env-override)
+      ENV_OVERRIDE=1
+      ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd -P)}"
 
-VAULT_CONTAINER="${VAULT_CONTAINER:-vault_production_node}"
+# Load .env defaults (unless disabled). This ensures PRIMARY_SERVER_FQDN and related vars
+# are available even when you do not export them in your shell.
+if [[ "${ENV_DISABLE}" != "1" ]]; then
+  if [[ -z "${ENV_FILE}" ]]; then
+    ENV_FILE="${REPO_ROOT}/.env"
+  fi
+
+  if [[ -f "${ENV_FILE}" ]]; then
+    log "Loading env defaults from: ${ENV_FILE}"
+    dotenv_load "${ENV_FILE}" "${ENV_OVERRIDE}"
+  else
+    log "Env file not found/readable (skipping): ${ENV_FILE}"
+  fi
+fi
+
+# Prefer a TLS-valid Vault hostname (from .env), then fall back to the Docker service name.
+PREFERRED_VAULT_HOST="${PREFERRED_VAULT_HOST:-}"
+if [[ -z "${PREFERRED_VAULT_HOST}" ]]; then
+  if [[ -n "${PRIMARY_VAULT_SERVER_FQDN_FULL:-}" ]]; then
+    PREFERRED_VAULT_HOST="${PRIMARY_VAULT_SERVER_FQDN_FULL}"
+  elif [[ -n "${PRIMARY_SERVER_FQDN:-}" ]]; then
+    PREFERRED_VAULT_HOST="vault.${PRIMARY_SERVER_FQDN}"
+  fi
+fi
+
+VAULT_CONTAINER="${VAULT_CONTAINER:-${VAULT_CONTAINER_NAME:-vault_production_node}}"
 ROLE_NAME="${ROLE_NAME:-postgres_pgadmin_agent}"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/container_data/vault/approle/${ROLE_NAME}}"
 ROTATE_SECRET_ID="${ROTATE_SECRET_ID:-1}"
 
-VAULT_ADDR_IN_CONTAINER="${VAULT_ADDR_IN_CONTAINER:-https://vault_production_node:8200}"
+# Candidate address order:
+#   1) VAULT_ADDR_IN_CONTAINER (explicit), else VAULT_ADDR (from env), else
+#   2) https://${PREFERRED_VAULT_HOST}:8200 (if available), else
+#   3) https://${VAULT_CONTAINER}:8200 (fallback)
+VAULT_ADDR_IN_CONTAINER="${VAULT_ADDR_IN_CONTAINER:-${VAULT_ADDR:-}}"
+if [[ -z "${VAULT_ADDR_IN_CONTAINER}" && -n "${PREFERRED_VAULT_HOST}" ]]; then
+  VAULT_ADDR_IN_CONTAINER="https://${PREFERRED_VAULT_HOST}:8200"
+fi
+VAULT_ADDR_IN_CONTAINER="${VAULT_ADDR_IN_CONTAINER:-https://${VAULT_CONTAINER}:8200}"
+
+# TLS server name override for in-container Vault CLI.
+VAULT_TLS_SERVER_NAME_IN_CONTAINER="${VAULT_TLS_SERVER_NAME_IN_CONTAINER:-${PREFERRED_VAULT_HOST:-}}"
+
 VAULT_CACERT_IN_CONTAINER="${VAULT_CACERT_IN_CONTAINER:-/vault/certs/ca.crt}"
 VAULT_SKIP_VERIFY_IN_CONTAINER="${VAULT_SKIP_VERIFY_IN_CONTAINER:-0}"
 
@@ -152,6 +263,7 @@ vault_in_container() {
     -e "VAULT_TOKEN=${VAULT_TOKEN}"
     -e "VAULT_ADDR=${VAULT_ADDR_IN_CONTAINER}"
     -e "VAULT_CACERT=${VAULT_CACERT_IN_CONTAINER}"
+    -e "VAULT_TLS_SERVER_NAME=${VAULT_TLS_SERVER_NAME_IN_CONTAINER:-}"
   )
 
   if [[ "${VAULT_SKIP_VERIFY_IN_CONTAINER}" == "1" ]]; then
@@ -170,6 +282,36 @@ cleanup() {
 }
 trap cleanup EXIT
 
+ensure_vault_cli_connectivity() {
+  local tried=()
+  tried+=("${VAULT_ADDR_IN_CONTAINER}")
+
+  if vault_in_container status >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ -n "${PREFERRED_VAULT_HOST:-}" ]]; then
+    warn "Vault CLI could not reach ${VAULT_ADDR_IN_CONTAINER} from inside '${VAULT_CONTAINER}'. Falling back to container address."
+    VAULT_ADDR_IN_CONTAINER="https://${VAULT_CONTAINER}:8200"
+    VAULT_TLS_SERVER_NAME_IN_CONTAINER="${VAULT_TLS_SERVER_NAME_IN_CONTAINER:-${PREFERRED_VAULT_HOST}}"
+    tried+=("${VAULT_ADDR_IN_CONTAINER}")
+
+    if vault_in_container status >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  err "Vault CLI is not reachable from inside container '${VAULT_CONTAINER}'."
+  err "Tried addresses:"
+  for a in "${tried[@]}"; do
+    err "  - ${a}"
+  done
+  if [[ -n "${PREFERRED_VAULT_HOST:-}" ]]; then
+    err "Preferred TLS host: ${PREFERRED_VAULT_HOST}"
+  fi
+  return 1
+}
+
 main() {
   if ! container_running; then
     echo "ERROR: Vault container '${VAULT_CONTAINER}' is not running." >&2
@@ -182,6 +324,8 @@ main() {
   VAULT_TOKEN="$(load_token)"
   export VAULT_TOKEN
 
+  log "Vault CLI target (initial): ${VAULT_ADDR_IN_CONTAINER} (tls_server_name=${VAULT_TLS_SERVER_NAME_IN_CONTAINER:-<none>})"
+  ensure_vault_cli_connectivity || exit 1
   umask 077
   mkdir -p "${OUT_DIR}"
   chmod 700 "${OUT_DIR}"

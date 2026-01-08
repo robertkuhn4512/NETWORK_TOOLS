@@ -1,3 +1,11 @@
+# For production builds I am going to use a single fqdn for the project.
+# On my dev setup I will be using networkengineertools.com which I will have
+# Pointed to my local VM. So anywhere you see a reference to that you can change it to
+# Your preferred domain. or hardcode this on your dev machine if you want.
+#
+# Items like keycloak will need a stationary name to make sure things flow smoothly and work correctly.
+
+
 name: network_tools
 
 volumes:
@@ -11,6 +19,10 @@ volumes:
     name: network_tools_keycloak_vault_rendered
   pgadmin_certs:
     name: network_tools_pgadmin_certs
+  fastapi_vault_rendered:
+    name: network_tools_vault_rendered
+  redis_data:
+    name: network_tools_redis_data
 
 networks:
   db_net:
@@ -36,10 +48,64 @@ services:
   # docker compose -p network_tools -f docker-compose.prod.yml logs --tail 200 -f --timestamps vault_production_node
   #
   #
+
+  # NGINX Container
+  # docker compose -f docker-compose.prod.yml up -d nginx_gateway
+  #
+  # Rebuild without changing dependencies
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate nginx_gateway
+  # docker logs --tail 200 -f nginx_gateway
+  nginx_gateway:
+    image: nginx:1.27-alpine
+    container_name: nginx_gateway
+    restart: unless-stopped
+    #depends_on:
+      # - keycloak
+      # - vault_production_node
+      # - fastapi_api   # uncomment once FastAPI service exists
+      # - pgadmin
+    networks:
+      public_net:
+    ports:
+      - "${PUBLIC_HTTP_PORT}:8080"
+      - "${PUBLIC_HTTPS_PORT}:8443"
+    #read_only: true
+    user: root
+    #tmpfs:
+    #  - /var/cache/nginx:uid=101,gid=101,mode=0700
+    #  - /var/run:uid=101,gid=101,mode=0700
+    #  - /etc/nginx/conf.d:uid=101,gid=101,mode=0775
+    #  - /tmp:uid=101,gid=101,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN   # Required for entrypoint to adjust permissions if needed
+      - SETGID  # Required for nginx to drop privileges
+      - SETUID  # Required for nginx to drop privileges
+    volumes:
+      - ./backend/app/nginx/templates:/etc/nginx/templates:ro
+      - ./backend/app/nginx/certs:/etc/nginx/certs:ro
+    environment:
+      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN}"
+      PUBLIC_HTTPS_PORT: "${PUBLIC_HTTPS_PORT}"
+      NGINX_ENVSUBST_OUTPUT_DIR: "/etc/nginx/conf.d" # Explicitly tell it where to write
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/nginx-health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
   vault_production_node:
-    #build:
-    #  context: backend/app/security/configuration_files/vault
-    #  dockerfile: Dockerfile
+    networks:
+      public_net:
     image: hashicorp/vault:1.21.1
     hostname: vault_production_node
     container_name: vault_production_node
@@ -73,8 +139,8 @@ services:
       - ./backend/app/security/configuration_files/vault/config/vault_configuration_primary_node.hcl:/vault/config/config.hcl:ro
 
       # TLS material (read-only)
-      - ./backend/app/security/configuration_files/vault/certs/cert.crt:/vault/certs/cert.crt:ro
-      - ./backend/app/security/configuration_files/vault/certs/cert.key:/vault/certs/cert.key:ro
+      - ./backend/app/nginx/certs/cert.crt:/vault/certs/cert.crt:ro
+      - ./backend/app/nginx/certs/cert.key:/vault/certs/cert.key:ro
 
       # Data/logs (must be writable by the container user)
       - ./container_data/vault/data:/vault/data
@@ -89,7 +155,7 @@ services:
       - /tmp:rw,noexec,nosuid,size=64m
       - /run:rw,noexec,nosuid,size=64m
     environment:
-      VAULT_DISABLE_MLOCK: "true"                                                          # Prefer enabling mlock; if you cannot, keep it true and harden host swap settings.
+      VAULT_DISABLE_MLOCK: "true"                                                           # Prefer enabling mlock; if you cannot, keep it true and harden host swap settings.
       VAULT_UI: "true"
       VAULT_CACERT: "/vault/certs/cert.crt"                                                 # VAULT_CACERT should normally point to a CA certificate (e.g., ca.crt),
                                                                                             # not the server leaf cert—unless your leaf cert is self-signed and acting as CA. Make this explicit by
@@ -98,10 +164,10 @@ services:
                                                                                             # This entry refers to the containers name. Which because of docker is in a hosts entry
                                                                                             # So reachability internally will work with this. Externally you would need to add an antry
                                                                                             # for it on your dev machine if it's separate from the machine hosting the container.
-      VAULT_ADDR: "https://${PRIMARY_VAULT_SERVER_FQDN_FULL}:8200"                          # For production use with a valid FQDN (Hash the above, unhash this and rebuild)
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"                               # For production use with a valid FQDN (Hash the above, unhash this and rebuild)
                                                                                             # This should be populated in the environment file SERVER_1_FQDN_FULL="Your domain name here"
-      VAULT_API_ADDR: "https://${PRIMARY_VAULT_SERVER_FQDN_FULL}:8200"
-      VAULT_CLUSTER_ADDR: "https://${PRIMARY_VAULT_SERVER_FQDN_FULL}:8201"
+      VAULT_API_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
+      VAULT_CLUSTER_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8201"
       VAULT_LOG_LEVEL: "debug"                                                              # Used for debugging vault while you are testing. Comment out and rebuild with
                                                                                             # VAULT_LOG_LEVEL: "info" for production use
       #VAULT_LOG_LEVEL: "info"
@@ -110,7 +176,7 @@ services:
     entrypoint: ["/bin/sh","-lc","exec vault server -config=/vault/config/config.hcl"]
 
   # docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin
-
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate vault_agent_postgres_pgadmin
   vault_agent_postgres_pgadmin:
     image: hashicorp/vault:1.21.1
     container_name: vault_agent_postgres_pgadmin
@@ -118,6 +184,10 @@ services:
     depends_on:
       - vault_production_node
     entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
+    environment:
+      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN:-vault_production_node}"
+      VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200"
+      VAULT_CACERT: "/vault/ca/ca.crt"
     read_only: true
     tmpfs:
       - /tmp
@@ -147,7 +217,7 @@ services:
       retries: 30
 
   # docker compose -f docker-compose.prod.yml up -d vault_agent_keycloak
-
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate vault_agent_keycloak
   vault_agent_keycloak:
     image: hashicorp/vault:1.21.1
     container_name: vault_agent_keycloak
@@ -156,7 +226,10 @@ services:
       - vault_production_node
     entrypoint:
       [ "/bin/sh","-lc","mkdir -p /vault/rendered/tls && exec vault agent -config=/vault/agent/agent.hcl" ]
-    #read_only: true
+    environment:
+      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN:-vault_production_node}"
+      VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200"
+      VAULT_CACERT: "/vault/ca/ca.crt"
     tmpfs:
       - /tmp
       - /run
@@ -180,17 +253,18 @@ services:
 
   # docker compose -f docker-compose.prod.yml up -d keycloak
   #
-  # Force rebuild
+  # Force rebuild without changing dependant containers (Prefer this, otherwise it may cause issues with the vault agent container using up your seret_id uses)
   # docker compose -f docker-compose.prod.yml up -d keycloak --force-recreate --no-deps keycloak
+  # docker logs --tail 200 -f keycloak
+  #
+  # Once nginx is up
+  # https://auth.networkengineertools.com:8443
   #
   keycloak:
     networks:
       db_net:
         ipv4_address: 172.30.20.30
       public_net:
-    ports:
-      - "8080:8080" # Expose if you want http for testing (Needs to be enabled in the env variables)
-      - "8443:8443"
     image: quay.io/keycloak/keycloak:26.4.7
     container_name: keycloak
     restart: unless-stopped
@@ -205,9 +279,17 @@ services:
     entrypoint: [ "/bin/bash", "/opt/keycloak/bin/keycloak_entrypoint_from_vault.sh" ]
     command: [ "start" ]
     environment:
-      KC_HOSTNAME: "https://keycloak.yourdomain.edu"
-      KC_HTTPS_CERTIFICATE_FILE: "/run/vault/tls/server.crt"
-      KC_HTTPS_CERTIFICATE_KEY_FILE: "/run/vault/tls/server.key"
+      KC_PROXY_HEADERS: "xforwarded"
+      KC_HTTP_RELATIVE_PATH: "/"
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_MANAGEMENT_SCHEME: "http"
+      KC_HOSTNAME: "https://auth.${PRIMARY_SERVER_FQDN}:${PUBLIC_HTTPS_PORT}"
+      KC_HOSTNAME_STRICT: "true"
+      KC_HOSTNAME_ADMIN: "https://auth.${PRIMARY_SERVER_FQDN}:${PUBLIC_HTTPS_PORT}"
+      KC_HOSTNAME_DEBUG: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_PROXY_TRUSTED_ADDRESSES: "172.30.0.0/16,172.30.20.0/24"
     logging:
       driver: json-file
       options:
@@ -216,63 +298,68 @@ services:
 
   # docker compose -f docker-compose.prod.yml up -d postgres_certs_init
 
-  postgres_certs_init:
-    image: postgres:18.1
-    container_name: postgres_certs_init
-    user: "0:0"
-    restart: "no"
-    volumes:
-      - ./backend/app/postgres/certs:/src:ro
-      - postgres_certs:/dest
-    tmpfs:
-      - /tmp
-      - /run
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
-    entrypoint:
-      - /bin/sh
-      - -lc
-      - |
-        set -e
-        mkdir -p /dest
-        cp -f /src/cert.crt /dest/server.crt
-        cp -f /src/cert.key /dest/server.key
-        cp -f /src/ca.crt   /dest/ca.crt
-        chmod 600 /dest/server.key
-        chmod 644 /dest/server.crt /dest/ca.crt
-        chown -R 999:999 /dest || true
-        ls -l /dest
+  #postgres_certs_init:
+  #  image: postgres:18.1
+  #  container_name: postgres_certs_init
+  #  user: "0:0"
+  #  restart: "no"
+  #  volumes:
+  #    - ./backend/app/postgres/certs:/src:ro
+  #    - postgres_certs:/dest
+  #  tmpfs:
+  #    - /tmp
+  #    - /run
+  #  logging:
+  #    driver: json-file
+  #    options:
+  #      max-size: "50m"
+  #      max-file: "5"
+  #  entrypoint:
+  #    - /bin/sh
+  #    - -lc
+  #    - |
+  #      set -e
+  #      mkdir -p /dest
+  #      cp -f /src/cert.crt /dest/server.crt
+  #      cp -f /src/cert.key /dest/server.key
+  #      cp -f /src/ca.crt   /dest/ca.crt
+  #      chmod 600 /dest/server.key
+  #      chmod 644 /dest/server.crt /dest/ca.crt
+  #      chown -R 999:999 /dest || true
+  #      ls -l /dest
 
-  pgadmin_certs_init:
-    image: postgres:18.1
-    container_name: pgadmin_certs_init
-    user: "0:0"
-    restart: "no"
-    volumes:
-      - ./backend/app/pgadmin/certs:/src:ro
-      - pgadmin_certs:/dest
-    tmpfs:
-      - /tmp
-      - /run
-    entrypoint:
-      - /bin/sh
-      - -lc
-      - |
-        set -e
-        mkdir -p /dest
-        cp -f /src/cert.crt /dest/server.cert
-        cp -f /src/cert.key /dest/server.key
-        cp -f /src/ca.crt   /dest/ca.crt
-        chmod 600 /dest/server.key
-        chmod 644 /dest/server.cert /dest/ca.crt
-        chown -R 5050:5050 /dest || true
-        ls -l /dest
+  # Not needed for the current build. Leaving in for reference.
+  # Currently nginx will proxy to the containers frontend so that will be handling the tls certs
+  # This will need to be uncommented as well as the settings on the container itself referencing it if
+  # you intend on using it on it's own
+  #
+  #pgadmin_certs_init:
+  #  image: postgres:18.1
+  #  container_name: pgadmin_certs_init
+  #  user: "0:0"
+  #  restart: "no"
+  #  volumes:
+  #    - ./backend/app/pgadmin/certs:/src:ro
+  #    - pgadmin_certs:/dest
+  #  tmpfs:
+  #    - /tmp
+  #    - /run
+  #  entrypoint:
+  #    - /bin/sh
+  #    - -lc
+  #    - |
+  #      set -e
+  #      mkdir -p /dest
+  #      cp -f /src/cert.crt /dest/server.cert
+  #      cp -f /src/cert.key /dest/server.key
+  #      cp -f /src/ca.crt   /dest/ca.crt
+  #      chmod 600 /dest/server.key
+  #      chmod 644 /dest/server.cert /dest/ca.crt
+  #      chown -R 5050:5050 /dest || true
+  #      ls -l /dest
 
   # docker compose -f docker-compose.prod.yml up -d postgres_primary
-
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate postgres_primary
   postgres_primary:
     # REMOVE this for production:
     # ports:
@@ -289,8 +376,8 @@ services:
     env_file:
       - .env
     depends_on:
-      postgres_certs_init:
-        condition: service_completed_successfully
+      #postgres_certs_init:
+      #  condition: service_completed_successfully
       vault_agent_postgres_pgadmin:
         condition: service_healthy
     environment:
@@ -300,7 +387,7 @@ services:
       PGDATA: "${PGDATA:-/var/lib/postgres/data/pgdata}"
     volumes:
       - postgres_data:/var/lib/postgres/data
-      - postgres_certs:/etc/postgres/certs:ro
+      #- postgres_certs:/etc/postgres/certs:ro
       - ./backend/app/postgres/config/postgres.conf:/etc/postgres/postgres.conf:ro
       - ./backend/app/postgres/config/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
 
@@ -314,21 +401,19 @@ services:
     command: ["postgres", "-c", "config_file=/etc/postgres/postgres.conf", "-c", "hba_file=/etc/postgres/pg_hba.conf"]
 
   # docker compose -f docker-compose.prod.yml up -d pgadmin
-
+  # docker compose -f docker-compose.prod.yml up -d pgadmin --build
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate pgadmin
   pgadmin:
     networks:
       db_net:
         ipv4_address: 172.30.20.20
       public_net:
-    ports:
-      - "8081:80"
-      - "8444:443"
     image: dpage/pgadmin4:9.11
     container_name: pgadmin
     restart: unless-stopped
     depends_on:
-      pgadmin_certs_init:
-        condition: service_completed_successfully
+      #pgadmin_certs_init:
+      #  condition: service_completed_successfully
       vault_agent_postgres_pgadmin:
         condition: service_healthy
       postgres_primary:
@@ -336,18 +421,19 @@ services:
     env_file:
       - .env
     environment:
-      PGADMIN_ENABLE_TLS: "True"
-      PGDATA: "/var/lib/postgres/data/pgdata"
+      PGADMIN_ENABLE_TLS: "False"
       PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
       PGADMIN_DEFAULT_PASSWORD_FILE: "/run/vault/pgadmin_password"
       PGADMIN_SERVER_JSON_FILE: "/run/vault/servers.json"
       PGADMIN_REPLACE_SERVERS_ON_STARTUP: "True"
+      PGDATA: "/var/lib/postgres/data/pgdata"
       PGADMIN_CONFIG_ENABLE_SERVER_PASS_EXEC_CMD: "True" # This "Should" be disabled if you are using multiple user logins to
                                                          # Access postgres as this will configure access to the postgres server with
                                                          # The root account. For now, i'm leaving it enabled for testing.
     volumes:
       - postgres_vault_rendered:/run/vault:ro
-      - pgadmin_certs:/certs:ro
+      # Not needed but left for an example - Running this behind the nginx service
+      # - pgadmin_certs:/certs:ro
     logging:
       driver: json-file
       options:
@@ -366,3 +452,131 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+
+  # docker compose -f docker-compose.prod.yml up -d vault_agent_fastapi
+
+  vault_agent_fastapi:
+    image: hashicorp/vault:1.21.1
+    container_name: vault_agent_fastapi
+    restart: unless-stopped
+    depends_on:
+      - vault_production_node
+    entrypoint: ["/bin/sh","-lc","mkdir -p /vault/rendered && exec vault agent -config=/vault/agent/agent.hcl"]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    volumes:
+      - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
+      - ./backend/app/fastapi/vault_agent/agent.hcl:/vault/agent/agent.hcl:ro
+      - ./backend/app/fastapi/vault_agent/templates:/vault/templates:ro
+
+      # Host-exported AppRole material (created by the modified init script below)
+      - ./container_data/vault/approle/fastapi_agent:/vault/approle:ro
+
+      # Render target (shared)
+      - fastapi_vault_rendered:/vault/rendered
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /vault/rendered/fastapi_secrets.json" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # ------------------------------------------------------------
+  # Redis (Celery broker/backend)
+  # ------------------------------------------------------------
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.50
+    volumes:
+      - redis_data:/data
+    command: ["redis-server","--appendonly","yes"]
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ------------------------------------------------------------
+  # FastAPI API container (loads ALL Vault keys into process env)
+  # ------------------------------------------------------------
+  fastapi_api:
+    build:
+      context: ./backend/app/fastapi
+      dockerfile: Dockerfile
+    container_name: fastapi_api
+    restart: unless-stopped
+    depends_on:
+      vault_agent_fastapi:
+        condition: service_healthy
+      postgres_primary:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.40
+      public_net:
+    ports:
+      - "8000:8000"
+    volumes:
+      - fastapi_vault_rendered:/run/vault:ro
+    environment:
+      VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
+      SERVER_MODE: "uvicorn"
+      APP_MODULE: "app.main:app"
+      BIND_HOST: "0.0.0.0"
+      BIND_PORT: "8000"
+      WEB_CONCURRENCY: "2"
+    command:
+      - "python"
+      - "/app/run_server.py"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\", timeout=2).read()'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ------------------------------------------------------------
+  # Celery worker (uses the same Vault-rendered JSON as FastAPI)
+  # ------------------------------------------------------------
+  celery_worker:
+    build:
+      context: ./backend/app/fastapi
+      dockerfile: Dockerfile
+    container_name: celery_worker
+    restart: unless-stopped
+    depends_on:
+      vault_agent_fastapi:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres_primary:
+        condition: service_started
+    networks:
+      db_net:
+    volumes:
+      - fastapi_vault_rendered:/run/vault:ro
+    environment:
+      VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
+    command:
+      - "python"
+      - "/app/vault_env_exec.py"
+      - "celery"
+      - "-A"
+      - "app.celery_app"
+      - "worker"
+      - "--loglevel=INFO"
+      - "--concurrency=2"

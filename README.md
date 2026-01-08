@@ -27,14 +27,23 @@ All scripts below are expected to be run from the repo root (e.g., `~/NETWORK_TO
 
 Run these **in order**:
 
+Steps 1 - 4 have been replaced with step 5 but left here for now for reference as this is being 
+moved to a single domain, and single cert requirement.
+
+---
 1`./backend/build_scripts/generate_local_vault_certs.sh`  
 2`./backend/build_scripts/generate_local_postgres_certs.sh`  
 3`./backend/build_scripts/generate_local_pgadmin_certs.sh`  
-4`./backend/build_scripts/generate_local_keycloak_certs.sh`  
-5`./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*  
-6`./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh`  
-7`./backend/build_scripts/postgress_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
-8`./backend/build_scripts/keycloak_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
+4`./backend/build_scripts/generate_local_keycloak_certs.sh` 
+---
+
+>NOTE: This build is going off my one domain setup. This can be set / changed in the .env file.
+
+5`./backend/build_scripts/generate_local_networkengineertools_certs.sh`
+6`./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*  
+7`./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh`  
+8`./backend/build_scripts/postgress_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
+9`./backend/build_scripts/keycloak_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
 
 
 Notes:
@@ -54,18 +63,21 @@ bash ./backend/build_scripts/generate_local_keycloak_certs.sh
 ```
 
 # First-time Vault only (creates root_token + init json artifacts)
+>NOTE:<br>init-shares -> How many password shards you want to generate<br> init-threshold -> How many of those shards are required to unseal the vault
+
+>NOTE:The vault address is derived from the .env file, or if will fail to the container name if it's missing. <br>https://vault.${PRIMARY_SERVER_FQDN}
+
 ```bash
 bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
-  --vault-addr "https://vault_production_node:8200" \
-  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/nginx/certs/ca.crt" \
   --init-shares 5 --init-threshold 3
 ```
 
 # Seed Postgres/pgAdmin bootstrap creds + KV spec artifacts
 >NOTE: --unseal-required should match --init-threshold. This tells the script how many keys are required to unseal vault if it's sealed.
+
 ```bash
 bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
-  --vault-addr "https://vault_production_node:8200" \
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
   --unseal-required 3
 ```
@@ -198,6 +210,17 @@ docker logs --tail 200 -f pgadmin
 docker compose -f docker-compose.prod.yml up -d keycloak
 docker compose -f docker-compose.prod.yml ps
 docker logs --tail 200 -f keycloak
+```
+
+### 2.7 Start NGINX
+>NOTE: NGINX is dependent on the primary containers it proxys in order for it to come up.
+> Those are
+> -Vault
+> -Keycloak
+> -FastAPI
+> -PGadmin
+```bash
+
 ```
 
 ---

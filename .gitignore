@@ -15,10 +15,6 @@ venv/
 logs/
 *.log
 
-# Local override files
-.env
-.env
-
 # Cert Directory
 backend/app/security/configuration_files/vault/certs/
 
@@ -48,3 +44,4 @@ backend/app/security/configuration_files/vault/certs/
 
 #Ignore local how to videos
 how_to_videos/*
+

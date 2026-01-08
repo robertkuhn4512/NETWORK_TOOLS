@@ -15,7 +15,10 @@
 pid_file = "/tmp/vault-agent.pid"
 
 vault {
-  address = "https://vault_production_node:8200"
+  # address intentionally omitted.
+  # The agent will use VAULT_ADDR from the container environment.
+  # Recommended (docker compose):
+  #   VAULT_ADDR=https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200
   ca_cert = "/vault/ca/ca.crt"
 }
 
@@ -42,17 +45,18 @@ template {
   destination = "/vault/rendered/keycloak.env"
   perms       = "0444"
 }
-
-template {
-  source      = "/vault/templates/keycloak_tls.crt.ctmpl"
-  destination = "/vault/rendered/tls/server.crt"
-  create_dest_dirs = true
-  perms       = "0644"
-}
-
-template {
-  source      = "/vault/templates/keycloak_tls.key.ctmpl"
-  destination = "/vault/rendered/tls/server.key"
-  create_dest_dirs = true
-  perms       = "0644"
-}
+#Commenting out for now as nginx is handling tls,
+#reimpliment these if using keycloak solo.
+#template {
+#  source      = "/vault/templates/keycloak_tls.crt.ctmpl"
+#  destination = "/vault/rendered/tls/server.crt"
+#  create_dest_dirs = true
+#  perms       = "0644"
+#}
+#
+#template {
+#  source      = "/vault/templates/keycloak_tls.key.ctmpl"
+#  destination = "/vault/rendered/tls/server.key"
+#  create_dest_dirs = true
+#  perms       = "0644"
+#}
