@@ -1,7 +1,10 @@
 pid_file = "/tmp/vault-agent.pid"
 
 vault {
-  address = "https://vault_production_node:8200"
+  # address intentionally omitted.
+  # The agent will use VAULT_ADDR from the container environment.
+  # Recommended (docker compose):
+  #   VAULT_ADDR=https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200
   # Use your dev CA if available; otherwise this can point to whatever CA file you mount.
   ca_cert = "/vault/ca/ca.crt"
 }

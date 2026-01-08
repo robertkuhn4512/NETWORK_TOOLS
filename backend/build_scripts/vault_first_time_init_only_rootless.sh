@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vault_first_time_init_only_rootless.sh
+# vault_first_time_init_only_rootless.sh (env + seamless TLS fallback v3)
 #
 # NOTES
 #   Purpose:
@@ -9,10 +9,29 @@
 #       3) Unseal Vault if sealed
 #
 #   How to run:
+#     # Recommended (loads .env automatically; derives vault.<PRIMARY_SERVER_FQDN> when available):
 #     bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
-#       --vault-addr "https://vault_production_node:8200" \
-#       --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+#       --ca-cert "$HOME/NETWORK_TOOLS/backend/app/nginx/certs/ca.crt" \
 #       --init-shares 5 --init-threshold 3
+#
+#     # If you want to force a specific address:
+#     #   --vault-addr "https://vault.networkengineertools.com:8200"
+#
+#     # If your .env is not in the compose directory:
+#     #   --env-file "/path/to/.env"
+#
+#   Caveats / gotchas:
+#     - TLS hostname validation is strict. The Vault server certificate must match the host used in VAULT_ADDR.
+#       This script will prefer vault.<PRIMARY_SERVER_FQDN> for TLS/SNI (from .env) and will fall back to the
+#       docker service name (vault_production_node) only when the preferred path fails.
+#     - If the cert does NOT include the docker service name (usual), ensure PRIMARY_SERVER_FQDN is set and
+#       the cert includes vault.<PRIMARY_SERVER_FQDN> in SANs.
+#     - When using curl --resolve mapping to 127.0.0.1, the Vault container must publish 8200 to the host.
+#       If you remove published ports, use --resolve-ip (container IP) or run this script from a container on
+#       the same docker network.
+#     - --ca-cert must point at the CA that signed Vault's server certificate. If you standardize on the nginx
+#       cert generator, copy/sync its ca.crt/cert.crt/cert.key into Vault's cert directory and use nginx/ca.crt here.
+#
 #
 #     # Disable AppRole + policy bootstrap (optional):
 #     #   --no-setup-postgres-pgadmin-approle
@@ -40,30 +59,75 @@
 #     This script writes unseal keys + root token to disk (0600) for the bootstrap phase.
 #     Move them to your secure storage immediately, or delete once you have your operational model.
 #
+#
+#   Caveats / TLS notes:
+#     - This script loads <compose-dir>/.env by default (or --env-file PATH).
+#     - If PRIMARY_SERVER_FQDN is set, the script prefers to verify TLS using:
+#         https://vault.<PRIMARY_SERVER_FQDN>:8200
+#       even if DNS is not ready, by using curl --resolve to map that name to an IP.
+#     - By default it maps to 127.0.0.1 (requires Vault port 8200 published on the host).
+#       If that fails, it automatically falls back to the Vault container IP via docker inspect.
+#     - If you only probe https://vault_production_node:8200 from the host, TLS will usually fail
+#       because the cert SAN does not include the container name. The resolve/SNI approach avoids that.
+#
 # HOW TO RUN
 #   cd "$HOME/NETWORK_TOOLS"
+#
+#   # Recommended (loads .env automatically; uses vault.<PRIMARY_SERVER_FQDN> for TLS/SNI when available):
 #   bash backend/build_scripts/vault_first_time_init_only_rootless.sh \
-#     --vault-addr https://vault_production_node:8200 \
-#     --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+#     --ca-cert "$HOME/NETWORK_TOOLS/backend/app/nginx/certs/ca.crt" \
+#     --init-shares 5 --init-threshold 3
+#
+#   # If needed, point at a specific Vault address explicitly:
+#   #   --vault-addr "https://vault.${PRIMARY_SERVER_FQDN}:8200"
+#
+#   # If .env is not located next to your compose file:
+#   #   --env-file "/path/to/.env"
 #
 # REQUIREMENTS
 #   - docker (rootless context)
 #   - docker compose (plugin)
 #   - bash, curl, jq
 #
+# -------------------------------------------------------------------
+# Logging helpers (must be defined before first use)
+# -------------------------------------------------------------------
+log()  { echo "INFO: $*" >&2; }
+warn() { echo "INFO: WARN: $*" >&2; }
+err()  { echo "ERROR: $*" >&2; }
+die()  { err "$*"; exit 1; }
+
+# DEBUG is intentionally referenced safely because this script runs with `set -u`.
+dbg()  { [[ "${DEBUG:-0}" == "1" ]] && echo "DEBUG: $*" >&2 || true; }
+
 set -Eeuo pipefail
 
 usage() {
   cat <<'EOF'
 Usage:
-  vault_first_time_init_only_rootless.sh --vault-addr URL [options]
+  vault_first_time_init_only_rootless.sh [--vault-addr URL] [options]
 
-Required:
-  --vault-addr URL                Vault address (e.g., https://vault_production_node:8200)
+Vault address:
+  --vault-addr URL                Vault address (e.g., https://vault.networkengineertools.com:8200)
+                                 If omitted, the script will try .env (VAULT_ADDR, PRIMARY_VAULT_SERVER_FQDN_FULL,
+                                 PRIMARY_SERVER_FQDN) and finally fall back to https://vault_production_node:8200.
 
 Optional TLS:
   --namespace NS                  Vault namespace (Enterprise/HCP)
   --ca-cert PATH                  CA bundle PEM for HTTPS verification (recommended)
+
+Env defaults:
+  --env-file PATH               Load KEY=VALUE defaults from a .env file.
+                                 Default: <compose-dir>/.env (where <compose-dir> is the directory containing the compose file).
+  --no-env-file                 Do not load any env file.
+  --env-override                Allow the env file to override already-set (non-empty) variables.
+
+Hostname / SNI helpers:
+  --primary-server-fqdn FQDN       Used to derive vault.<FQDN> for TLS/SNI when --vault-addr is a container/localhost
+                                  (default: $PRIMARY_SERVER_FQDN env var, if set)
+  --vault-public-host HOST         Explicit host to use for TLS/SNI (overrides vault.<PRIMARY_SERVER_FQDN>)
+  --resolve-ip IP                 IP to map HOST:PORT to when using curl --resolve (default: 127.0.0.1)
+  --no-auto-resolve-public-host    Disable the automatic vault.<FQDN> + --resolve behavior
 
 Init parameters:
   --init-shares N                 Default 5
@@ -119,10 +183,26 @@ Debug:
 EOF
 }
 
+# -------------------- Small helpers (must be defined before first use) --------------------
+
+
 # -------------------- Defaults --------------------
 VAULT_ADDR=""
 VAULT_NAMESPACE="${VAULT_NAMESPACE:-}"
 CA_CERT=""
+
+ENV_FILE=""
+LOAD_ENV_FILE=1
+ENV_OVERRIDE=0
+
+PRIMARY_SERVER_FQDN_ARG=""
+VAULT_PUBLIC_HOST=""
+RESOLVE_IP="127.0.0.1"
+AUTO_RESOLVE_PUBLIC_HOST=1
+CURL_RESOLVE_ARGS=()
+LAST_CURL_WARN=""
+LAST_CURL_RC=0
+
 
 INIT_SHARES=5
 INIT_THRESHOLD=3
@@ -185,6 +265,59 @@ _set_opt() {
   else _require_val "$opt" "$next"; printf -v "$var" '%s' "$next"; return 1; fi; return 0;
 }
 
+load_env_file() {
+  # Minimal .env loader:
+  # - reads KEY=VALUE lines
+  # - ignores blanks and lines starting with '#'
+  # - strips surrounding single/double quotes
+  # - by default only fills currently-empty (non-set) variables; with override, replaces non-empty vars too
+  local file="$1"
+  local override="${2:-0}"
+  [[ -n "$file" && -r "$file" ]] || return 0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+
+    # trim leading/trailing whitespace
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+
+    [[ -z "$line" ]] && continue
+    [[ "$line" == \#* ]] && continue
+    [[ "$line" == export\ * ]] && line="${line#export }"
+    [[ "$line" == *"="* ]] || continue
+
+    local key="${line%%=*}"
+    local val="${line#*=}"
+
+    # trim whitespace around key/val
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+
+    # strip surrounding quotes
+    if [[ ${#val} -ge 2 && "$val" == \"*\" && "$val" == *\" ]]; then
+      val="${val:1:${#val}-2}"
+    elif [[ ${#val} -ge 2 && "$val" == \'*\' && "$val" == *\' ]]; then
+      val="${val:1:${#val}-2}"
+    fi
+
+    # If not overriding, only fill empty/non-set vars
+    if (( ! override )); then
+      if [[ -n "${!key-}" ]]; then
+        continue
+      fi
+    fi
+
+    printf -v "$key" '%s' "$val"
+    export "$key"
+  done < "$file"
+}
+
+
 # -------------------- Parse args --------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -241,9 +374,83 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$VAULT_ADDR" ]] || { echo "ERROR: --vault-addr is required" >&2; exit 2; }
+# Determine compose file now (needed for default .env path)
+COMPOSE_FILE="${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
+
+# Load .env defaults so PRIMARY_SERVER_FQDN / VAULT_ADDR are available when this script is run from the host.
+if (( LOAD_ENV_FILE )); then
+  if [[ -z "$ENV_FILE" ]]; then
+    ENV_FILE="$(dirname -- "$COMPOSE_FILE")/.env"
+  fi
+  if [[ -r "$ENV_FILE" ]]; then
+    echo "INFO: Loading env defaults from: $ENV_FILE" >&2
+    load_env_file "$ENV_FILE" "$ENV_OVERRIDE"
+  else
+    echo "INFO: Env file not found/readable (skipping): $ENV_FILE" >&2
+  fi
+fi
+
+# If --vault-addr was not provided, try env-derived values in order:
+#   1) VAULT_ADDR (direct)
+#   2) PRIMARY_VAULT_SERVER_FQDN_FULL (hostname only; scheme is forced to https)
+#   3) PRIMARY_SERVER_FQDN -> vault.<PRIMARY_SERVER_FQDN>
+#   4) Fallback to docker service name (vault_production_node)
+if [[ -z "$VAULT_ADDR" ]]; then
+  if [[ -n "${VAULT_ADDR-}" ]]; then
+    : # already set by env file
+  elif [[ -n "${PRIMARY_VAULT_SERVER_FQDN_FULL:-}" ]]; then
+    _h="${PRIMARY_VAULT_SERVER_FQDN_FULL#https://}"
+    _h="${_h#http://}"
+    _h="${_h%/}"
+    VAULT_ADDR="https://${_h}:8200"
+  elif [[ -n "${PRIMARY_SERVER_FQDN:-}" ]]; then
+    VAULT_ADDR="https://vault.${PRIMARY_SERVER_FQDN}:8200"
+  else
+    VAULT_ADDR="https://${SERVICE_NAME}:8200"
+  fi
+fi
+
+[[ -n "$VAULT_ADDR" ]] || { echo "ERROR: Unable to determine Vault address. Provide --vault-addr or set PRIMARY_SERVER_FQDN / PRIMARY_VAULT_SERVER_FQDN_FULL / VAULT_ADDR in .env." >&2; exit 2; }
 
 VAULT_ADDR="${VAULT_ADDR%/}"
+
+
+# Derive a TLS/SNI-friendly public host when --vault-addr points at a container name or localhost.
+# This avoids hostname mismatch errors when the Vault server certificate is issued to vault.<PRIMARY_SERVER_FQDN>.
+PRIMARY_SERVER_FQDN="${PRIMARY_SERVER_FQDN_ARG:-${PRIMARY_SERVER_FQDN:-}}"
+if [[ -z "$VAULT_PUBLIC_HOST" && -n "${PRIMARY_SERVER_FQDN:-}" ]]; then
+  VAULT_PUBLIC_HOST="vault.${PRIMARY_SERVER_FQDN}"
+fi
+
+# Parse VAULT_ADDR into scheme/host/port.
+VAULT_SCHEME=""
+VAULT_HOST=""
+VAULT_PORT=""
+if [[ "$VAULT_ADDR" =~ ^(https?)://([^:/]+)(:([0-9]+))?$ ]]; then
+  VAULT_SCHEME="${BASH_REMATCH[1]}"
+  VAULT_HOST="${BASH_REMATCH[2]}"
+  VAULT_PORT="${BASH_REMATCH[4]:-8200}"
+else
+  die "Invalid --vault-addr (expected scheme://host[:port]): $VAULT_ADDR"
+fi
+
+if (( AUTO_RESOLVE_PUBLIC_HOST )) && [[ -n "${VAULT_PUBLIC_HOST:-}" ]]; then
+  # If user provided a docker service name or localhost, use the public hostname for SNI,
+  # and map it to a local IP (default 127.0.0.1) via curl --resolve.
+  if [[ "$VAULT_HOST" == "vault_production_node" || "$VAULT_HOST" == "localhost" || "$VAULT_HOST" == "127.0.0.1" ]]; then
+    log "Using public host for TLS/SNI: ${VAULT_PUBLIC_HOST} (mapped to ${RESOLVE_IP} via curl --resolve)"
+    VAULT_ADDR="${VAULT_SCHEME}://${VAULT_PUBLIC_HOST}:${VAULT_PORT}"
+    CURL_RESOLVE_ARGS=(--resolve "${VAULT_PUBLIC_HOST}:${VAULT_PORT}:${RESOLVE_IP}")
+  else
+    # If the requested host does not resolve locally, optionally map it to RESOLVE_IP.
+    if command -v getent >/dev/null 2>&1; then
+      if ! getent hosts "$VAULT_HOST" >/dev/null 2>&1; then
+        log "WARN: ${VAULT_HOST} does not resolve locally; using curl --resolve to ${RESOLVE_IP} for this host."
+        CURL_RESOLVE_ARGS=(--resolve "${VAULT_HOST}:${VAULT_PORT}:${RESOLVE_IP}")
+      fi
+    fi
+  fi
+fi
 
 if (( SETUP_POSTGRES_PGADMIN_APPROLE )); then
   if [[ "$POSTGRES_PGADMIN_KV_VERSION" != "1" && "$POSTGRES_PGADMIN_KV_VERSION" != "2" ]]; then
@@ -264,9 +471,22 @@ command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is required" >&2; exi
 command -v curl  >/dev/null 2>&1 || { echo "ERROR: curl is required"  >&2; exit 3; }
 command -v jq    >/dev/null 2>&1 || { echo "ERROR: jq is required"    >&2; exit 3; }
 
-log() { echo "INFO: $*" >&2; }
-dbg() { (( VERBOSE )) && echo "DEBUG: $*" >&2 || true; }
-die() { echo "ERROR: $*" >&2; exit 1; }
+
+curl_warn_once() {
+  # Log a curl stderr message once per distinct (context, rc, http, stderr) to avoid log spam.
+  local context="$1" stderr_tmp="$2" rc="$3" http="$4"
+  [[ -s "$stderr_tmp" ]] || return 0
+  local msg key
+  msg="$(tr '\n' ' ' <"$stderr_tmp" 2>/dev/null || true)"
+  # Normalize whitespace a bit
+  msg="${msg//$'\t'/ }"
+  while [[ "$msg" == *"  "* ]]; do msg="${msg//  / }"; done
+  key="${context}|${rc}|${http}|${msg}"
+  if [[ "$key" != "${LAST_CURL_WARN:-}" ]]; then
+    log "WARN: ${context} curl failed (rc=${rc}, http=${http}): ${msg}"
+    LAST_CURL_WARN="$key"
+  fi
+}
 
 # Curl common args
 CURL_COMMON=(-sS --retry 3 --retry-delay 1 --connect-timeout 3 --max-time 10)
@@ -339,7 +559,7 @@ request_public() {
   local url="${VAULT_ADDR}${path}"
 
   # Build curl args (do not include any sensitive headers here).
-  local -a args=("${CURL_COMMON[@]}" "${CURL_TLS_ARGS[@]}" "${NS_HDR[@]}" -X "$method")
+  local -a args=("${CURL_COMMON[@]}" "${CURL_RESOLVE_ARGS[@]}" "${CURL_TLS_ARGS[@]}" "${NS_HDR[@]}" -X "$method")
   if [[ -n "$body" ]]; then args+=(-H "Content-Type: application/json" -d "$body"); fi
 
   # We want:
@@ -352,11 +572,15 @@ request_public() {
   set +e
   body_and_code="$(curl "${args[@]}" "$url" -w $'\n%{http_code}' 2>"$stderr_tmp")"
   rc=$?
+  LAST_CURL_RC=$rc
   set -e
 
   HTTP_CODE="${body_and_code##*$'\n'}"
   RESP_JSON="${body_and_code%$'\n'$HTTP_CODE}"
   dbg "public $method $path -> http=$HTTP_CODE rc=$rc"
+  if (( rc != 0 )) || [[ "$HTTP_CODE" == "000" ]]; then
+    curl_warn_once "public ${method} ${path}" "$stderr_tmp" "$rc" "$HTTP_CODE"
+  fi
 
   if (( rc != 0 )) && (( AUTO_INSECURE_FALLBACK )) && [[ "${#CURL_TLS_ARGS[@]}" -eq 0 ]]; then
     # First attempt failed using system trust. Capture the error and retry with -k.
@@ -397,7 +621,7 @@ request_authed() {
 
   [[ -n "$token" ]] || die "request_authed called with empty token"
 
-  local -a args=("${CURL_COMMON[@]}" "${CURL_TLS_ARGS[@]}" "${NS_HDR[@]}" -H "X-Vault-Token: ${token}" -X "$method")
+  local -a args=("${CURL_COMMON[@]}" "${CURL_RESOLVE_ARGS[@]}" "${CURL_TLS_ARGS[@]}" "${NS_HDR[@]}" -H "X-Vault-Token: ${token}" -X "$method")
   if [[ -n "$body" ]]; then args+=(-H "Content-Type: application/json" -d "$body"); fi
 
   local stderr_tmp body_and_code rc
@@ -411,6 +635,9 @@ request_authed() {
   HTTP_CODE="${body_and_code##*$'\n'}"
   RESP_JSON="${body_and_code%$'\n'$HTTP_CODE}"
   dbg "authed $method $path -> http=$HTTP_CODE rc=$rc"
+  if (( rc != 0 )) || [[ "$HTTP_CODE" == "000" ]]; then
+    curl_warn_once "authed ${method} ${path}" "$stderr_tmp" "$rc" "$HTTP_CODE"
+  fi
 
   if (( rc != 0 )) && (( AUTO_INSECURE_FALLBACK )) && [[ "${#CURL_TLS_ARGS[@]}" -eq 0 ]]; then
     local err
@@ -557,7 +784,7 @@ path "${POSTGRES_PGADMIN_KV_MOUNT}/metadata/pgadmin*" {
   capabilities = ["list"]
 }
 HCL
-)
+)"
 
   # 1) Ensure ACL policy exists (or force re-write).
   local need_policy=0
@@ -751,15 +978,53 @@ compose_up() {
 
 wait_for_vault() {
   local deadline="$((SECONDS + 75))"
-  log "Waiting for Vault endpoint: ${VAULT_ADDR}"
+  local start_ts="$SECONDS"
+  local switched_to_container_ip=0
+
+  echo "INFO: Waiting for Vault endpoint: ${VAULT_ADDR}" >&2
+
   while (( SECONDS < deadline )); do
     request_public GET "/v1/sys/health"
     # 200 = active, 429 = standby, 501 = not init, 503 = sealed
     if [[ "$HTTP_CODE" =~ ^(200|429|501|503)$ ]]; then
       return 0
     fi
+
+    # Seamless fallback:
+    # If we're using curl --resolve to 127.0.0.1 (common for host-side bootstrap),
+    # but Vault is still not reachable, fall back to resolving to the container IP.
+    #
+    # This helps in cases where you later remove port publishing (8200:8200) and need to reach Vault via Docker networking.
+    if (( ! switched_to_container_ip )) \
+       && (( AUTO_RESOLVE_PUBLIC_HOST )) \
+       && [[ "${#CURL_RESOLVE_ARGS[@]}" -gt 0 ]] \
+       && [[ "${RESOLVE_IP}" == "127.0.0.1" ]] \
+       && (( SECONDS - start_ts >= 10 )) \
+       && [[ "$HTTP_CODE" == "000" ]]; then
+
+      local cip=""
+      if command -v docker >/dev/null 2>&1; then
+        cip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${SERVICE_NAME}" 2>/dev/null | awk '{print $1}')"
+      fi
+
+      if [[ -n "$cip" ]]; then
+        echo "INFO: WARN: Vault not reachable yet via ${RESOLVE_IP}; falling back to container IP ${cip} for curl --resolve" >&2
+        RESOLVE_IP="$cip"
+
+        # Rebuild resolve args for current VAULT_ADDR host:port
+        if [[ "$VAULT_ADDR" =~ ^(https?)://([^:/]+)(:([0-9]+))?$ ]]; then
+          local host="${BASH_REMATCH[2]}"
+          local port="${BASH_REMATCH[4]:-8200}"
+          CURL_RESOLVE_ARGS=(--resolve "${host}:${port}:${RESOLVE_IP}")
+        fi
+
+        switched_to_container_ip=1
+      fi
+    fi
+
     sleep 1
   done
+
   die "Vault did not become reachable at ${VAULT_ADDR} within 75 seconds (last HTTP ${HTTP_CODE}). Check: docker compose logs -f ${SERVICE_NAME}"
 }
 

@@ -23,7 +23,8 @@ set -euo pipefail
 #     --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
 #
 # Common overrides
-#   --vault-host <FQDN|container_name>   (default: vault_production_node)
+#   --env-file <path>                  (default: auto-detect repo .env; fallback: $HOME/NETWORK_TOOLS/.env)
+#   --vault-host <FQDN|container_name>  (default: PRIMARY_SERVER_FQDN from env file; fallback: vault_production_node)
 #   --vault-addr <https://host:8200>    (overrides --vault-host/--vault-port)
 #   --token-file <path>                (default: $HOME/NETWORK_TOOLS/.../bootstrap/root_token; prompts if missing)
 #   --postgres-container <name>         (default: postgres_primary)
@@ -74,7 +75,8 @@ Required:
     Path to the Vault CA certificate used for curl TLS verification.
 
 Optional:
-  --vault-host HOST             Default: vault_production_node
+  --env-file PATH              Default: auto-detect repo .env; fallback: $HOME/NETWORK_TOOLS/.env
+  --vault-host HOST             Default: PRIMARY_SERVER_FQDN (if set in env file), else vault_production_node
   --vault-port PORT             Default: 8200
   --vault-scheme http|https     Default: https
   --vault-addr URL              Full URL (overrides scheme/host/port), e.g. https://vault_production_node:8200
@@ -121,6 +123,78 @@ validate_name_soft() {
   return 0
 }
 
+
+#######################################
+# Repo/env discovery (for PRIMARY_SERVER_FQDN)
+#######################################
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+derive_repo_root() {
+  # Walk upward until we find a directory that looks like the repo root.
+  # Heuristics: contains backend/ and (preferably) a .env file.
+  local d="$SCRIPT_DIR"
+  while [[ "$d" != "/" && -n "$d" ]]; do
+    if [[ -d "$d/backend/build_scripts" ]]; then
+      echo "$d"
+      return 0
+    fi
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+
+REPO_ROOT="$(derive_repo_root 2>/dev/null || true)"
+
+DEFAULT_ENV_FILE=""
+if [[ -n "$REPO_ROOT" && -r "$REPO_ROOT/.env" ]]; then
+  DEFAULT_ENV_FILE="$REPO_ROOT/.env"
+elif [[ -r "$HOME/NETWORK_TOOLS/.env" ]]; then
+  DEFAULT_ENV_FILE="$HOME/NETWORK_TOOLS/.env"
+elif [[ -r "$PWD/.env" ]]; then
+  DEFAULT_ENV_FILE="$PWD/.env"
+fi
+
+read_env_var_from_file() {
+  # Reads KEY=VALUE from a dotenv-style file without executing it.
+  # Supports optional leading "export " and optional single/double quotes around values.
+  local key="$1"
+  local file="$2"
+  [[ -r "$file" ]] || return 1
+
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # trim leading whitespace
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" ]] && continue
+    [[ "$line" == \#* ]] && continue
+
+    # allow "export KEY=..."
+    if [[ "$line" == export\ * ]]; then
+      line="${line#export }"
+      line="${line#"${line%%[![:space:]]*}"}"
+    fi
+
+    if [[ "$line" == "$key="* ]]; then
+      local val="${line#*=}"
+
+      # trim whitespace
+      val="${val#"${val%%[![:space:]]*}"}"
+      val="${val%"${val##*[![:space:]]}"}"
+
+      # strip surrounding quotes
+      if [[ "$val" =~ ^\"(.*)\"$ ]]; then
+        val="${BASH_REMATCH[1]}"
+      elif [[ "$val" =~ ^\'(.*)\'$ ]]; then
+        val="${BASH_REMATCH[1]}"
+      fi
+
+      printf '%s' "$val"
+      return 0
+    fi
+  done < "$file"
+
+  return 1
+}
 #######################################
 # Args
 #######################################
@@ -136,12 +210,16 @@ INSECURE="0"
 POSTGRES_CONTAINER="$DEFAULT_POSTGRES_CONTAINER"
 PG_PORT="$DEFAULT_PG_PORT"
 
+ENV_FILE="${ENV_FILE:-$DEFAULT_ENV_FILE}"
+VAULT_HOST_SET_BY_CLI="0"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --vault-host) VAULT_HOST="$2"; shift 2;;
+    --env-file) ENV_FILE="$2"; shift 2;;
+    --vault-host) VAULT_HOST="$2"; VAULT_HOST_SET_BY_CLI="1"; shift 2;;
     --vault-port) VAULT_PORT="$2"; shift 2;;
     --vault-scheme) VAULT_SCHEME="$2"; shift 2;;
-    --vault-addr) VAULT_ADDR="$2"; shift 2;;
+    --vault-addr) VAULT_ADDR="$2"; VAULT_HOST_SET_BY_CLI="1"; shift 2;;
     --vault-mount) VAULT_MOUNT="$2"; shift 2;;
     --ca-cert) CA_CERT="$2"; shift 2;;
     --token-file) TOKEN_FILE="$2"; shift 2;;
@@ -152,6 +230,36 @@ while [[ $# -gt 0 ]]; do
     *) die "Unknown argument: $1" 1;;
   esac
 done
+
+
+#######################################
+# Env-based Vault host defaulting (PRIMARY_SERVER_FQDN)
+#######################################
+PRIMARY_SERVER_FQDN_EFFECTIVE="${PRIMARY_SERVER_FQDN:-}"
+
+if [[ -z "$PRIMARY_SERVER_FQDN_EFFECTIVE" ]]; then
+  if [[ -n "$ENV_FILE" && -r "$ENV_FILE" ]]; then
+    PRIMARY_SERVER_FQDN_EFFECTIVE="$(read_env_var_from_file "PRIMARY_SERVER_FQDN" "$ENV_FILE" || true)"
+    if [[ -n "$PRIMARY_SERVER_FQDN_EFFECTIVE" ]]; then
+      log "Loaded PRIMARY_SERVER_FQDN from env file: $ENV_FILE"
+    fi
+  else
+    # Only warn if the user expected a file (default or explicitly provided) but it is not readable.
+    if [[ -n "$ENV_FILE" ]]; then
+      warn "Env file not found/readable (skipping): $ENV_FILE"
+    fi
+  fi
+fi
+
+# If the caller did not explicitly set --vault-host/--vault-addr, prefer PRIMARY_SERVER_FQDN.
+if [[ -z "$VAULT_ADDR" && "$VAULT_HOST_SET_BY_CLI" == "0" ]]; then
+  if [[ -n "$PRIMARY_SERVER_FQDN_EFFECTIVE" ]]; then
+    VAULT_HOST="$PRIMARY_SERVER_FQDN_EFFECTIVE"
+    log "Using Vault host from PRIMARY_SERVER_FQDN: ${VAULT_HOST}"
+  else
+    log "PRIMARY_SERVER_FQDN not set; falling back to Vault container host: ${VAULT_HOST}"
+  fi
+fi
 
 #######################################
 # Validation

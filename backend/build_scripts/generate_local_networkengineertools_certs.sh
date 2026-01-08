@@ -39,6 +39,8 @@ umask 077
 
 PROJECT_ROOT_DEFAULT="$HOME/NETWORK_TOOLS"
 OUT_DIR_DEFAULT="$PROJECT_ROOT_DEFAULT/backend/app/nginx/certs"
+VAULT_CERT_DIR_DEFAULT="$PROJECT_ROOT_DEFAULT/backend/app/security/configuration_files/vault/certs"
+SYNC_VAULT_CERTS_DEFAULT="1"
 VALUES_FILE_DEFAULT="$PROJECT_ROOT_DEFAULT/backend/build_scripts/networkengineertools_cert_values.env"
 
 FORCE="0"
@@ -68,6 +70,8 @@ Usage: $0 [options]
 
 Options:
   --out-dir DIR        Output directory (default: ${OUT_DIR_DEFAULT})
+  --vault-cert-dir DIR Vault cert directory to sync into (default: ${VAULT_CERT_DIR_DEFAULT})
+  --no-vault-sync      Do not sync certs into the Vault cert directory
   --values-file FILE   Values file to load (default: ${VALUES_FILE_DEFAULT})
   --no-values-file     Do not load any values file (even if default exists)
 
@@ -156,6 +160,8 @@ write_extfile() {
 
 parse_args() {
   OUT_DIR="$OUT_DIR_DEFAULT"
+  VAULT_CERT_DIR="$VAULT_CERT_DIR_DEFAULT"
+  SYNC_VAULT_CERTS="$SYNC_VAULT_CERTS_DEFAULT"
   VALUES_FILE="$VALUES_FILE_DEFAULT"
   CN="$CN_DEFAULT"
   CA_CN="$CA_CN_DEFAULT"
@@ -167,6 +173,8 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --out-dir) OUT_DIR="$2"; shift 2 ;;
+      --vault-cert-dir) VAULT_CERT_DIR="$2"; shift 2 ;;
+      --no-vault-sync) SYNC_VAULT_CERTS="0"; shift ;;
       --values-file) VALUES_FILE="$2"; shift 2 ;;
       --no-values-file) SKIP_VALUES_FILE="1"; shift ;;
       --cn) CN="$2"; shift 2 ;;
@@ -193,6 +201,8 @@ load_values_file() {
   set +a
 
   OUT_DIR="${NETWORKENGINEERTOOLS_CERT_OUT_DIR:-$OUT_DIR}"
+  VAULT_CERT_DIR="${NETWORKENGINEERTOOLS_VAULT_CERT_DIR:-$VAULT_CERT_DIR}"
+  SYNC_VAULT_CERTS="${NETWORKENGINEERTOOLS_CERT_SYNC_VAULT:-$SYNC_VAULT_CERTS}"
   CN="${NETWORKENGINEERTOOLS_CERT_CN:-$CN}"
   CA_CN="${NETWORKENGINEERTOOLS_CERT_CA_CN:-$CA_CN}"
   CA_DAYS="${NETWORKENGINEERTOOLS_CERT_CA_DAYS:-$CA_DAYS}"
@@ -233,9 +243,10 @@ main() {
 
   load_values_file
 
-  local project_root_real out_dir_real
+  local project_root_real out_dir_real vault_cert_dir_real
   project_root_real="$(realpath -m "$PROJECT_ROOT_DEFAULT")"
   out_dir_real="$(realpath -m "$OUT_DIR")"
+  vault_cert_dir_real="$(realpath -m "$VAULT_CERT_DIR")"
 
   case "$out_dir_real" in
     "$project_root_real"/*) ;;
@@ -307,6 +318,21 @@ main() {
   # Fullchain for nginx convenience (leaf + CA)
   cat "$srv_leaf" "$ca_crt" > "$srv_crt"
   chmod 644 "$srv_crt"
+# Optional: sync the generated server cert into Vault's cert directory so Vault and nginx
+# use the same leaf certificate/CA. This avoids "unknown certificate" and hostname mismatch
+# issues during bootstrap, especially when probing via vault.${PRIMARY_SERVER_FQDN}.
+if [[ "$SYNC_VAULT_CERTS" != "0" ]]; then
+  log "==> Syncing certs into Vault cert dir: ${VAULT_CERT_DIR}"
+  mkdir -p "$VAULT_CERT_DIR"
+  chmod 700 "$VAULT_CERT_DIR" || true
+
+  # Do NOT copy the CA private key (ca.key) into the Vault runtime cert directory.
+  install -m 0644 "$ca_crt"   "$VAULT_CERT_DIR/ca.crt"
+  install -m 0644 "$srv_crt"  "$VAULT_CERT_DIR/cert.crt"
+  install -m 0600 "$srv_key"  "$VAULT_CERT_DIR/cert.key"
+else
+  log "==> Vault cert sync disabled (--no-vault-sync)."
+fi
 
   rm -f "$srv_csr" "$ext" || true
 

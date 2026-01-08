@@ -3,6 +3,8 @@
 # generate_postgres_pgadmin_bootstrap_creds_and_seed.sh (NO-PYTHON, VAULT-FETCH, APPLY)
 #
 # Notes / How to run
+# - Env: auto-loads <repo-root>/.env by default.
+#   Optional flags: --env-file PATH | --no-env-file | --env-override
 #
 # 1) Standard first-time init (idempotent):
 #    - In --mode generate (default), this script prefers EXISTING values:
@@ -11,11 +13,21 @@
 #        C) Generates new values.
 #    - Then it seeds Vault (default) and writes artifacts.
 #
+#    Use the below command and rely on the .env file having the correct fqdn populated under PRIMARY_SERVER_FQDN
+#
+#    cd "$HOME/NETWORK_TOOLS"
+#    bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+#      --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+#      --unseal-required 3
+#
+#    Or, below with either the vault container name, or another vault fqdn.
+#
 #    cd "$HOME/NETWORK_TOOLS"
 #    bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
 #      --vault-addr "https://vault_production_node:8200" \
 #      --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
 #      --unseal-required 3
+#
 #
 #    NOTE: If <bootstrap_dir>/root_token exists, the seed step will use it automatically.
 #          Only use --prompt-token if you WANT to be prompted.
@@ -45,6 +57,63 @@
 #------------------------------------------------------------------------------
 
 set -euo pipefail
+# -----------------------------------------------------------------------------
+# Env loading (default: <repo-root>/.env)
+# -----------------------------------------------------------------------------
+# This script will prefer values provided via environment variables (including .env),
+# and will fall back to Docker container names when needed.
+#
+# Security note: .env is treated as data (KEY=VALUE). Lines that do not match this
+# format are ignored; no code is executed.
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd -P)}"
+
+# Basic log helpers (only defined if the script didn't already define them)
+if ! declare -F log >/dev/null 2>&1; then
+  log()  { echo "INFO: $*" >&2; }
+  warn() { echo "INFO: WARN: $*" >&2; }
+  err()  { echo "ERROR: $*" >&2; }
+fi
+
+dotenv_load() {
+  local env_file="$1"
+  local override="${2:-0}"   # 0 = do not override non-empty vars; 1 = override
+  [[ -n "${env_file}" && -f "${env_file}" ]] || return 0
+
+  local line key val
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line//$'\r'/}"
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ "${line}" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"
+    val="${BASH_REMATCH[2]}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    if [[ "${val}" =~ ^\"(.*)\"$ ]]; then val="${BASH_REMATCH[1]}"; fi
+    if [[ "${val}" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
+
+    if [[ "${override}" == "1" ]]; then
+      export "${key}=${val}"
+    else
+      if [[ -z "${!key:-}" ]]; then
+        export "${key}=${val}"
+      fi
+    fi
+  done < "${env_file}"
+}
+
+# Pre-parse env options so that .env can affect defaults, while CLI args still win.
+ENV_FILE=""
+ENV_DISABLE=0
+ENV_OVERRIDE=0
+for ((i=1; i<=$#; i++)); do
+  case "${!i}" in
+    --env-file) ENV_FILE="${!((i+1)):-}";;
+    --no-env-file) ENV_DISABLE=1;;
+    --env-override) ENV_OVERRIDE=1;;
+  esac
+done
 
 log()  { printf '%s\n' "INFO: $*"; }
 warn() { printf '%s\n' "WARN: $*" >&2; }
@@ -53,7 +122,28 @@ err()  { printf '%s\n' "ERROR: $*" >&2; exit 1; }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || err "Missing required command: $1"; }
 
 # --- Defaults ---
-ROOT_DIR="${HOME}/NETWORK_TOOLS"
+ROOT_DIR="${ROOT_DIR:-${HOME}/NETWORK_TOOLS}"
+
+if [[ "${ENV_DISABLE:-0}" != "1" ]]; then
+  if [[ -z "${ENV_FILE:-}" ]]; then ENV_FILE="${ROOT_DIR}/.env"; fi
+  if [[ -f "${ENV_FILE}" ]]; then
+    log "Loading env defaults from: ${ENV_FILE}"
+    dotenv_load "${ENV_FILE}" "${ENV_OVERRIDE:-0}"
+  else
+    warn "Env file not found (continuing): ${ENV_FILE}"
+  fi
+fi
+
+# Preferred Vault TLS hostname (cert SAN), if provided
+PREFERRED_VAULT_HOST=""
+if [[ -n "${PRIMARY_VAULT_SERVER_FQDN_FULL:-}" ]]; then
+  PREFERRED_VAULT_HOST="${PRIMARY_VAULT_SERVER_FQDN_FULL}"
+elif [[ -n "${PRIMARY_SERVER_FQDN:-}" ]]; then
+  PREFERRED_VAULT_HOST="vault.${PRIMARY_SERVER_FQDN}"
+fi
+
+VAULT_CONTAINER="${VAULT_CONTAINER:-${VAULT_CONTAINER_NAME:-vault_production_node}}"
+
 BOOTSTRAP_DIR="${ROOT_DIR}/backend/app/security/configuration_files/vault/bootstrap"
 
 # network_tools Postgres
@@ -83,6 +173,7 @@ KEYCLOAK_DB_URL_DATABASE="keycloak"
 KEYCLOAK_DB_USERNAME="keycloak"
 KEYCLOAK_DB_PASSWORD=""
 KEYCLOAK_DB_SCHEMA="keycloak"
+KEYCLOAK_DB_URL_PROPERTIES="sslmode=disable"
 
 # Keycloak bootstrap (initial admin) — stored in Vault at: keycloak_bootstrap
 INCLUDE_KEYCLOAK_BOOTSTRAP=1
@@ -95,7 +186,7 @@ INCLUDE_KEYCLOAK_RUNTIME=1
 # Keycloak TLS material (cert/key/CA) — stored in Vault at: keycloak_tls
 # - This script stores TLS material as BASE64 (single-line) to avoid newline/quoting issues.
 # - By default, this does NOT store the CA private key (ca.key). Keep CA key offline/admin-only.
-INCLUDE_KEYCLOAK_TLS=1
+INCLUDE_KEYCLOAK_TLS=0
 KEYCLOAK_TLS_REQUIRED=0
 KEYCLOAK_TLS_DIR="${ROOT_DIR}/backend/app/keycloak/certs"
 KEYCLOAK_TLS_CERT_FILE="cert.crt"
@@ -108,9 +199,12 @@ KEYCLOAK_TLS_KEY_PEM_B64=""
 KEYCLOAK_TLS_CA_PEM_B64=""
 
 #This will need to change or be updated in the TLS certs if / when it's on a normal FQDN
-KEYCLOAK_HOSTNAME="keycloak"
-KEYCLOAK_HOSTNAME_STRICT="true"
-KEYCLOAK_HTTP_ENABLED="false"
+KEYCLOAK_HOSTNAME="auth.${PRIMARY_SERVER_FQDN:-keycloak}"
+KEYCLOAK_HOSTNAME_STRICT="false"
+KEYCLOAK_HTTP_ENABLED="true"
+KEYCLOAK_HTTP_PORT="8080"
+KEYCLOAK_PROXY_HEADERS="xforwarded"
+KEYCLOAK_PROXY_TRUSTED_ADDRESSES="172.30.20.0/24,172.30.0.0/16"
 KEYCLOAK_HTTPS_PORT="8443"
 KEYCLOAK_HEALTH_ENABLED="true"
 KEYCLOAK_METRICS_ENABLED="true"
@@ -122,7 +216,11 @@ VAULT_MOUNT="app_network_tools_secrets"
 VAULT_PREFIX=""
 
 # Vault connectivity
-VAULT_ADDR="https://vault_production_node:8200"
+VAULT_ADDR="${VAULT_ADDR:-}"
+if [[ -z "${VAULT_ADDR}" && -n "${PREFERRED_VAULT_HOST:-}" ]]; then
+  VAULT_ADDR="https://${PREFERRED_VAULT_HOST}:8200"
+fi
+VAULT_ADDR="${VAULT_ADDR:-https://${VAULT_CONTAINER}:8200}"
 CA_CERT=""
 TLS_SKIP_VERIFY=0
 UNSEAL_REQUIRED=3
@@ -141,7 +239,7 @@ PREFER_LOCAL=1
 PREFER_VAULT=1
 
 # Apply options
-POSTGRES_CONTAINER="postgres_primary"
+POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-${POSTGRES_CONTAINER_NAME:-postgres_primary}}"
 POSTGRES_ADMIN_DB="postgres"
 # Postgres admin credentials for apply-to-postgres.
 # If not provided explicitly, the script will try to read them from:
@@ -259,6 +357,9 @@ USAGE
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --env-file) ENV_FILE="$2"; shift 2;;
+    --no-env-file) ENV_DISABLE=1; shift;;
+    --env-override) ENV_OVERRIDE=1; shift;;
     --mode) MODE="${2:-}"; shift 2;;
 
     --no-prefer-local) PREFER_LOCAL=0; shift 1;;
@@ -617,7 +718,20 @@ vault_curl() {
     err "No --ca-cert provided and --tls-skip-verify not set. Refusing insecure Vault call."
   fi
 
-  curl "${args[@]}" "${url}"
+  # Try preferred VAULT_ADDR first; if it fails, fall back to container address.
+  if curl "${args[@]}" "${url}"; then
+    return 0
+  fi
+
+  local fallback_addr="https://${VAULT_CONTAINER}:8200"
+  if [[ "${VAULT_ADDR%/}" != "${fallback_addr%/}" ]]; then
+    warn "Vault call failed against ${VAULT_ADDR}. Retrying via container address: ${fallback_addr}"
+    url="${fallback_addr%/}/v1/${path#/}"
+    curl "${args[@]}" "${url}"
+    return $?
+  fi
+
+  return 1
 }
 
 prefixed_path() {
@@ -924,6 +1038,7 @@ KC_DB_URL_DATABASE=${KEYCLOAK_DB_URL_DATABASE}
 KC_DB_USERNAME=${KEYCLOAK_DB_USERNAME}
 KC_DB_PASSWORD=${KEYCLOAK_DB_PASSWORD}
 KC_DB_SCHEMA=${KEYCLOAK_DB_SCHEMA}
+KC_DB_URL_PROPERTIES=${KEYCLOAK_DB_URL_PROPERTIES}
 EOF
 
   if [[ "${INCLUDE_KEYCLOAK_BOOTSTRAP}" -eq 1 ]]; then
@@ -941,7 +1056,10 @@ EOF
 # Keycloak runtime (hostname / server settings)
 KC_HOSTNAME=${KEYCLOAK_HOSTNAME}
 KC_HOSTNAME_STRICT=${KEYCLOAK_HOSTNAME_STRICT}
+KC_PROXY_HEADERS=${KEYCLOAK_PROXY_HEADERS}
+KC_PROXY_TRUSTED_ADDRESSES=${KEYCLOAK_PROXY_TRUSTED_ADDRESSES}
 KC_HTTP_ENABLED=${KEYCLOAK_HTTP_ENABLED}
+KC_HTTP_PORT=${KEYCLOAK_HTTP_PORT}
 KC_HTTPS_PORT=${KEYCLOAK_HTTPS_PORT}
 KC_HEALTH_ENABLED=${KEYCLOAK_HEALTH_ENABLED}
 KC_METRICS_ENABLED=${KEYCLOAK_METRICS_ENABLED}
@@ -976,6 +1094,12 @@ jq -n \
   --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}" \
   --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}" \
   --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}" \
+  --arg KC_DB_URL_PROPERTIES "${KEYCLOAK_DB_URL_PROPERTIES}" \
+  --arg KEYCLOAK_ADMIN "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}" \
+  --arg KEYCLOAK_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
+  --arg KC_PROXY_HEADERS "${KEYCLOAK_PROXY_HEADERS}" \
+  --arg KC_PROXY_TRUSTED_ADDRESSES "${KEYCLOAK_PROXY_TRUSTED_ADDRESSES}" \
+  --arg KC_HTTP_PORT "${KEYCLOAK_HTTP_PORT}" \
   --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}" \
   --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
   --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}" \
@@ -1010,16 +1134,22 @@ jq -n \
         KC_DB_URL_DATABASE: $KC_DB_URL_DATABASE,
         KC_DB_USERNAME: $KC_DB_USERNAME,
         KC_DB_PASSWORD: $KC_DB_PASSWORD,
+        KC_DB_URL_PROPERTIES: $KC_DB_URL_PROPERTIES,
         KC_DB_SCHEMA: $KC_DB_SCHEMA
       } } else {} end)
   + (if env.INCLUDE_KEYCLOAK_BOOTSTRAP == "1" then { keycloak_bootstrap: {
+        KEYCLOAK_ADMIN: $KEYCLOAK_ADMIN,
+        KEYCLOAK_ADMIN_PASSWORD: $KEYCLOAK_ADMIN_PASSWORD,
         KC_BOOTSTRAP_ADMIN_USERNAME: $KC_BOOTSTRAP_ADMIN_USERNAME,
         KC_BOOTSTRAP_ADMIN_PASSWORD: $KC_BOOTSTRAP_ADMIN_PASSWORD
       } } else {} end)
   + (if env.INCLUDE_KEYCLOAK_RUNTIME == "1" then { keycloak_runtime: {
         KC_HOSTNAME: $KC_HOSTNAME,
         KC_HOSTNAME_STRICT: $KC_HOSTNAME_STRICT,
+        KC_PROXY_HEADERS: $KC_PROXY_HEADERS,
+        KC_PROXY_TRUSTED_ADDRESSES: $KC_PROXY_TRUSTED_ADDRESSES,
         KC_HTTP_ENABLED: $KC_HTTP_ENABLED,
+        KC_HTTP_PORT: $KC_HTTP_PORT,
         KC_HTTPS_PORT: $KC_HTTPS_PORT,
         KC_HEALTH_ENABLED: $KC_HEALTH_ENABLED,
         KC_METRICS_ENABLED: $KC_METRICS_ENABLED,
@@ -1061,12 +1191,18 @@ if [[ -n "${VAULT_PREFIX}" ]]; then
     --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}" \
     --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}" \
     --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}" \
+    --arg KC_DB_URL_PROPERTIES "${KEYCLOAK_DB_URL_PROPERTIES}" \
     --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}" \
     --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}" \
     --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
+    --arg KEYCLOAK_ADMIN "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}" \
+    --arg KEYCLOAK_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
     --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}" \
     --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}" \
+    --arg KC_PROXY_HEADERS "${KEYCLOAK_PROXY_HEADERS}" \
+    --arg KC_PROXY_TRUSTED_ADDRESSES "${KEYCLOAK_PROXY_TRUSTED_ADDRESSES}" \
     --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}" \
+    --arg KC_HTTP_PORT "${KEYCLOAK_HTTP_PORT}" \
     --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}" \
     --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}" \
     --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}" \
@@ -1144,12 +1280,18 @@ else
     --arg KC_DB_URL_DATABASE "${KEYCLOAK_DB_URL_DATABASE}" \
     --arg KC_DB_USERNAME "${KEYCLOAK_DB_USERNAME}" \
     --arg KC_DB_PASSWORD "${KEYCLOAK_DB_PASSWORD}" \
+    --arg KC_DB_URL_PROPERTIES "${KEYCLOAK_DB_URL_PROPERTIES}" \
     --arg KC_DB_SCHEMA "${KEYCLOAK_DB_SCHEMA}" \
     --arg KC_BOOTSTRAP_ADMIN_USERNAME "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}" \
     --arg KC_BOOTSTRAP_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
+    --arg KEYCLOAK_ADMIN "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME}" \
+    --arg KEYCLOAK_ADMIN_PASSWORD "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
     --arg KC_HOSTNAME "${KEYCLOAK_HOSTNAME}" \
     --arg KC_HOSTNAME_STRICT "${KEYCLOAK_HOSTNAME_STRICT}" \
+    --arg KC_PROXY_HEADERS "${KEYCLOAK_PROXY_HEADERS}" \
+    --arg KC_PROXY_TRUSTED_ADDRESSES "${KEYCLOAK_PROXY_TRUSTED_ADDRESSES}" \
     --arg KC_HTTP_ENABLED "${KEYCLOAK_HTTP_ENABLED}" \
+    --arg KC_HTTP_PORT "${KEYCLOAK_HTTP_PORT}" \
     --arg KC_HTTPS_PORT "${KEYCLOAK_HTTPS_PORT}" \
     --arg KC_HEALTH_ENABLED "${KEYCLOAK_HEALTH_ENABLED}" \
     --arg KC_METRICS_ENABLED "${KEYCLOAK_METRICS_ENABLED}" \
@@ -1457,7 +1599,7 @@ ADMIN_PASS="${ADMIN_PASS:-}"
 # which avoids peer-auth failures when local connections are configured as peer.
 PSQL_HOST="${PSQL_HOST:-127.0.0.1}"
 PSQL_PORT="${PSQL_PORT:-5432}"
-export PGSSLMODE="${PGSSLMODE:-require}"
+export PGSSLMODE="${PGSSLMODE:-disable}"
 
 psql_conn_flags_tcp=(--host="${PSQL_HOST}" --port="${PSQL_PORT}")
 
