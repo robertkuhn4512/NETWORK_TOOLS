@@ -7,6 +7,13 @@ It is organized in the execution order you will actually follow in production.
 - A **verbatim backup** of the original `README.full.md` is included at the end (Appendix C) to ensure no details are lost.
 
 ---
+>ITEMS OF NOTE:
+> The repository is being converted to be able to use a single domain name. Currently it's coded to use
+> the one I recently registered. For now, on my local development machine The hosts file points to my VM. 
+> You can use that locally yourself, or change it to the value you want in the .env file. Once done you build / rebuild
+> as normal and it should flow to the rest of the system. 
+
+---
 
 ## Table of Contents
 
@@ -27,42 +34,210 @@ All scripts below are expected to be run from the repo root (e.g., `~/NETWORK_TO
 
 Run these **in order**:
 
-Steps 1 - 4 have been replaced with step 5 but left here for now for reference as this is being 
-moved to a single domain, and single cert requirement.
+The original steps 1 - 4 have been replaced with generate_local_networkengineertools_certs.sh, but I left them here for now for reference as this is being 
+moved to a single domain, and single cert requirement. You could use these if you wish to convert one of these containers to a 
+solo setup. IE you could run a local version of vault/keycloak etc on your system wih it's own local certificate file without needing to boot
+the rest of the containers (Specifically NGINX)
 
 ---
-1`./backend/build_scripts/generate_local_vault_certs.sh`  
-2`./backend/build_scripts/generate_local_postgres_certs.sh`  
-3`./backend/build_scripts/generate_local_pgadmin_certs.sh`  
-4`./backend/build_scripts/generate_local_keycloak_certs.sh` 
+1`./backend/build_scripts/generate_local_vault_certs.sh` (Not In Use) 
+2`./backend/build_scripts/generate_local_postgres_certs.sh` (Not In Use) 
+3`./backend/build_scripts/generate_local_pgadmin_certs.sh` (Not In Use) 
+4`./backend/build_scripts/generate_local_keycloak_certs.sh` (Not In Use) 
 ---
 
 >NOTE: This build is going off my one domain setup. This can be set / changed in the .env file.
 
-5`./backend/build_scripts/generate_local_networkengineertools_certs.sh`
-6`./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*  
-7`./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh`  
-8`./backend/build_scripts/postgress_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
-9`./backend/build_scripts/keycloak_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
+1`./backend/build_scripts/generate_local_networkengineertools_certs.sh`
+2`./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*  
+3`./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh`  
+4`./backend/build_scripts/postgress_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
+5`./backend/build_scripts/keycloak_approle_setup.sh` (Step 6 must create the approle auth method or this will fail)  
 
+### 1.0 Initial BASE File system structure
+```text
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
+.
+|-- backend
+|   |-- app
+|   |   |-- fastapi
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           `-- fastapi_secrets.json.ctmpl
+|   |   |-- keycloak
+|   |   |   |-- bin
+|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       |-- keycloak_agent_policy.hcl
+|   |   |       `-- templates
+|   |   |           |-- keycloak.env.ctmpl
+|   |   |           |-- keycloak_tls.crt.ctmpl
+|   |   |           `-- keycloak_tls.key.ctmpl
+|   |   |-- nginx
+|   |   |   |-- certs
+|   |   |   `-- templates
+|   |   |       |-- networktools.conf.template
+|   |   |       `-- vault.conf.template
+|   |   |-- pgadmin
+|   |   |   `-- certs
+|   |   |-- postgres
+|   |   |   |-- certs
+|   |   |   |-- config
+|   |   |   |   |-- pg_hba.conf
+|   |   |   |   `-- postgres.conf
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           |-- pgadmin_password.ctmpl
+|   |   |           |-- postgres_db.ctmpl
+|   |   |           |-- postgres_password.ctmpl
+|   |   |           |-- postgres_user.ctmpl
+|   |   |           `-- servers.json.ctmpl
+|   |   |-- routers
+|   |   `-- security
+|   |       `-- configuration_files
+|   |           `-- vault
+|   |               |-- config
+|   |               |   |-- certs
+|   |               |   |-- keycloak_kv_read.hcl
+|   |               |   |-- postgres_pgadmin_kv_read.hcl
+|   |               |   `-- vault_configuration_primary_node.hcl
+|   |               `-- Dockerfile
+|   |-- build_scripts
+|   |   |-- generate_local_keycloak_certs.sh
+|   |   |-- generate_local_networkengineertools_certs.sh
+|   |   |-- generate_local_pgadmin_certs.sh
+|   |   |-- generate_local_postgres_certs.sh
+|   |   |-- generate_local_vault_certs.sh
+|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- guides
+|   |   |   |-- seed_kv_spec.example.json
+|   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- keycloak_approle_setup.sh
+|   |   |-- postgress_approle_setup.sh
+|   |   |-- seed_postgres_with_vault_credentials.sh
+|   |   |-- startover_scripts
+|   |   |   `-- reset_network_tools_docker.sh
+|   |   |-- validation_scripts
+|   |   |   |-- check_approle_presence_and_ids_in_vault.sh
+|   |   |   |-- postgres_inventory.sh
+|   |   |   `-- read_postgres_pgadmin_approle.sh
+|   |   |-- vault_first_time_init_only_rootless.sh
+|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+|   `-- nginx
+|-- docker-compose.prod.yml
+|-- frontend
+|-- LICENSE
+|-- README.full.md
+`-- README.md
+```
 
-Notes:
-- Steps (1–3) create TLS material on disk for services and/or base64-encoded values that are seeded into Vault for the Vault Agents.
-- Step (4) should be run exactly once per brand-new Vault data volume. If you wipe Vault raft storage, you are “first-time” again.
-- Step (5) seeds the Postgres/pgAdmin bootstrap credentials and writes convenience artifacts used by other steps.
-- Steps (6–7) create AppRoles and write their RoleID/SecretID artifacts under `./container_data/vault/approle/...`.
+### 1.2 Build Scripts - Generate Local Certificates
 
-### 1.2 Script quick commands
+#### First-time local certificate file creation. You can skip this step if you are using your own CA. You need to place the files in the same locations though. 
 
-# First-time local certificate file creation
+>NOTE: This script is hardcoded to the domain of my choice and does not pull from the .env file. If you wish to use it with another domain
+> you need to update it manually for now. 
+
 ```bash
-bash ./backend/build_scripts/generate_local_vault_certs.sh
-bash ./backend/build_scripts/generate_local_postgres_certs.sh
-bash ./backend/build_scripts/generate_local_pgadmin_certs.sh
-bash ./backend/build_scripts/generate_local_keycloak_certs.sh
-
-# Use this instead - The rest are left here for reference.
 bash $HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_networkengineertools_certs.sh
+```
+
+>NOTE: The new directory structure below<br>
+> Walkthrough video [can be found here](https://youtu.be/w5MW_b8s0Rc)
+```text
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
+.
+|-- backend
+|   |-- app
+|   |   |-- fastapi
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           `-- fastapi_secrets.json.ctmpl
+|   |   |-- keycloak
+|   |   |   |-- bin
+|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       |-- keycloak_agent_policy.hcl
+|   |   |       `-- templates
+|   |   |           |-- keycloak.env.ctmpl
+|   |   |           |-- keycloak_tls.crt.ctmpl
+|   |   |           `-- keycloak_tls.key.ctmpl
+|   |   |-- nginx
+|   |   |   |-- certs
+|   |   |   |   |-- ca.crt          (NEW: CA public certificate (public key + CA identity))
+|   |   |   |   |-- ca.key          (NEW: CA private key)
+|   |   |   |   |-- ca.srl          (NEW: OpenSSL serial number tracking file for the CA, Remove from runtime after issuance, Keep only with the CA signing material (with ca.key) in a secure PKI workspace if you will continue issuing certs.)
+|   |   |   |   |-- cert.crt        (NEW: private key corresponding to the certificate Nginx presents)
+|   |   |   |   |-- cert.key        (NEW: Keep, but treat as sensitive, chmod 600, owned by root (or the Nginx runtime user), readable only by Nginx.)
+|   |   |   |   `-- cert.leaf.crt   (NEW: The leaf/server certificate only (no chain), Keep only if your Nginx config or your tooling explicitly uses it. Remove and keep safe wih the others.)
+|   |   |   `-- templates
+|   |   |       |-- networktools.conf.template
+|   |   |       `-- vault.conf.template
+|   |   |-- pgadmin
+|   |   |   `-- certs
+|   |   |-- postgres
+|   |   |   |-- certs
+|   |   |   |-- config
+|   |   |   |   |-- pg_hba.conf
+|   |   |   |   `-- postgres.conf
+|   |   |   `-- vault_agent
+|   |   |       |-- agent.hcl
+|   |   |       `-- templates
+|   |   |           |-- pgadmin_password.ctmpl
+|   |   |           |-- postgres_db.ctmpl
+|   |   |           |-- postgres_password.ctmpl
+|   |   |           |-- postgres_user.ctmpl
+|   |   |           `-- servers.json.ctmpl
+|   |   |-- routers
+|   |   `-- security
+|   |       `-- configuration_files
+|   |           `-- vault
+|   |               |-- certs
+|   |               |   |-- ca.crt      (NEW: CA public certificate (public key + CA identity))
+|   |               |   |-- cert.crt    (NEW: CA private key - Remove from the production runtime host/container path immediately after issuance.)
+|   |               |   `-- cert.key    (NEW)
+|   |               |-- config
+|   |               |   |-- certs
+|   |               |   |-- keycloak_kv_read.hcl
+|   |               |   |-- postgres_pgadmin_kv_read.hcl
+|   |               |   `-- vault_configuration_primary_node.hcl
+|   |               `-- Dockerfile
+|   |-- build_scripts
+|   |   |-- generate_local_keycloak_certs.sh
+|   |   |-- generate_local_networkengineertools_certs.sh
+|   |   |-- generate_local_pgadmin_certs.sh
+|   |   |-- generate_local_postgres_certs.sh
+|   |   |-- generate_local_vault_certs.sh
+|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- guides
+|   |   |   |-- seed_kv_spec.example.json
+|   |   |   `-- seed_kv_spec.GUIDE.md
+|   |   |-- keycloak_approle_setup.sh
+|   |   |-- postgress_approle_setup.sh
+|   |   |-- seed_postgres_with_vault_credentials.sh
+|   |   |-- startover_scripts
+|   |   |   `-- reset_network_tools_docker.sh
+|   |   |-- validation_scripts
+|   |   |   |-- check_approle_presence_and_ids_in_vault.sh
+|   |   |   |-- postgres_inventory.sh
+|   |   |   `-- read_postgres_pgadmin_approle.sh
+|   |   |-- vault_first_time_init_only_rootless.sh
+|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
+|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+|   `-- nginx
+|-- docker-compose.prod.yml
+|-- frontend
+|-- LICENSE
+|-- README.full.md
+`-- README.md
+
+33 directories, 53 files
 ```
 
 # First-time Vault only (creates root_token + init json artifacts)
@@ -76,8 +251,12 @@ bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
   --init-shares 5 --init-threshold 3
 ```
 
-# Seed Postgres/pgAdmin bootstrap creds + KV spec artifacts
->NOTE: --unseal-required should match --init-threshold. This tells the script how many keys are required to unseal vault if it's sealed.
+# Generate and Seed Postgres/pgAdmin/Keycloak bootstrap credentials + KV spec artifacts
+
+>NOTE: --unseal-required should match --init-threshold.<br> 
+> This tells the script how many keys are required to unseal vault if it's sealed.
+> This script will generate all the initial credentials you need to configure and use each service as well as seeding vault with them. <br><br>
+> <b>Make sure you REMOVE THEM afterwards and do not leave them on your filesystem!</b>
 
 ```bash
 bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
