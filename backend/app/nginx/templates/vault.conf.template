@@ -1,0 +1,71 @@
+# Vault reverse proxy
+#
+# Exposes: https://vault.${PRIMARY_SERVER_FQDN}:${PUBLIC_HTTPS_PORT}/ui/
+#
+# Notes:
+# - nginx listens on 8080/8443 inside the container (per your compose port mapping).
+# - Upstream Vault is assumed to be listening on 8200 inside the docker network.
+
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
+
+# HTTP listener (container:8080) - health + redirect
+server {
+  listen 8080;
+  server_name vault.${PRIMARY_SERVER_FQDN};
+
+  location = /nginx-health {
+    return 200 "ok\n";
+    add_header Content-Type text/plain;
+  }
+
+  # redirect to HTTPS (keeps the host; if you use non-443 external ports, browser will keep it)
+  location / {
+    return 301 https://$host$request_uri;
+  }
+}
+
+# HTTPS listener (container:8443)
+server {
+  listen 8443 ssl;
+  http2 on;
+  server_name vault.${PRIMARY_SERVER_FQDN};
+
+  ssl_certificate     /etc/nginx/certs/cert.crt;
+  ssl_certificate_key /etc/nginx/certs/cert.key;
+
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_session_cache shared:SSL:10m;
+  ssl_session_timeout 10m;
+
+  # Vault UI/API can run long requests
+  client_max_body_size 50m;
+
+  location / {
+    proxy_http_version 1.1;
+
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host  $host;
+    proxy_set_header X-Forwarded-Port  $server_port;
+
+    # If your Vault listener is TLS-enabled (common), proxy to https:
+    proxy_pass https://vault_production_node:8200;
+
+    # TODO
+    # If Vault uses a local/dev cert and nginx cannot validate it yet, keep verification off initially:
+    proxy_ssl_verify off;
+
+    # If you later align Vault certs to the same CA as nginx, switch to:
+    # proxy_ssl_trusted_certificate /etc/nginx/certs/ca.crt;
+    # proxy_ssl_verify on;
+    # proxy_ssl_server_name on;
+
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+  }
+}
