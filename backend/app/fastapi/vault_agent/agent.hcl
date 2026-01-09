@@ -2,7 +2,7 @@ pid_file = "/tmp/vault-agent.pid"
 
 vault {
   address = "https://vault_production_node:8200"
-  ca_cert = "/vault/ca/ca.crt"
+  ca_cert = "/vault/ca/cert.crt"
 }
 
 auto_auth {
