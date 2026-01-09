@@ -36,16 +36,22 @@
 #     # Disable AppRole + policy bootstrap (optional):
 #     #   --no-setup-postgres-pgadmin-approle
 #
-#     Optional (first-time init convenience; postgres/pgAdmin Vault Agent):
+#     Optional (first-time init convenience; AppRole + ACL bootstrap for Vault Agents):
 #
-#     Optional (first-time init convenience; Keycloak Vault Agent):
-#       - Enable AppRole auth (if not already enabled) unless --no-setup-keycloak-approle
-#       - Create a baseline ACL policy (default: keycloak_read.hcl)
-#       - Create a baseline AppRole role bound to that policy (default: keycloak_agent)
-
-#       - Enable AppRole auth (if not already enabled) unless --no-setup-postgres-pgadmin-approle
-#       - Create a baseline ACL policy (default: postgres_pgadmin_read)
-#       - Create a baseline AppRole role bound to that policy (default: postgres_pgadmin_agent)
+#       Postgres/pgAdmin Vault Agent:
+#         - Enable AppRole auth (if not already enabled) unless --no-setup-postgres-pgadmin-approle
+#         - Create a baseline ACL policy (default: postgres_pgadmin_read)
+#         - Create a baseline AppRole role bound to that policy (default: postgres_pgadmin_agent)
+#
+#       Keycloak Vault Agent:
+#         - Enable AppRole auth (if not already enabled) unless --no-setup-keycloak-approle
+#         - Create a baseline ACL policy (default: keycloak_read)
+#         - Create a baseline AppRole role bound to that policy (default: keycloak_agent)
+#
+#       FastAPI Vault Agent:
+#         - Enable AppRole auth (if not already enabled) unless --no-setup-fastapi-approle
+#         - Create a baseline ACL policy (default: fastapi_read)
+#         - Create a baseline AppRole role bound to that policy (default: fastapi_agent)
 #
 #     This script still intentionally does NOT:
 #       - Enable secrets engines (KV, etc.)
@@ -171,6 +177,14 @@ AppRole + ACL bootstrap (first-time convenience; Keycloak Vault Agent):
   --keycloak-kv-mount NAME               Default: app_network_tools_secrets
   --keycloak-kv-version 1|2              Default: 2
 
+AppRole + ACL bootstrap (first-time convenience; FastAPI Vault Agent):
+  --no-setup-fastapi-approle             Skip enabling AppRole + creating the FastAPI policy/role
+  --force-fastapi-approle                Re-write the policy/role even if they already exist
+  --fastapi-role-name NAME               Default: fastapi_agent
+  --fastapi-policy-name NAME             Default: fastapi_read
+  --fastapi-kv-mount NAME                Default: app_network_tools_secrets
+  --fastapi-kv-version 1|2               Default: 2
+
 
 Pretty output:
   --no-pretty-output              Disable pretty JSON formatting (writes unseal_keys.json compact)
@@ -256,6 +270,19 @@ POSTGRES_PGADMIN_TOKEN_MAX_TTL="4h"
 POSTGRES_PGADMIN_SECRET_ID_TTL="24h"
 POSTGRES_PGADMIN_SECRET_ID_NUM_USES="1"
 POSTGRES_PGADMIN_SETUP_DONE=0
+# AppRole + ACL bootstrap (FastAPI Vault Agent)
+SETUP_FASTAPI_APPROLE=1
+FORCE_FASTAPI_APPROLE=0
+FASTAPI_ROLE_NAME="fastapi_agent"
+FASTAPI_POLICY_NAME="fastapi_read"
+FASTAPI_KV_MOUNT="app_network_tools_secrets"
+FASTAPI_KV_VERSION="2"
+FASTAPI_TOKEN_TTL="1h"
+FASTAPI_TOKEN_MAX_TTL="4h"
+FASTAPI_SECRET_ID_TTL="24h"
+FASTAPI_SECRET_ID_NUM_USES="1"
+FASTAPI_SETUP_DONE=0
+
 
 # -------------------- Parser helpers --------------------
 _require_val() { [[ -n "${2-}" && "${2:0:1}" != "-" ]] || { echo "ERROR: Missing value for $1" >&2; exit 2; }; }
@@ -965,6 +992,120 @@ HCL
   KEYCLOAK_SETUP_DONE=1
 }
 
+setup_fastapi_approle_if_needed() {
+  (( SETUP_FASTAPI_APPROLE )) || { log "FastAPI AppRole + ACL bootstrap disabled (--no-setup-fastapi-approle)."; return 0; }
+
+  # Root token is required for sys/auth + sys/policy + AppRole role management.
+  if [[ ! -f "$ROOT_TOKEN_FILE" ]]; then
+    log "WARN: Root token file not found ($ROOT_TOKEN_FILE). Skipping FastAPI AppRole bootstrap."
+    return 0
+  fi
+
+  local token=""
+  token="$(cat "$ROOT_TOKEN_FILE" 2>/dev/null || true)"
+  token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+  # Fallbacks (in case the plain file was written but read failed for any reason)
+  if [[ -z "$token" && -f "$ROOT_TOKEN_JSON_FILE" ]]; then
+    token="$(jq -r '.root_token // empty' "$ROOT_TOKEN_JSON_FILE" 2>/dev/null || true)"
+    token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  fi
+  if [[ -z "$token" && -f "$UNSEAL_KEYS_FILE" ]]; then
+    token="$(jq -r '.root_token // empty' "$UNSEAL_KEYS_FILE" 2>/dev/null || true)"
+    token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  fi
+
+  [[ -n "$token" ]] || { log "WARN: Root token not available; skipping FastAPI AppRole bootstrap."; return 0; }
+
+  # Determine KV prefix for policy. KV v2 uses <mount>/data/<path>.
+  local kv_prefix
+  if [[ "${FASTAPI_KV_VERSION}" == "2" ]]; then
+    kv_prefix="${FASTAPI_KV_MOUNT}/data"
+  else
+    kv_prefix="${FASTAPI_KV_MOUNT}"
+  fi
+
+  local policy_hcl
+  policy_hcl="$(cat <<HCL
+# Read secrets (KV v1 or KV v2 data paths)
+path "${kv_prefix}/fastapi*" {
+  capabilities = ["read"]
+}
+
+# If KV v2, allow listing metadata (helps `vault kv list`/UI and some tooling)
+path "${FASTAPI_KV_MOUNT}/metadata/fastapi*" {
+  capabilities = ["list"]
+}
+HCL
+)"
+
+  # 1) Ensure ACL policy exists (or force re-write).
+  local need_policy=0
+  request_authed "$token" GET "/v1/sys/policy/${FASTAPI_POLICY_NAME}"
+  if [[ "$HTTP_CODE" == "404" ]]; then
+    need_policy=1
+  elif [[ "$HTTP_CODE" =~ ^2 ]]; then
+    need_policy=0
+  else
+    die "policy read failed (${HTTP_CODE}): ${RESP_JSON}"
+  fi
+
+  if (( FORCE_FASTAPI_APPROLE )) || (( need_policy )); then
+    local policy_body
+    policy_body="$(jq -n --arg pol "$policy_hcl" '{policy:$pol}')"
+    request_authed "$token" PUT "/v1/sys/policy/${FASTAPI_POLICY_NAME}" "$policy_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "policy write failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Ensured ACL policy: ${FASTAPI_POLICY_NAME}"
+  else
+    log "ACL policy already exists: ${FASTAPI_POLICY_NAME}"
+  fi
+
+  # 2) Ensure AppRole auth method is enabled at approle/.
+  request_authed "$token" GET "/v1/sys/auth"
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "sys/auth read failed (${HTTP_CODE}): ${RESP_JSON}"
+
+  if jq -e '.data["approle/"]? // empty' <<<"$RESP_JSON" >/dev/null 2>&1; then
+    log "Auth method already enabled: approle/"
+  else
+    local auth_body
+    auth_body="$(jq -n --arg t "approle" --arg d "AppRole auth (bootstrap)" '{type:$t, description:$d}')"
+    request_authed "$token" POST "/v1/sys/auth/approle" "$auth_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "auth enable approle failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Enabled auth method: approle/"
+  fi
+
+  # 3) Ensure the AppRole role exists (or force re-write).
+  local need_role=0
+  request_authed "$token" GET "/v1/auth/approle/role/${FASTAPI_ROLE_NAME}/role-id"
+  if [[ "$HTTP_CODE" == "404" ]]; then
+    need_role=1
+  elif [[ "$HTTP_CODE" =~ ^2 ]]; then
+    need_role=0
+  else
+    die "approle role-id read failed (${HTTP_CODE}): ${RESP_JSON}"
+  fi
+
+  if (( FORCE_FASTAPI_APPROLE )) || (( need_role )); then
+    local role_body
+    role_body="$(jq -n \
+      --arg pol "${FASTAPI_POLICY_NAME}" \
+      --arg token_ttl "${FASTAPI_TOKEN_TTL}" \
+      --arg token_max_ttl "${FASTAPI_TOKEN_MAX_TTL}" \
+      --arg secret_id_ttl "${FASTAPI_SECRET_ID_TTL}" \
+      --argjson secret_id_num_uses "${FASTAPI_SECRET_ID_NUM_USES}" \
+      '{token_policies:[$pol], token_ttl:$token_ttl, token_max_ttl:$token_max_ttl, secret_id_ttl:$secret_id_ttl, secret_id_num_uses:$secret_id_num_uses}')"
+
+    request_authed "$token" POST "/v1/auth/approle/role/${FASTAPI_ROLE_NAME}" "$role_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "approle role write failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Ensured AppRole role: ${FASTAPI_ROLE_NAME} (policy: ${FASTAPI_POLICY_NAME})"
+  else
+    log "AppRole role already exists: ${FASTAPI_ROLE_NAME}"
+  fi
+
+  FASTAPI_SETUP_DONE=1
+}
+
+
 
 compose_up() {
   [[ -f "$COMPOSE_FILE" ]] || die "Compose file missing: $COMPOSE_FILE"
@@ -1183,6 +1324,7 @@ main() {
   enable_file_audit_if_needed
   setup_postgres_pgadmin_approle_if_needed
   setup_keycloak_approle_if_needed
+  setup_fastapi_approle_if_needed
   print_bootstrap_artifacts_instructions
   print_bootstrap_artifacts_contents
 
@@ -1206,9 +1348,14 @@ main() {
     --argjson postgres_pgadmin_setup_done "$POSTGRES_PGADMIN_SETUP_DONE" \
     --arg keycloak_role_name "$KEYCLOAK_ROLE_NAME" \
     --arg keycloak_policy_name "$KEYCLOAK_POLICY_NAME" \
+    --arg fastapi_role_name "$FASTAPI_ROLE_NAME" \
+    --arg fastapi_policy_name "$FASTAPI_POLICY_NAME" \
     --argjson keycloak_setup_done "$KEYCLOAK_SETUP_DONE" \
+    --argjson fastapi_setup_done "$FASTAPI_SETUP_DONE" \
     --argjson keycloak_setup_enabled "$SETUP_KEYCLOAK_APPROLE" \
     --argjson keycloak_setup_force "$FORCE_KEYCLOAK_APPROLE" \
+    --argjson fastapi_setup_enabled "$SETUP_FASTAPI_APPROLE" \
+    --argjson fastapi_setup_force "$FORCE_FASTAPI_APPROLE" \
     --argjson postgres_pgadmin_setup_enabled "$SETUP_POSTGRES_PGADMIN_APPROLE" \
     --argjson postgres_pgadmin_setup_force "$FORCE_POSTGRES_PGADMIN_APPROLE" \
     '{
@@ -1234,6 +1381,13 @@ main() {
         setup_done: ($keycloak_setup_done == 1),
         role_name: $keycloak_role_name,
         policy_name: $keycloak_policy_name
+      },
+      fastapi_approle_bootstrap: {
+        enabled: ($fastapi_setup_enabled == 1),
+        force: ($fastapi_setup_force == 1),
+        setup_done: ($fastapi_setup_done == 1),
+        role_name: $fastapi_role_name,
+        policy_name: $fastapi_policy_name
       },
       print_artifact_contents: ($print_artifact_contents == 1),
       audit: { enabled: ($enable_audit == 1), path: $audit_path, file_path: $audit_file_path },
