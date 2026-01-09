@@ -54,7 +54,7 @@ Legacy / not in use (kept for reference):
 ---
 1. `./backend/build_scripts/generate_local_networkengineertools_certs.sh`
 2. `./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*
-3. `./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh`
+3. `./backend/build_scripts/generate_bootstrap_creds_and_seed.sh`
 4. `./backend/build_scripts/postgress_approle_setup.sh` *(Step 2 must create the AppRole auth method or this will fail.)*
 5. `./backend/build_scripts/keycloak_approle_setup.sh` *(Step 2 must create the AppRole auth method or this will fail.)*
 ---
@@ -116,7 +116,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- generate_local_pgadmin_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- generate_bootstrap_creds_and_seed.sh
 |   |   |-- guides
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
@@ -219,7 +219,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- generate_local_pgadmin_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- generate_bootstrap_creds_and_seed.sh
 |   |   |-- guides
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
@@ -264,7 +264,7 @@ bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh \
 > <b>Make sure you REMOVE THEM afterwards and do not leave them on your filesystem!</b>
 
 ```bash
-bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
   --unseal-required 3
 ```
@@ -390,6 +390,9 @@ docker compose -f docker-compose.prod.yml ps
 docker logs --tail 200 -f vault_agent_postgres_pgadmin
 docker logs --tail 200 -f vault_agent_keycloak
 
+# Confirm the rendered files exist for fastapi
+docker exec -it vault_agent_fastapi sh -lc 'ls -lah /vault/rendered && echo && sed -n "1,80p" /vault/rendered/redis.conf'
+
 ```
 
 ### 2.4 Start Postgres
@@ -430,6 +433,27 @@ docker compose -f docker-compose.prod.yml up -d keycloak
 docker compose -f docker-compose.prod.yml ps
 docker logs --tail 200 -f keycloak
 ```
+
+### 2.7 Start Redis
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate redis
+docker logs --tail 200 -f fastapi_api
+```
+
+### 2.8 Start FastAPI
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api
+docker logs --tail 200 -f redis
+```
+
+### 2.9 Start Celery
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api
+docker logs --tail 200 -f redis
+```
+
+
 
 ### 2.7 Start NGINX
 >NOTE: NGINX is dependent on the primary containers it proxys in order for it to come up.
@@ -714,7 +738,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- generate_local_pgadmin_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- generate_bootstrap_creds_and_seed.sh
 |   |   |-- guides
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md

@@ -256,7 +256,7 @@ developer_network_tools@networktoolsvm:~$ tree NETWORK_TOOLS --charset ascii
 |   |   |-- generate_local_pgadmin_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- generate_bootstrap_creds_and_seed.sh
 |   |   |-- guides
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
@@ -1196,7 +1196,7 @@ running Docker (see Section 3.4).
     |   |   |-- generate_local_keycloak_certs.sh
     |   |   |-- generate_local_postgres_certs.sh
     |   |   |-- generate_local_vault_certs.sh
-    |   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+    |   |   |-- generate_bootstrap_creds_and_seed.sh
     |   |   |-- guides
     |   |   |   |-- seed_kv_spec.example.json
     |   |   |   `-- seed_kv_spec.GUIDE.md
@@ -1609,7 +1609,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- generate_local_keycloak_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- generate_bootstrap_creds_and_seed.sh
 |   |   |-- guides
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
@@ -2322,7 +2322,7 @@ as this script will default to looking there first on an initial install and set
 
 cd "$HOME/NETWORK_TOOLS"
 
-bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
   --vault-addr "https://vault_production_node:8200" \
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
   --unseal-required 3 \
@@ -2332,7 +2332,7 @@ bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.
 ```bash
 Example output without the '--prompt-token' flag
 
-developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
   --vault-addr "https://vault_production_node:8200" \
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
   --unseal-required 3
@@ -2436,7 +2436,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- generate_local_keycloak_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- generate_bootstrap_creds_and_seed.sh
 |   |   |-- guides
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
@@ -2558,7 +2558,7 @@ cd "$HOME/NETWORK_TOOLS"
 VAULT_ADDR="https://vault_production_node:8200"
 VAULT_CA_CERT="$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
 
-bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
   --mode rotate \
   --vault-addr "$VAULT_ADDR" \
   --ca-cert "$VAULT_CA_CERT" \
@@ -2682,7 +2682,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- generate_local_keycloak_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- generate_bootstrap_creds_and_seed.sh
 |   |   |-- guides
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
@@ -2977,7 +2977,7 @@ Recommended “sync/apply” command (does **not** re-seed Vault):
 ```bash
 cd "$HOME/NETWORK_TOOLS"
 
-bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
   --vault-addr "https://vault_production_node:8200" \
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
   --unseal-required 3 \
@@ -3006,7 +3006,7 @@ Rotate + apply in one workflow (recommended):
 ```bash
 cd "$HOME/NETWORK_TOOLS"
 
-bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh   --vault-addr "https://vault_production_node:8200"   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"   --unseal-required 3   --mode rotate   --apply-to-postgres
+bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh   --vault-addr "https://vault_production_node:8200"   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"   --unseal-required 3   --mode rotate   --apply-to-postgres
 ```
 
 What this accomplishes:
@@ -3038,7 +3038,7 @@ The postgres/pgAdmin bootstrap script generates *both* Postgres and pgAdmin cred
 ```bash
 cd "$HOME/NETWORK_TOOLS"
 
-bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
   --vault-addr "https://vault_production_node:8200" \
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
   --unseal-required 3 \
@@ -3830,7 +3830,7 @@ docker logs --tail 200 -f pgadmin
        ```bash
        cd "$HOME/NETWORK_TOOLS"
 
-       bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh          --mode rotate          --vault-addr "https://vault_production_node:8200"          --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"          --unseal-required 3          --prompt-token          --apply-to-postgres
+       bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh          --mode rotate          --vault-addr "https://vault_production_node:8200"          --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"          --unseal-required 3          --prompt-token          --apply-to-postgres
        ```
 
        Manual (if you prefer not to exec from the script):
@@ -4243,7 +4243,7 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 |   |   |-- generate_local_keycloak_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- generate_bootstrap_creds_and_seed.sh
 |   |   |-- guides
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
@@ -4434,7 +4434,7 @@ bash ./backend/build_scripts/keycloak_approle_setup.sh \
 |   |   |-- generate_local_keycloak_certs.sh
 |   |   |-- generate_local_postgres_certs.sh
 |   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_postgres_pgadmin_bootstrap_creds_and_seed.sh
+|   |   |-- generate_bootstrap_creds_and_seed.sh
 |   |   |-- guides
 |   |   |   |-- seed_kv_spec.example.json
 |   |   |   `-- seed_kv_spec.GUIDE.md
