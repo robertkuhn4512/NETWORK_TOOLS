@@ -32,3 +32,15 @@ template {
   destination = "/vault/rendered/fastapi_secrets.json"
   perms       = "0444"
 }
+
+template {
+  source      = "/vault/templates/redis_password.ctmpl"
+  destination = "/vault/rendered/redis_password"
+  perms       = "0644"
+}
+
+template {
+  source      = "/vault/templates/redis.conf.ctmpl"
+  destination = "/vault/rendered/redis.conf"
+  perms       = "0644"
+}

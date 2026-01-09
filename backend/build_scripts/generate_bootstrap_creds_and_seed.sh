@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #------------------------------------------------------------------------------
-# generate_postgres_pgadmin_bootstrap_creds_and_seed.sh (NO-PYTHON, VAULT-FETCH, APPLY)
+# generate_bootstrap_creds_and_seed.sh (NO-PYTHON, VAULT-FETCH, APPLY)
 #
 # Notes / How to run
 # - Env: auto-loads <repo-root>/.env by default.
@@ -8,7 +8,7 @@
 #
 # 1) Standard first-time init (idempotent):
 #    - In --mode generate (default), this script prefers EXISTING values:
-#        A) Existing local bootstrap artifacts (postgres_pgadmin.env), else
+#        A) Existing local bootstrap artifacts (bootstrap_creds.env; legacy: postgres_pgadmin.env), else
 #        B) Existing Vault KV values (if present), else
 #        C) Generates new values.
 #    - Then it seeds Vault (default) and writes artifacts.
@@ -16,14 +16,14 @@
 #    Use the below command and rely on the .env file having the correct fqdn populated under PRIMARY_SERVER_FQDN
 #
 #    cd "$HOME/NETWORK_TOOLS"
-#    bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+#    bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
 #      --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
 #      --unseal-required 3
 #
 #    Or, below with either the vault container name, or another vault fqdn.
 #
 #    cd "$HOME/NETWORK_TOOLS"
-#    bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+#    bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
 #      --vault-addr "https://vault_production_node:8200" \
 #      --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
 #      --unseal-required 3
@@ -37,14 +37,14 @@
 #    - Attempts to start postgres_primary (compose or docker start).
 #    - Applies roles/db/schema inside Postgres to match Vault values.
 #
-#    bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+#    bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
 #      --vault-addr "https://vault_production_node:8200" \
 #      --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
 #      --unseal-required 3 \
 #      --apply-to-postgres
 #
 # 3) Rotation (new passwords) + apply:
-#    bash ./backend/build_scripts/generate_postgres_pgadmin_bootstrap_creds_and_seed.sh \
+#    bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
 #      --mode rotate \
 #      --vault-addr "https://vault_production_node:8200" \
 #      --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
@@ -161,6 +161,19 @@ FASTAPI_DB_PASSWORD=""
 FASTAPI_DB_SCHEMA="public"
 
 
+# Redis / Celery (FastAPI background jobs)
+INCLUDE_REDIS=1
+REDIS_HOST="redis"
+REDIS_PORT="6379"
+REDIS_PASSWORD=""
+
+# Celery (uses Redis as broker/result backend by default)
+INCLUDE_CELERY=1
+CELERY_BROKER_DB="0"
+CELERY_RESULT_DB="1"
+CELERY_BROKER_URL=""
+CELERY_RESULT_BACKEND=""
+
 # pgAdmin
 PGADMIN_DEFAULT_EMAIL="admin@example.com"
 PGADMIN_DEFAULT_PASSWORD=""
@@ -260,14 +273,14 @@ PRINT_SECRETS=0
 usage() {
   cat <<'USAGE'
 Usage:
-  generate_postgres_pgadmin_bootstrap_creds_and_seed.sh [options]
+  generate_bootstrap_creds_and_seed.sh [options]
 
 Modes:
   --mode <generate|rotate>       generate: prefer existing local/Vault values (default)
                                 rotate:   generate NEW passwords (unless explicitly provided)
 
 Local/Vault preference (generate mode):
-  --no-prefer-local             Do not reuse existing postgres_pgadmin.env if present
+  --no-prefer-local             Do not reuse existing bootstrap_creds.env (legacy: postgres_pgadmin.env) if present
   --no-prefer-vault             Do not reuse existing Vault KV values if present
 
 Postgres (network_tools):
@@ -283,6 +296,17 @@ FastAPI (Postgres-backed; limited DML user for network_tools DB):
   --fastapi-user <name>
   --fastapi-password <value>
   --fastapi-schema <name>
+
+Redis / Celery (stored under fastapi_secrets):
+  --no-redis
+  --redis-host <host>
+  --redis-port <port>
+  --redis-password <value>
+  --no-celery
+  --celery-broker-db <n>
+  --celery-result-db <n>
+  --celery-broker-url <url>       Overrides computed URL (includes password)
+  --celery-result-backend <url>   Overrides computed backend URL (includes password)
 
 pgAdmin:
   --pgadmin-default-email <val>
@@ -376,6 +400,18 @@ while [[ $# -gt 0 ]]; do
     --fastapi-user) FASTAPI_DB_USERNAME="${2:-}"; shift 2;;
     --fastapi-password) FASTAPI_DB_PASSWORD="${2:-}"; shift 2;;
     --fastapi-schema) FASTAPI_DB_SCHEMA="${2:-}"; shift 2;;
+
+    --no-redis) INCLUDE_REDIS=0; shift 1;;
+    --redis-host) REDIS_HOST="${2:-}"; shift 2;;
+    --redis-port) REDIS_PORT="${2:-}"; shift 2;;
+    --redis-password) REDIS_PASSWORD="${2:-}"; shift 2;;
+
+    --no-celery) INCLUDE_CELERY=0; shift 1;;
+    --celery-broker-db) CELERY_BROKER_DB="${2:-}"; shift 2;;
+    --celery-result-db) CELERY_RESULT_DB="${2:-}"; shift 2;;
+    --celery-broker-url) CELERY_BROKER_URL="${2:-}"; shift 2;;
+    --celery-result-backend) CELERY_RESULT_BACKEND="${2:-}"; shift 2;;
+
 
     --pgadmin-default-email) PGADMIN_DEFAULT_EMAIL="${2:-}"; shift 2;;
     --pgadmin-password) PGADMIN_DEFAULT_PASSWORD="${2:-}"; shift 2;;
@@ -543,9 +579,14 @@ ensure_keycloak_hostname() {
 # -----------------------------------------------------------------------------
 # Local artifact loading (filesystem bootstrap)
 # -----------------------------------------------------------------------------
-ENV_FILE="${BOOTSTRAP_DIR}/postgres_pgadmin.env"
-JSON_FILE="${BOOTSTRAP_DIR}/postgres_pgadmin_credentials.json"
-SPEC_FILE="${BOOTSTRAP_DIR}/seed_kv_spec.postgres_pgadmin.json"
+ENV_FILE="${BOOTSTRAP_DIR}/bootstrap_creds.env"
+JSON_FILE="${BOOTSTRAP_DIR}/bootstrap_credentials.json"
+SPEC_FILE="${BOOTSTRAP_DIR}/seed_kv_spec.bootstrap_creds.json"
+
+LEGACY_ENV_FILE="${BOOTSTRAP_DIR}/postgres_pgadmin.env"
+LEGACY_JSON_FILE="${BOOTSTRAP_DIR}/postgres_pgadmin_credentials.json"
+LEGACY_SPEC_FILE="${BOOTSTRAP_DIR}/seed_kv_spec.postgres_pgadmin.json"
+LOCAL_ENV_SOURCE=""
 
 load_env_value() {
   # Usage: load_env_value <file> <KEY>
@@ -555,14 +596,20 @@ load_env_value() {
 }
 
 load_from_local_env_if_present() {
-  [[ -f "${ENV_FILE}" ]] || return 1
+  local src="${ENV_FILE}"
+  if [[ ! -f "${src}" && -f "${LEGACY_ENV_FILE}" ]]; then
+    src="${LEGACY_ENV_FILE}"
+  fi
+  [[ -f "${src}" ]] || return 1
+
+  LOCAL_ENV_SOURCE="${src}"
 
   local p_db p_user p_pass a_email a_pass
-  p_db="$(load_env_value "${ENV_FILE}" "POSTGRES_DB")"
-  p_user="$(load_env_value "${ENV_FILE}" "POSTGRES_USER")"
-  p_pass="$(load_env_value "${ENV_FILE}" "POSTGRES_PASSWORD")"
-  a_email="$(load_env_value "${ENV_FILE}" "PGADMIN_DEFAULT_EMAIL")"
-  a_pass="$(load_env_value "${ENV_FILE}" "PGADMIN_DEFAULT_PASSWORD")"
+  p_db="$(load_env_value "${src}" "POSTGRES_DB")"
+  p_user="$(load_env_value "${src}" "POSTGRES_USER")"
+  p_pass="$(load_env_value "${src}" "POSTGRES_PASSWORD")"
+  a_email="$(load_env_value "${src}" "PGADMIN_DEFAULT_EMAIL")"
+  a_pass="$(load_env_value "${src}" "PGADMIN_DEFAULT_PASSWORD")"
 
   if [[ -n "${p_db}" && -n "${p_user}" && -n "${p_pass}" && -n "${a_email}" && -n "${a_pass}" ]]; then
     POSTGRES_DB="${p_db}"
@@ -576,15 +623,15 @@ load_from_local_env_if_present() {
 
   # FastAPI (optional)
   local fa_inc fa_host fa_port fa_db fa_user fa_pass fa_schema
-  fa_inc="$(load_env_value "${ENV_FILE}" "INCLUDE_FASTAPI")"
+  fa_inc="$(load_env_value "${src}" "INCLUDE_FASTAPI")"
   [[ "${fa_inc}" == "0" || "${fa_inc}" == "1" ]] && INCLUDE_FASTAPI="${fa_inc}"
 
-  fa_host="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_URL_HOST")"
-  fa_port="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_URL_PORT")"
-  fa_db="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_URL_DATABASE")"
-  fa_user="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_USERNAME")"
-  fa_pass="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_PASSWORD")"
-  fa_schema="$(load_env_value "${ENV_FILE}" "FASTAPI_DB_SCHEMA")"
+  fa_host="$(load_env_value "${src}" "FASTAPI_DB_URL_HOST")"
+  fa_port="$(load_env_value "${src}" "FASTAPI_DB_URL_PORT")"
+  fa_db="$(load_env_value "${src}" "FASTAPI_DB_URL_DATABASE")"
+  fa_user="$(load_env_value "${src}" "FASTAPI_DB_USERNAME")"
+  fa_pass="$(load_env_value "${src}" "FASTAPI_DB_PASSWORD")"
+  fa_schema="$(load_env_value "${src}" "FASTAPI_DB_SCHEMA")"
 
   if [[ -n "${fa_db}" && -n "${fa_user}" && -n "${fa_pass}" ]]; then
     [[ -n "${fa_host}" ]] && FASTAPI_DB_URL_HOST="${fa_host}"
@@ -595,32 +642,59 @@ load_from_local_env_if_present() {
     [[ -n "${fa_schema}" ]] && FASTAPI_DB_SCHEMA="${fa_schema}"
   fi
 
+  # Redis / Celery (optional)
+  local r_inc r_host r_port r_pass c_inc c_broker_db c_result_db c_broker_url c_backend
+  r_inc="$(load_env_value "${src}" "INCLUDE_REDIS")"
+  [[ "${r_inc}" == "0" || "${r_inc}" == "1" ]] && INCLUDE_REDIS="${r_inc}"
+
+  r_host="$(load_env_value "${src}" "REDIS_HOST")"
+  r_port="$(load_env_value "${src}" "REDIS_PORT")"
+  r_pass="$(load_env_value "${src}" "REDIS_PASSWORD")"
+
+  [[ -n "${r_host}" ]] && REDIS_HOST="${r_host}"
+  [[ -n "${r_port}" ]] && REDIS_PORT="${r_port}"
+  [[ -n "${r_pass}" ]] && REDIS_PASSWORD="${r_pass}"
+
+  c_inc="$(load_env_value "${src}" "INCLUDE_CELERY")"
+  [[ "${c_inc}" == "0" || "${c_inc}" == "1" ]] && INCLUDE_CELERY="${c_inc}"
+
+  c_broker_db="$(load_env_value "${src}" "CELERY_BROKER_DB")"
+  c_result_db="$(load_env_value "${src}" "CELERY_RESULT_DB")"
+  c_broker_url="$(load_env_value "${src}" "CELERY_BROKER_URL")"
+  c_backend="$(load_env_value "${src}" "CELERY_RESULT_BACKEND")"
+
+  [[ -n "${c_broker_db}" ]] && CELERY_BROKER_DB="${c_broker_db}"
+  [[ -n "${c_result_db}" ]] && CELERY_RESULT_DB="${c_result_db}"
+  [[ -n "${c_broker_url}" ]] && CELERY_BROKER_URL="${c_broker_url}"
+  [[ -n "${c_backend}" ]] && CELERY_RESULT_BACKEND="${c_backend}"
+
+
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
     local kc_host kc_port kc_db kc_user kc_pass kc_schema
-    kc_host="$(load_env_value "${ENV_FILE}" "KC_DB_URL_HOST")"
-    kc_port="$(load_env_value "${ENV_FILE}" "KC_DB_URL_PORT")"
-    kc_db="$(load_env_value "${ENV_FILE}" "KC_DB_URL_DATABASE")"
-    kc_user="$(load_env_value "${ENV_FILE}" "KC_DB_USERNAME")"
-    kc_pass="$(load_env_value "${ENV_FILE}" "KC_DB_PASSWORD")"
-    kc_schema="$(load_env_value "${ENV_FILE}" "KC_DB_SCHEMA")"
+    kc_host="$(load_env_value "${src}" "KC_DB_URL_HOST")"
+    kc_port="$(load_env_value "${src}" "KC_DB_URL_PORT")"
+    kc_db="$(load_env_value "${src}" "KC_DB_URL_DATABASE")"
+    kc_user="$(load_env_value "${src}" "KC_DB_USERNAME")"
+    kc_pass="$(load_env_value "${src}" "KC_DB_PASSWORD")"
+    kc_schema="$(load_env_value "${src}" "KC_DB_SCHEMA")"
 
     # Keycloak bootstrap (optional)
     local kc_admin_user kc_admin_pass
-    kc_admin_user="$(load_env_value "${ENV_FILE}" "KC_BOOTSTRAP_ADMIN_USERNAME")"
-    kc_admin_pass="$(load_env_value "${ENV_FILE}" "KC_BOOTSTRAP_ADMIN_PASSWORD")"
+    kc_admin_user="$(load_env_value "${src}" "KC_BOOTSTRAP_ADMIN_USERNAME")"
+    kc_admin_pass="$(load_env_value "${src}" "KC_BOOTSTRAP_ADMIN_PASSWORD")"
     [[ -n "${kc_admin_user}" ]] && KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME="${kc_admin_user}"
     [[ -n "${kc_admin_pass}" ]] && KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD="${kc_admin_pass}"
 
     # Keycloak runtime (optional)
     local kc_hostname kc_hostname_strict kc_http_enabled kc_https_port kc_health kc_metrics kc_mgmt_port kc_mgmt_scheme
-    kc_hostname="$(load_env_value "${ENV_FILE}" "KC_HOSTNAME")"
-    kc_hostname_strict="$(load_env_value "${ENV_FILE}" "KC_HOSTNAME_STRICT")"
-    kc_http_enabled="$(load_env_value "${ENV_FILE}" "KC_HTTP_ENABLED")"
-    kc_https_port="$(load_env_value "${ENV_FILE}" "KC_HTTPS_PORT")"
-    kc_health="$(load_env_value "${ENV_FILE}" "KC_HEALTH_ENABLED")"
-    kc_metrics="$(load_env_value "${ENV_FILE}" "KC_METRICS_ENABLED")"
-    kc_mgmt_port="$(load_env_value "${ENV_FILE}" "KC_HTTP_MANAGEMENT_PORT")"
-    kc_mgmt_scheme="$(load_env_value "${ENV_FILE}" "KC_HTTP_MANAGEMENT_SCHEME")"
+    kc_hostname="$(load_env_value "${src}" "KC_HOSTNAME")"
+    kc_hostname_strict="$(load_env_value "${src}" "KC_HOSTNAME_STRICT")"
+    kc_http_enabled="$(load_env_value "${src}" "KC_HTTP_ENABLED")"
+    kc_https_port="$(load_env_value "${src}" "KC_HTTPS_PORT")"
+    kc_health="$(load_env_value "${src}" "KC_HEALTH_ENABLED")"
+    kc_metrics="$(load_env_value "${src}" "KC_METRICS_ENABLED")"
+    kc_mgmt_port="$(load_env_value "${src}" "KC_HTTP_MANAGEMENT_PORT")"
+    kc_mgmt_scheme="$(load_env_value "${src}" "KC_HTTP_MANAGEMENT_SCHEME")"
 
     [[ -n "${kc_hostname}" ]] && KEYCLOAK_HOSTNAME="${kc_hostname}"
     [[ -n "${kc_hostname_strict}" ]] && KEYCLOAK_HOSTNAME_STRICT="${kc_hostname_strict}"
@@ -760,7 +834,7 @@ vault_try_load_from_vault() {
   local postgres_path pgadmin_path fastapi_path keycloak_path
   postgres_path="$(prefixed_path "postgres")"
   pgadmin_path="$(prefixed_path "pgadmin")"
-  fastapi_path="$(prefixed_path "fastapi_postgres")"
+  fastapi_path="$(prefixed_path "fastapi_secrets")"
   keycloak_path="$(prefixed_path "keycloak_postgres")"
 
   # Postgres
@@ -782,21 +856,49 @@ vault_try_load_from_vault() {
     }
   fi
 
-  # FastAPI (optional)
+  # FastAPI secrets (optional)
   if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
     if data="$(vault_kv2_get_data_json "${VAULT_MOUNT}" "${fastapi_path}" 2>/dev/null || true)"; then
-      # Require minimum fields
-      echo "${data}" | jq -e '.FASTAPI_DB_URL_DATABASE and .FASTAPI_DB_USERNAME and .FASTAPI_DB_PASSWORD' >/dev/null 2>&1 && {
-        FASTAPI_DB_URL_DATABASE="$(echo "${data}" | jq -r '.FASTAPI_DB_URL_DATABASE')"
-        FASTAPI_DB_USERNAME="$(echo "${data}" | jq -r '.FASTAPI_DB_USERNAME')"
-        FASTAPI_DB_PASSWORD="$(echo "${data}" | jq -r '.FASTAPI_DB_PASSWORD')"
-        FASTAPI_DB_SCHEMA="$(echo "${data}" | jq -r '.FASTAPI_DB_SCHEMA // "public"')"
-        FASTAPI_DB_URL_HOST="$(echo "${data}" | jq -r '.FASTAPI_DB_URL_HOST // "postgres_primary"')"
-        FASTAPI_DB_URL_PORT="$(echo "${data}" | jq -r '.FASTAPI_DB_URL_PORT // "5432"')"
-        log "Using existing Vault secret for FastAPI Postgres: ${VAULT_MOUNT}/${fastapi_path}"
-      }
+      # FastAPI -> Postgres (minimum fields)
+      if echo "${data}" | jq -e '.FASTAPI_DB_URL_DATABASE and .FASTAPI_DB_USERNAME and .FASTAPI_DB_PASSWORD' >/dev/null 2>&1; then
+        [[ -n "${FASTAPI_DB_URL_DATABASE}" ]] || FASTAPI_DB_URL_DATABASE="$(echo "${data}" | jq -r '.FASTAPI_DB_URL_DATABASE')"
+        [[ -n "${FASTAPI_DB_USERNAME}" ]]     || FASTAPI_DB_USERNAME="$(echo "${data}" | jq -r '.FASTAPI_DB_USERNAME')"
+        [[ -n "${FASTAPI_DB_PASSWORD}" ]]     || FASTAPI_DB_PASSWORD="$(echo "${data}" | jq -r '.FASTAPI_DB_PASSWORD')"
+        [[ -n "${FASTAPI_DB_SCHEMA}" ]]       || FASTAPI_DB_SCHEMA="$(echo "${data}" | jq -r '.FASTAPI_DB_SCHEMA // "public"')"
+        [[ -n "${FASTAPI_DB_URL_HOST}" ]]     || FASTAPI_DB_URL_HOST="$(echo "${data}" | jq -r '.FASTAPI_DB_URL_HOST // "postgres_primary"')"
+        [[ -n "${FASTAPI_DB_URL_PORT}" ]]     || FASTAPI_DB_URL_PORT="$(echo "${data}" | jq -r '.FASTAPI_DB_URL_PORT // "5432"')"
+        log "Using existing Vault secret for FastAPI DB credentials: ${VAULT_MOUNT}/${fastapi_path}"
+      fi
+
+      # Redis / Celery (optional; also stored under fastapi_secrets)
+      local v
+      v="$(echo "${data}" | jq -r '.REDIS_PASSWORD // ""')"
+      [[ -n "${REDIS_PASSWORD}" ]] || REDIS_PASSWORD="${v}"
+
+      v="$(echo "${data}" | jq -r '.REDIS_HOST // ""')"
+      [[ -n "${REDIS_HOST}" ]] || REDIS_HOST="${v}"
+
+      v="$(echo "${data}" | jq -r '.REDIS_PORT // ""')"
+      [[ -n "${REDIS_PORT}" ]] || REDIS_PORT="${v}"
+
+      v="$(echo "${data}" | jq -r '.CELERY_BROKER_DB // ""')"
+      [[ -n "${CELERY_BROKER_DB}" ]] || CELERY_BROKER_DB="${v}"
+
+      v="$(echo "${data}" | jq -r '.CELERY_RESULT_DB // ""')"
+      [[ -n "${CELERY_RESULT_DB}" ]] || CELERY_RESULT_DB="${v}"
+
+      v="$(echo "${data}" | jq -r '.CELERY_BROKER_URL // ""')"
+      [[ -n "${CELERY_BROKER_URL}" ]] || CELERY_BROKER_URL="${v}"
+
+      v="$(echo "${data}" | jq -r '.CELERY_RESULT_BACKEND // ""')"
+      [[ -n "${CELERY_RESULT_BACKEND}" ]] || CELERY_RESULT_BACKEND="${v}"
+
+      if [[ -n "${REDIS_PASSWORD}" || -n "${CELERY_BROKER_URL}" || -n "${CELERY_RESULT_BACKEND}" ]]; then
+        log "Using existing Vault secret for Redis/Celery (fastapi_secrets): ${VAULT_MOUNT}/${fastapi_path}"
+      fi
     fi
   fi
+
 
   # Keycloak
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
@@ -896,7 +998,7 @@ LOCAL_LOADED=0
 if [[ "${MODE}" == "generate" && "${PREFER_LOCAL}" -eq 1 ]]; then
   if load_from_local_env_if_present; then
     LOCAL_LOADED=1
-    log "Using existing local bootstrap artifacts: ${ENV_FILE}"
+    log "Using existing local bootstrap artifacts: ${LOCAL_ENV_SOURCE:-${ENV_FILE}}"
   fi
 fi
 
@@ -922,6 +1024,9 @@ if [[ "${MODE}" == "rotate" ]]; then
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
     KEYCLOAK_DB_PASSWORD="${KEYCLOAK_DB_PASSWORD:-$(gen_urlsafe 32)}"
   fi
+  if [[ "${INCLUDE_REDIS}" -eq 1 ]]; then
+    REDIS_PASSWORD="${REDIS_PASSWORD:-$(gen_urlsafe 32)}"
+  fi
 else
   [[ -n "${POSTGRES_PASSWORD}" ]] || POSTGRES_PASSWORD="$(gen_urlsafe 32)"
   [[ -n "${PGADMIN_DEFAULT_PASSWORD}" ]] || PGADMIN_DEFAULT_PASSWORD="$(gen_urlsafe 32)"
@@ -931,6 +1036,9 @@ else
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
     [[ -n "${KEYCLOAK_DB_PASSWORD}" ]] || KEYCLOAK_DB_PASSWORD="$(gen_urlsafe 32)"
   fi
+  if [[ "${INCLUDE_REDIS}" -eq 1 ]]; then
+    [[ -n "${REDIS_PASSWORD}" ]] || REDIS_PASSWORD="$(gen_urlsafe 32)"
+  fi
 fi
 
 # FastAPI defaults
@@ -939,6 +1047,31 @@ if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
   [[ -n "${FASTAPI_DB_URL_HOST}" ]] || FASTAPI_DB_URL_HOST="postgres_primary"
   [[ -n "${FASTAPI_DB_URL_PORT}" ]] || FASTAPI_DB_URL_PORT="5432"
   [[ -n "${FASTAPI_DB_SCHEMA}" ]] || FASTAPI_DB_SCHEMA="public"
+fi
+
+# Redis / Celery defaults (and derived URLs)
+if [[ "${INCLUDE_CELERY}" -eq 1 && "${INCLUDE_REDIS}" -ne 1 ]]; then
+  err "Celery is enabled but Redis is disabled. Either enable Redis or pass explicit broker/result URLs."
+fi
+
+if [[ "${INCLUDE_REDIS}" -eq 1 ]]; then
+  [[ -n "${REDIS_HOST}" ]] || REDIS_HOST="redis"
+  [[ -n "${REDIS_PORT}" ]] || REDIS_PORT="6379"
+  [[ -n "${REDIS_PASSWORD}" ]] || err "Redis is enabled but REDIS_PASSWORD is empty."
+
+  if [[ "${INCLUDE_CELERY}" -eq 1 ]]; then
+    [[ -n "${CELERY_BROKER_DB}" ]] || CELERY_BROKER_DB="0"
+    [[ -n "${CELERY_RESULT_DB}" ]] || CELERY_RESULT_DB="1"
+
+    # If the URLs are not explicitly provided, compute them from the Redis settings.
+    # Note: the password is embedded in the URL, so treat these as secrets.
+    if [[ -z "${CELERY_BROKER_URL}" ]]; then
+      CELERY_BROKER_URL="redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/${CELERY_BROKER_DB}"
+    fi
+    if [[ -z "${CELERY_RESULT_BACKEND}" ]]; then
+      CELERY_RESULT_BACKEND="redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/${CELERY_RESULT_DB}"
+    fi
+  fi
 fi
 
 # Keycloak bootstrap/runtime defaults (and validation)
@@ -1022,6 +1155,17 @@ FASTAPI_DB_USERNAME=${FASTAPI_DB_USERNAME}
 FASTAPI_DB_PASSWORD=${FASTAPI_DB_PASSWORD}
 FASTAPI_DB_SCHEMA=${FASTAPI_DB_SCHEMA}
 
+# Redis / Celery
+INCLUDE_REDIS=${INCLUDE_REDIS}
+INCLUDE_CELERY=${INCLUDE_CELERY}
+REDIS_HOST=${REDIS_HOST}
+REDIS_PORT=${REDIS_PORT}
+REDIS_PASSWORD=${REDIS_PASSWORD}
+CELERY_BROKER_DB=${CELERY_BROKER_DB}
+CELERY_RESULT_DB=${CELERY_RESULT_DB}
+CELERY_BROKER_URL=${CELERY_BROKER_URL}
+CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+
 # pgAdmin
 PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
 PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
@@ -1070,7 +1214,7 @@ EOF
 fi
 
 # Credentials JSON
-export INCLUDE_FASTAPI INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
+export INCLUDE_FASTAPI INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
 
 jq -n \
   --arg generated_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
@@ -1087,6 +1231,13 @@ jq -n \
   --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
   --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
   --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
+  --arg REDIS_HOST "${REDIS_HOST}" \
+  --arg REDIS_PORT "${REDIS_PORT}" \
+  --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
+  --arg CELERY_BROKER_DB "${CELERY_BROKER_DB}" \
+  --arg CELERY_RESULT_DB "${CELERY_RESULT_DB}" \
+  --arg CELERY_BROKER_URL "${CELERY_BROKER_URL}" \
+  --arg CELERY_RESULT_BACKEND "${CELERY_RESULT_BACKEND}" \
   --arg KC_DB "postgres" \
   --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}" \
   --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}" \
@@ -1119,14 +1270,27 @@ jq -n \
     postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
     pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD }
   }
-  + (if env.INCLUDE_FASTAPI == "1" then { fastapi_postgres: {
-        FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
-        FASTAPI_DB_URL_PORT: $FASTAPI_DB_URL_PORT,
-        FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
-        FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
-        FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
-        FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
-      } } else {} end)
+  + (if env.INCLUDE_FASTAPI == "1" then { fastapi_secrets: (
+        {
+          FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
+          FASTAPI_DB_URL_PORT: $FASTAPI_DB_URL_PORT,
+          FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
+          FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
+          FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
+          FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
+        }
+        + (if env.INCLUDE_REDIS == "1" then {
+              REDIS_HOST: $REDIS_HOST,
+              REDIS_PORT: $REDIS_PORT,
+              REDIS_PASSWORD: $REDIS_PASSWORD
+            } else {} end)
+        + (if env.INCLUDE_CELERY == "1" then {
+              CELERY_BROKER_DB: $CELERY_BROKER_DB,
+              CELERY_RESULT_DB: $CELERY_RESULT_DB,
+              CELERY_BROKER_URL: $CELERY_BROKER_URL,
+              CELERY_RESULT_BACKEND: $CELERY_RESULT_BACKEND
+            } else {} end)
+      ) } else {} end)
   + (if env.INCLUDE_KEYCLOAK == "1" then { keycloak_postgres: {
         KC_DB: $KC_DB,
         KC_DB_URL_HOST: $KC_DB_URL_HOST,
@@ -1163,12 +1327,12 @@ jq -n \
       } } else {} end)
   ' > "${JSON_FILE}"
 
-export INCLUDE_FASTAPI INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
+export INCLUDE_FASTAPI INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
 # Seed spec JSON (KV v2)
 # Structure required by vault_unseal_multi_kv_seed_bootstrap_rootless.sh:
 # { mounts: [ { mount, version, prefix?, secrets: {...} } ] }
 
-export INCLUDE_FASTAPI INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
+export INCLUDE_FASTAPI INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
 
 if [[ -n "${VAULT_PREFIX}" ]]; then
   jq -n \
@@ -1185,6 +1349,13 @@ if [[ -n "${VAULT_PREFIX}" ]]; then
     --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
     --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
     --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
+  --arg REDIS_HOST "${REDIS_HOST}" \
+  --arg REDIS_PORT "${REDIS_PORT}" \
+  --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
+  --arg CELERY_BROKER_DB "${CELERY_BROKER_DB}" \
+  --arg CELERY_RESULT_DB "${CELERY_RESULT_DB}" \
+  --arg CELERY_BROKER_URL "${CELERY_BROKER_URL}" \
+  --arg CELERY_RESULT_BACKEND "${CELERY_RESULT_BACKEND}" \
     --arg KC_DB "postgres" \
     --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}" \
     --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}" \
@@ -1220,14 +1391,27 @@ if [[ -n "${VAULT_PREFIX}" ]]; then
           secrets: (
             { postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
               pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD } }
-            + (if env.INCLUDE_FASTAPI == "1" then { fastapi_postgres: {
-                  FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
-                  FASTAPI_DB_URL_PORT: $FASTAPI_DB_URL_PORT,
-                  FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
-                  FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
-                  FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
-                  FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
-                } } else {} end)
+            + (if env.INCLUDE_FASTAPI == "1" then { fastapi_secrets: (
+        {
+          FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
+          FASTAPI_DB_URL_PORT: $FASTAPI_DB_URL_PORT,
+          FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
+          FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
+          FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
+          FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
+        }
+        + (if env.INCLUDE_REDIS == "1" then {
+              REDIS_HOST: $REDIS_HOST,
+              REDIS_PORT: $REDIS_PORT,
+              REDIS_PASSWORD: $REDIS_PASSWORD
+            } else {} end)
+        + (if env.INCLUDE_CELERY == "1" then {
+              CELERY_BROKER_DB: $CELERY_BROKER_DB,
+              CELERY_RESULT_DB: $CELERY_RESULT_DB,
+              CELERY_BROKER_URL: $CELERY_BROKER_URL,
+              CELERY_RESULT_BACKEND: $CELERY_RESULT_BACKEND
+            } else {} end)
+      ) } else {} end)
             + (if env.INCLUDE_KEYCLOAK == "1" then { keycloak_postgres: {
                   KC_DB: $KC_DB,
                   KC_DB_URL_HOST: $KC_DB_URL_HOST,
@@ -1274,6 +1458,13 @@ else
     --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
     --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
     --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
+  --arg REDIS_HOST "${REDIS_HOST}" \
+  --arg REDIS_PORT "${REDIS_PORT}" \
+  --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
+  --arg CELERY_BROKER_DB "${CELERY_BROKER_DB}" \
+  --arg CELERY_RESULT_DB "${CELERY_RESULT_DB}" \
+  --arg CELERY_BROKER_URL "${CELERY_BROKER_URL}" \
+  --arg CELERY_RESULT_BACKEND "${CELERY_RESULT_BACKEND}" \
     --arg KC_DB "postgres" \
     --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}" \
     --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}" \
@@ -1308,14 +1499,27 @@ else
           secrets: (
             { postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
               pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD } }
-            + (if env.INCLUDE_FASTAPI == "1" then { fastapi_postgres: {
-                  FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
-                  FASTAPI_DB_URL_PORT: $FASTAPI_DB_URL_PORT,
-                  FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
-                  FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
-                  FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
-                  FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
-                } } else {} end)
+            + (if env.INCLUDE_FASTAPI == "1" then { fastapi_secrets: (
+        {
+          FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
+          FASTAPI_DB_URL_PORT: $FASTAPI_DB_URL_PORT,
+          FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
+          FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
+          FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
+          FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
+        }
+        + (if env.INCLUDE_REDIS == "1" then {
+              REDIS_HOST: $REDIS_HOST,
+              REDIS_PORT: $REDIS_PORT,
+              REDIS_PASSWORD: $REDIS_PASSWORD
+            } else {} end)
+        + (if env.INCLUDE_CELERY == "1" then {
+              CELERY_BROKER_DB: $CELERY_BROKER_DB,
+              CELERY_RESULT_DB: $CELERY_RESULT_DB,
+              CELERY_BROKER_URL: $CELERY_BROKER_URL,
+              CELERY_RESULT_BACKEND: $CELERY_RESULT_BACKEND
+            } else {} end)
+      ) } else {} end)
             + (if env.INCLUDE_KEYCLOAK == "1" then { keycloak_postgres: {
                   KC_DB: $KC_DB,
                   KC_DB_URL_HOST: $KC_DB_URL_HOST,
@@ -1348,6 +1552,19 @@ else
         }
       ]
     }' > "${SPEC_FILE}"
+fi
+
+# Backward-compatible copies (legacy filenames)
+# - The script was renamed/broadened, but older docs/automation may still expect the legacy artifact names.
+# - Keep these in sync so either set can be used.
+if [[ "${ENV_FILE}" != "${LEGACY_ENV_FILE}" ]]; then
+  cp -f "${ENV_FILE}" "${LEGACY_ENV_FILE}" 2>/dev/null || true
+fi
+if [[ "${JSON_FILE}" != "${LEGACY_JSON_FILE}" ]]; then
+  cp -f "${JSON_FILE}" "${LEGACY_JSON_FILE}" 2>/dev/null || true
+fi
+if [[ "${SPEC_FILE}" != "${LEGACY_SPEC_FILE}" ]]; then
+  cp -f "${SPEC_FILE}" "${LEGACY_SPEC_FILE}" 2>/dev/null || true
 fi
 
 log "Wrote credential artifacts:"
@@ -1537,7 +1754,7 @@ if [[ "${APPLY_TO_POSTGRES}" -eq 1 ]]; then
   local postgres_path keycloak_path fastapi_path
   postgres_path="$(prefixed_path "postgres")"
   keycloak_path="$(prefixed_path "keycloak_postgres")"
-  fastapi_path="$(prefixed_path "fastapi_postgres")"
+  fastapi_path="$(prefixed_path "fastapi_secrets")"
 
   [[ -n "${POSTGRES_DB}" && -n "${POSTGRES_USER}" && -n "${POSTGRES_PASSWORD}" ]] || err "Missing required Postgres admin values from Vault. Expected keys POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD at: ${VAULT_ADDR%/}/v1/${VAULT_MOUNT}/data/${postgres_path}"
 
@@ -1547,7 +1764,7 @@ if [[ "${APPLY_TO_POSTGRES}" -eq 1 ]]; then
 
   if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
     # FastAPI is optional, but if enabled we require the minimum fields.
-    [[ -n "${FASTAPI_DB_URL_DATABASE}" && -n "${FASTAPI_DB_USERNAME}" && -n "${FASTAPI_DB_PASSWORD}" ]] || err "Missing required FastAPI Postgres values from Vault. Expected keys FASTAPI_DB_URL_DATABASE/FASTAPI_DB_USERNAME/FASTAPI_DB_PASSWORD at: ${VAULT_ADDR%/}/v1/${VAULT_MOUNT}/data/${fastapi_path}"
+    [[ -n "${FASTAPI_DB_URL_DATABASE}" && -n "${FASTAPI_DB_USERNAME}" && -n "${FASTAPI_DB_PASSWORD}" ]] || err "Missing required FastAPI DB values from Vault. Expected keys FASTAPI_DB_URL_DATABASE/FASTAPI_DB_USERNAME/FASTAPI_DB_PASSWORD at: ${VAULT_ADDR%/}/v1/${VAULT_MOUNT}/data/${fastapi_path}"
   fi
 
   # Master/admin creds are whatever Vault says they are.
