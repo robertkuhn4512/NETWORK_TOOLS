@@ -58,6 +58,8 @@ DEFAULT_DNS_SANS=(
   "auth.networkengineertools.com"
   "api.networkengineertools.com"
   "pgadmin.networkengineertools.com"
+  "flower.networkengineertools.com"
+  "vault.networkengineertools.com"
   "localhost"
 )
 DEFAULT_IP_SANS=(

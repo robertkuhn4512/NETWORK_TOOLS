@@ -23,7 +23,8 @@ volumes:
     name: network_tools_vault_rendered
   redis_data:
     name: network_tools_redis_data
-
+  flower_data:
+    name: network_tools_flower_data
 networks:
   db_net:
     driver: bridge
@@ -490,6 +491,7 @@ services:
   # docker compose -f docker-compose.prod.yml up -d fastapi_api --build
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api
   fastapi_api:
+    image: network_tools_fastapi:latest
     build:
       context: ./backend/app/fastapi
       dockerfile: Dockerfile
@@ -498,12 +500,12 @@ services:
     depends_on:
       vault_agent_fastapi:
         condition: service_healthy
-      #postgres_primary:
-      #  condition: service_healthy
+      postgres_primary:
+        condition: service_healthy
       #redis:
       #  condition: service_healthy
-      #keycloak:
-      #  condition: service_healthy
+      keycloak:
+        condition: service_healthy
     networks:
       db_net:
         ipv4_address: 172.30.20.40
@@ -532,32 +534,34 @@ services:
   # ------------------------------------------------------------
   # Redis (Celery broker/backend)
   # ------------------------------------------------------------
-
+  # docker compose -f docker-compose.prod.yml up -d redis
+  # docker compose -f docker-compose.prod.yml up -d redis --build
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate redis
   redis:
-    image: redis:7.4-alpine
+    image: redis:8.4-alpine
     container_name: redis
     restart: unless-stopped
     networks:
       db_net:
-        ipv4_address: 172.30.20.50
+        ipv4_address: 172.30.20.50   # optional; keep consistent with your scheme
     volumes:
       - redis_data:/data
-    command: ["redis-server","--appendonly","yes"]
+      - fastapi_vault_rendered:/run/vault:ro
+    command: ["redis-server", "/run/vault/redis.conf"]
     healthcheck:
-      test: ["CMD","redis-cli","ping"]
+      test: [ "CMD-SHELL", 'PASS="$$(tr -d "\r\n" </run/vault/redis_password)"; REDISCLI_AUTH="$$PASS" redis-cli ping | grep -q PONG' ]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 10
-
-
 
   # ------------------------------------------------------------
   # Celery worker (uses the same Vault-rendered JSON as FastAPI)
   # ------------------------------------------------------------
+  # docker compose -f docker-compose.prod.yml up -d celery_worker
+  # docker compose -f docker-compose.prod.yml up -d celery_worker --build
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate celery_worker
   celery_worker:
-    build:
-      context: ./backend/app/fastapi
-      dockerfile: Dockerfile
+    image: network_tools_fastapi:latest
     container_name: celery_worker
     restart: unless-stopped
     depends_on:
@@ -578,7 +582,55 @@ services:
       - "/app/vault_env_exec.py"
       - "celery"
       - "-A"
-      - "app.celery_app"
+      - "app.celery_app:celery_app"
       - "worker"
       - "--loglevel=INFO"
       - "--concurrency=2"
+
+  # ------------------------------------------------------------
+  # flower - Frontend for celery
+  # ------------------------------------------------------------
+  # docker compose -f docker-compose.prod.yml up -d flower
+  # docker compose -f docker-compose.prod.yml up -d flower --build
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate flower
+  flower:
+    image: network_tools_fastapi:latest
+    container_name: flower
+    restart: unless-stopped
+    depends_on:
+      vault_agent_fastapi:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      celery_worker:
+        condition: service_started
+    networks:
+      db_net:
+      public_net:
+    # Expose only to other containers (nginx), not the host
+    expose:
+      - "5555"
+    volumes:
+      - fastapi_vault_rendered:/run/vault:ro
+      - flower_data:/data
+    environment:
+      VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
+    command:
+      - "python"
+      - "/app/vault_env_exec.py"
+      - "celery"
+      - "-A"
+      - "app.celery_app:celery_app"
+      - "flower"
+      - "--address=0.0.0.0"
+      - "--port=5555"
+      - "--persistent=True"
+      - "--db=/data/flower.db"
+      # If you proxy under a path (example: https://host/flower/), enable:
+      # - "--url_prefix=/flower"
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:5555/\", timeout=2).read()' >/dev/null" ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
