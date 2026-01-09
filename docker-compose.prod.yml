@@ -63,8 +63,10 @@ services:
     depends_on:
        - keycloak
        - vault_production_node
-      # - fastapi_api   # uncomment once FastAPI service exists
+       - fastapi_api
        - pgadmin
+       - celery_worker
+       - flower
     networks:
       public_net:
     ports:
