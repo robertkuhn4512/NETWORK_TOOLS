@@ -286,6 +286,11 @@ chmod +x ./backend/build_scripts/postgress_approle_setup.sh
 ROLE_NAME=postgres_pgadmin_agent ./backend/build_scripts/postgress_approle_setup.sh
 ```
 
+```bash
+chmod +x ./backend/build_scripts/fastapi_approle_setup.sh
+ROLE_NAME=fastapi_agent ./backend/build_scripts/fastapi_approle_setup.sh
+```
+
 >NOTE: There is a helper script that will query vault and show you the values stored there as well as the local copies.
 > This helps ensure vault is ready to bring up the vault_agent containers
 
@@ -378,7 +383,7 @@ Notes:
 ### 2.3 Start Vault Agents (must authenticate before dependent services)
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin vault_agent_keycloak
+docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin vault_agent_keycloak vault_agent_fastapi
 
 docker compose -f docker-compose.prod.yml ps
 
