@@ -455,7 +455,7 @@ docker logs --tail 200 -f redis
 
 
 
-### 2.7 Start NGINX
+### 2.10 Start NGINX
 >NOTE: NGINX is dependent on the primary containers it proxys in order for it to come up.
 > Those are
 > -Vault
