@@ -41,6 +41,8 @@ PROJECT_ROOT_DEFAULT="$HOME/NETWORK_TOOLS"
 OUT_DIR_DEFAULT="$PROJECT_ROOT_DEFAULT/backend/app/nginx/certs"
 VAULT_CERT_DIR_DEFAULT="$PROJECT_ROOT_DEFAULT/backend/app/security/configuration_files/vault/certs"
 SYNC_VAULT_CERTS_DEFAULT="1"
+FASTAPI_CERT_DIR_DEFAULT="$PROJECT_ROOT_DEFAULT/backend/app/fastapi/certs"
+SYNC_FASTAPI_CERTS_DEFAULT="1"
 VALUES_FILE_DEFAULT="$PROJECT_ROOT_DEFAULT/backend/build_scripts/networkengineertools_cert_values.env"
 
 FORCE="0"
@@ -74,6 +76,8 @@ Options:
   --out-dir DIR        Output directory (default: ${OUT_DIR_DEFAULT})
   --vault-cert-dir DIR Vault cert directory to sync into (default: ${VAULT_CERT_DIR_DEFAULT})
   --no-vault-sync      Do not sync certs into the Vault cert directory
+  --fastapi-cert-dir DIR FastAPI cert directory to sync CA into (default: ${FASTAPI_CERT_DIR_DEFAULT})
+  --no-fastapi-sync    Do not sync CA into the FastAPI build context
   --values-file FILE   Values file to load (default: ${VALUES_FILE_DEFAULT})
   --no-values-file     Do not load any values file (even if default exists)
 
@@ -139,8 +143,11 @@ write_extfile() {
   done
 
   {
-    echo "basicConstraints=CA:FALSE"
-    echo "keyUsage=digitalSignature,keyEncipherment"
+    echo "basicConstraints=critical,CA:FALSE"
+    echo "keyUsage=critical,digitalSignature,keyEncipherment"
+    echo "extendedKeyUsage=serverAuth"
+    echo "subjectKeyIdentifier=hash"
+    echo "authorityKeyIdentifier=keyid,issuer"
     echo "extendedKeyUsage=serverAuth"
     echo "subjectAltName=@alt_names"
     echo ""
@@ -164,6 +171,8 @@ parse_args() {
   OUT_DIR="$OUT_DIR_DEFAULT"
   VAULT_CERT_DIR="$VAULT_CERT_DIR_DEFAULT"
   SYNC_VAULT_CERTS="$SYNC_VAULT_CERTS_DEFAULT"
+  FASTAPI_CERT_DIR="$FASTAPI_CERT_DIR_DEFAULT"
+  SYNC_FASTAPI_CERTS="$SYNC_FASTAPI_CERTS_DEFAULT"
   VALUES_FILE="$VALUES_FILE_DEFAULT"
   CN="$CN_DEFAULT"
   CA_CN="$CA_CN_DEFAULT"
@@ -177,6 +186,8 @@ parse_args() {
       --out-dir) OUT_DIR="$2"; shift 2 ;;
       --vault-cert-dir) VAULT_CERT_DIR="$2"; shift 2 ;;
       --no-vault-sync) SYNC_VAULT_CERTS="0"; shift ;;
+      --fastapi-cert-dir) FASTAPI_CERT_DIR="$2"; shift 2 ;;
+      --no-fastapi-sync) SYNC_FASTAPI_CERTS="0"; shift ;;
       --values-file) VALUES_FILE="$2"; shift 2 ;;
       --no-values-file) SKIP_VALUES_FILE="1"; shift ;;
       --cn) CN="$2"; shift 2 ;;
@@ -205,6 +216,8 @@ load_values_file() {
   OUT_DIR="${NETWORKENGINEERTOOLS_CERT_OUT_DIR:-$OUT_DIR}"
   VAULT_CERT_DIR="${NETWORKENGINEERTOOLS_VAULT_CERT_DIR:-$VAULT_CERT_DIR}"
   SYNC_VAULT_CERTS="${NETWORKENGINEERTOOLS_CERT_SYNC_VAULT:-$SYNC_VAULT_CERTS}"
+  FASTAPI_CERT_DIR="${NETWORKENGINEERTOOLS_FASTAPI_CERT_DIR:-$FASTAPI_CERT_DIR}"
+  SYNC_FASTAPI_CERTS="${NETWORKENGINEERTOOLS_CERT_SYNC_FASTAPI:-$SYNC_FASTAPI_CERTS}"
   CN="${NETWORKENGINEERTOOLS_CERT_CN:-$CN}"
   CA_CN="${NETWORKENGINEERTOOLS_CERT_CA_CN:-$CA_CN}"
   CA_DAYS="${NETWORKENGINEERTOOLS_CERT_CA_DAYS:-$CA_DAYS}"
@@ -226,12 +239,45 @@ create_ca_if_needed() {
   must_not_overwrite "$ca_crt"
   must_not_overwrite "$ca_key"
 
-  log "==> Creating CA"
+  log "==> Creating CA (with proper v3 CA extensions)"
   openssl genrsa -out "$ca_key" 4096
   chmod 600 "$ca_key"
-  openssl req -x509 -new -nodes \
-    -key "$ca_key" -sha256 -days "$CA_DAYS" \
-    -out "$ca_crt" -subj "/CN=${CA_CN}"
+
+  # OpenSSL has become stricter about CA certificates. Ensure the CA includes
+  # basicConstraints=CA:TRUE and keyUsage=keyCertSign,cRLSign (critical).
+  if openssl req -help 2>&1 | grep -q -- '-addext'; then
+    openssl req -x509 -new \
+      -key "$ca_key" -sha256 -days "$CA_DAYS" \
+      -out "$ca_crt" -subj "/CN=${CA_CN}" \
+      -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -addext "subjectKeyIdentifier=hash" \
+      -addext "authorityKeyIdentifier=keyid:always,issuer"
+  else
+    # Fallback for older OpenSSL that lacks -addext.
+    local ca_cfg
+    ca_cfg="$(mktemp -t networktools-ca-XXXXXX.cnf)"
+    cat >"$ca_cfg" <<EOF
+[ req ]
+distinguished_name = dn
+x509_extensions = v3_ca
+prompt = no
+
+[ dn ]
+CN = ${CA_CN}
+
+[ v3_ca ]
+basicConstraints = critical,CA:TRUE,pathlen:0
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+EOF
+    openssl req -x509 -new \
+      -key "$ca_key" -sha256 -days "$CA_DAYS" \
+      -out "$ca_crt" -config "$ca_cfg"
+    rm -f "$ca_cfg"
+  fi
+
   chmod 644 "$ca_crt"
 }
 
@@ -245,19 +291,26 @@ main() {
 
   load_values_file
 
-  local project_root_real out_dir_real vault_cert_dir_real
+  local project_root_real out_dir_real vault_cert_dir_real fastapi_cert_dir_real
   project_root_real="$(realpath -m "$PROJECT_ROOT_DEFAULT")"
   out_dir_real="$(realpath -m "$OUT_DIR")"
   vault_cert_dir_real="$(realpath -m "$VAULT_CERT_DIR")"
+  fastapi_cert_dir_real="$(realpath -m "$FASTAPI_CERT_DIR")"
 
   case "$out_dir_real" in
     "$project_root_real"/*) ;;
     *) die "Refusing to write outside $project_root_real. OUT_DIR resolves to: $out_dir_real" ;;
   esac
 
+  case "$fastapi_cert_dir_real" in
+    "$project_root_real"/*) ;;
+    *) die "Refusing to write outside $project_root_real. FASTAPI_CERT_DIR resolves to: $fastapi_cert_dir_real" ;;
+  esac
+
   mkdir -p "$out_dir_real"
   chmod 700 "$out_dir_real" || true
   OUT_DIR="$out_dir_real"
+  FASTAPI_CERT_DIR="$fastapi_cert_dir_real"
 
   local ca_crt="${OUT_DIR}/ca.crt"
   local ca_key="${OUT_DIR}/ca.key"
@@ -335,6 +388,19 @@ if [[ "$SYNC_VAULT_CERTS" != "0" ]]; then
 else
   log "==> Vault cert sync disabled (--no-vault-sync)."
 fi
+
+# Sync CA cert into FastAPI build context so Dockerfile COPY succeeds when using a narrowed build context.
+if [[ "$SYNC_FASTAPI_CERTS" != "0" ]]; then
+  log "==> Syncing CA into FastAPI build context: ${FASTAPI_CERT_DIR}"
+  mkdir -p "$FASTAPI_CERT_DIR"
+  chmod 755 "$FASTAPI_CERT_DIR" || true
+
+  # CA cert only (NO private keys). This file is used by FastAPI/httpx to trust the local PKI.
+  install -m 0644 "$ca_crt" "$FASTAPI_CERT_DIR/networktools_ca.crt"
+else
+  log "==> FastAPI CA sync disabled (--no-fastapi-sync)."
+fi
+
 
   rm -f "$srv_csr" "$ext" || true
 
