@@ -521,6 +521,7 @@ services:
       - fastapi_vault_rendered:/run/vault:ro
       # TLS material (read-only)
       - ./backend/app/nginx/certs/ca.crt:/run/certs/networktools_ca.crt:ro
+      - ./container_data/logs/fastapi:/var/log/network_tools/fastapi
     environment:
       VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
       APP_MODULE: "app.main:app"
