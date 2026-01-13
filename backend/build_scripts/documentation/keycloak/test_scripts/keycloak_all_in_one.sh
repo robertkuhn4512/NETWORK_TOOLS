@@ -33,6 +33,13 @@
 #   bash $HOME/NETWORK_TOOLS/backend/build_scripts/documentation/keycloak/test_scripts/keycloak_all_in_one.sh token-cc \
 #     --kc-base https://auth.networkengineertools.com:8443 \
 #     --realm network_tools \
+#     --client-id networktools-automation \
+#     --client-secret 'VHQhQbiIcXGtdSdhVmKaVAbDOnBWhzj9' \
+#     --ca-bundle ./backend/app/fastapi/certs/networktools_ca.crt | jq .
+#
+#   bash $HOME/NETWORK_TOOLS/backend/build_scripts/documentation/keycloak/test_scripts/keycloak_all_in_one.sh token-cc \
+#     --kc-base https://auth.networkengineertools.com:8443 \
+#     --realm network_tools \
 #     --client-id fastapi-client \
 #     --client-secret 'fc7ZYdFnesHnFSB5O0Oi6ESD6xRv5253' \
 #     --ca-bundle ./backend/app/fastapi/certs/networktools_ca.crt | jq .
@@ -42,7 +49,7 @@
 #     --kc-base https://auth.networkengineertools.com:8443 \
 #     --realm network_tools \
 #     --client-id fastapi-client \
-#     --client-secret '***' \
+#     --client-secret 'fc7ZYdFnesHnFSB5O0Oi6ESD6xRv5253' \
 #     --ca-bundle ./backend/app/fastapi/certs/networktools_ca.crt | jq .
 #
 # 4) Token (password grant) for fastapi-user (DISCOURAGED; testing only):
@@ -50,9 +57,9 @@
 #     --kc-base https://auth.networkengineertools.com:8443 \
 #     --realm network_tools \
 #     --client-id fastapi-client \
-#     --client-secret '***' \
+#     --client-secret 'fc7ZYdFnesHnFSB5O0Oi6ESD6xRv5253' \
 #     --username fastapi-user \
-#     --password '***' \
+#     --password 'gQWw-xDJYinc53NJeL1iYcnk2clInmcSsyZ1B_ywWJE' \
 #     --ca-bundle ./backend/app/fastapi/certs/networktools_ca.crt | jq .
 #
 # 5) Device flow (recommended for CLI user login):
