@@ -11,6 +11,8 @@ name: network_tools
 volumes:
   postgres_data:
     name: network_tools_postgres_data
+  postgres_backups:
+    name: network_tools_postgres_backups
   postgres_certs:
     name: network_tools_postgres_certs
   postgres_vault_rendered:
@@ -25,6 +27,7 @@ volumes:
     name: network_tools_redis_data
   flower_data:
     name: network_tools_flower_data
+
 networks:
   db_net:
     driver: bridge
@@ -172,9 +175,9 @@ services:
                                                                                             # This should be populated in the environment file SERVER_1_FQDN_FULL="Your domain name here"
       VAULT_API_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_CLUSTER_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8201"
-      VAULT_LOG_LEVEL: "debug"                                                              # Used for debugging vault while you are testing. Comment out and rebuild with
+      #VAULT_LOG_LEVEL: "debug"                                                              # Used for debugging vault while you are testing. Comment out and rebuild with
                                                                                             # VAULT_LOG_LEVEL: "info" for production use
-      #VAULT_LOG_LEVEL: "info"
+      VAULT_LOG_LEVEL: "info"
       VAULT_RAFT_NODE_ID: "Node1"                                                           # If you ever change this and reboot a node in an existing cluster you will have issues
                                                                                             # So it's better to pick a name and keep it
     entrypoint: ["/bin/sh","-lc","exec vault server -config=/vault/config/config.hcl"]
@@ -397,6 +400,12 @@ services:
 
       # rendered secrets from vault agent
       - postgres_vault_rendered:/run/vault:ro
+
+      # Initial build for network_tools tables
+      - ./backend/app/postgres/init/20_network_tools_schema.sql:/docker-entrypoint-initdb.d/20_network_tools_schema.sql:ro
+
+      - ./container_data/postgres_primary:/var/lib/postgresql/data
+      - ./container_data/postgres_backups:/backups
     logging:
       driver: json-file
       options:

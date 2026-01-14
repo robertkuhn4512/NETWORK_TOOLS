@@ -38,7 +38,7 @@ fi
 : "${KC_PROXY_HEADERS:=xforwarded}"
 : "${KC_HEALTH_ENABLED:=true}"
 : "${KC_METRICS_ENABLED:=true}"
-: "${KC_DB_URL_PROPERTIES:=sslmode=disable}"
+: "${KC_DB_URL_PROPERTIES:=?sslmode=disable}"
 
 # If we're intentionally HTTP-only, strip any HTTPS material that would force Keycloak
 # to require cert/key files.
