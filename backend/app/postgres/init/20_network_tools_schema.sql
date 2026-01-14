@@ -1,6 +1,3 @@
--- Index column alignment pass generated on 2026-01-14 01:10:29Z
--- Purpose: ensure index column references match table definitions (e.g., timestamp -> datetimestamp, user -> username).
-
 -- Standardized index names generated on 2026-01-13 22:08:55Z
 -- Convention:
 --   Non-unique: idx_<table>__<col1>__[<col2>...]
@@ -761,16 +758,16 @@ CREATE TABLE IF NOT EXISTS discovered_device_configuration_profiles (
   datetimestamp timestamp,
   CONSTRAINT discovered_device_configuration_profiles__pk PRIMARY KEY (id)
 );
-COMMIT;
+
 -- -----------------------------
 -- INDEXES
 -- -----------------------------
 
-BEGIN;
-CREATE INDEX IF NOT EXISTS idx_app_backend_tracking__datetime ON app_backend_tracking (datetime);
+CREATE INDEX IF NOT EXISTS idx_app_backend_tracking__datetimestamp ON app_backend_tracking (datetimestamp);
 CREATE INDEX IF NOT EXISTS idx_app_backend_tracking__route ON app_backend_tracking (route);
 CREATE INDEX IF NOT EXISTS idx_app_frontend_tracking__username ON app_frontend_tracking (username);
-CREATE INDEX IF NOT EXISTS idx_app_frontend_tracking__route ON app_frontend_tracking (route);CREATE INDEX IF NOT EXISTS idx_app_frontend_tracking__datetimestamp ON app_frontend_tracking (datetimestamp);
+CREATE INDEX IF NOT EXISTS idx_app_frontend_tracking__route ON app_frontend_tracking (route);
+CREATE INDEX IF NOT EXISTS idx_app_frontend_tracking__datetimestamp ON app_frontend_tracking (datetimestamp);
 CREATE INDEX IF NOT EXISTS idx_archived_device_provisioning_repository__device_host_name ON archived_device_provisioning_repository (device_host_name);
 CREATE INDEX IF NOT EXISTS idx_archived_device_provisioning_repository__assigned_hub_id ON archived_device_provisioning_repository (assigned_hub_id);
 CREATE INDEX IF NOT EXISTS idx_archived_device_provisioning_repository__device_cl_e77e97bc ON archived_device_provisioning_repository (device_classification);
@@ -798,7 +795,7 @@ CREATE INDEX IF NOT EXISTS idx_device_backup_locations__device_name ON device_ba
 CREATE INDEX IF NOT EXISTS idx_device_backup_locations__ipv4_loopback ON device_backup_locations (ipv4_loopback);
 CREATE INDEX IF NOT EXISTS idx_device_backup_locations__ipv6_loopback ON device_backup_locations (ipv6_loopback);
 CREATE INDEX IF NOT EXISTS idx_device_backup_locations__device_type ON device_backup_locations (device_type);
-CREATE INDEX IF NOT EXISTS idx_device_backup_locations__date_time_saved ON device_backup_locations (date_time_saved);
+CREATE INDEX IF NOT EXISTS idx_device_backup_locations__datetimestamp ON device_backup_locations (datetimestamp);
 CREATE INDEX IF NOT EXISTS idx_device_backup_que__device_name ON device_backup_que (device_name);
 CREATE INDEX IF NOT EXISTS idx_device_backup_que__ipv6_loopback ON device_backup_que (ipv6_loopback);
 CREATE INDEX IF NOT EXISTS idx_device_backup_que__device_type ON device_backup_que (device_type);
@@ -828,10 +825,6 @@ CREATE INDEX IF NOT EXISTS idx_devices_no_profile__device_type ON devices_no_pro
 CREATE INDEX IF NOT EXISTS idx_devices_no_profile__chassis_model ON devices_no_profile (chassis_model);
 CREATE INDEX IF NOT EXISTS idx_devices_no_profile__os ON devices_no_profile (os);
 CREATE INDEX IF NOT EXISTS idx_devices_no_profile__version ON devices_no_profile (version);
-CREATE INDEX IF NOT EXISTS idx_devices_test__device_type ON devices_test (device_type);
-CREATE INDEX IF NOT EXISTS idx_devices_test__chassis_model ON devices_test (chassis_model);
-CREATE INDEX IF NOT EXISTS idx_devices_test__os ON devices_test (os);
-CREATE INDEX IF NOT EXISTS idx_devices_test__version ON devices_test (version);
 CREATE INDEX IF NOT EXISTS idx_hardware_inventory__device_name ON hardware_inventory (device_name);
 CREATE INDEX IF NOT EXISTS idx_hardware_inventory__chassis_model ON hardware_inventory (chassis_model);
 CREATE INDEX IF NOT EXISTS idx_hardware_inventory__ipv4_loopback ON hardware_inventory (ipv4_loopback);
@@ -905,14 +898,14 @@ CREATE INDEX IF NOT EXISTS idx_production_device_provisioning_repository__device
 CREATE INDEX IF NOT EXISTS idx_production_device_provisioning_repository__management_ip ON production_device_provisioning_repository (management_ip);
 CREATE INDEX IF NOT EXISTS idx_production_device_provisioning_repository__managem_f6b4c6a6 ON production_device_provisioning_repository (management_gateway);
 CREATE INDEX IF NOT EXISTS idx_production_device_provisioning_repository__datetimestamp ON production_device_provisioning_repository (datetimestamp);
-CREATE INDEX IF NOT EXISTS idx_reporting_cisco_api_cve_software__datetime_fetched ON reporting_cisco_api_cve_software (datetime_fetched);
-CREATE INDEX IF NOT EXISTS idx_reporting_cisco_api_eox__datetime_fetched ON reporting_cisco_api_eox (datetime_fetched);
+CREATE INDEX IF NOT EXISTS idx_reporting_cisco_api_cve_software__datetimestamp ON reporting_cisco_api_cve_software (datetimestamp);
+CREATE INDEX IF NOT EXISTS idx_reporting_cisco_api_eox__datetimestamp ON reporting_cisco_api_eox (datetimestamp);
 CREATE INDEX IF NOT EXISTS idx_site_location_information__location_name ON site_location_information (location_name);
 CREATE INDEX IF NOT EXISTS idx_site_location_information__street_address ON site_location_information (street_address);
 CREATE INDEX IF NOT EXISTS idx_site_location_information__city ON site_location_information (city);
 CREATE INDEX IF NOT EXISTS idx_site_location_information__postal_code ON site_location_information (postal_code);
 CREATE INDEX IF NOT EXISTS idx_site_location_information__country ON site_location_information (country);
-CREATE INDEX IF NOT EXISTS idx_site_location_information__datetime ON site_location_information (datetime);
+CREATE INDEX IF NOT EXISTS idx_site_location_information__datetimestamp ON site_location_information (datetimestamp);
 CREATE INDEX IF NOT EXISTS idx_templates_active__attached_to_device ON templates_active (attached_to_device);
 CREATE INDEX IF NOT EXISTS idx_templates_active__function ON templates_active (function);
 CREATE INDEX IF NOT EXISTS idx_templates_deleted__template_name ON templates_deleted (template_name);
@@ -949,7 +942,7 @@ CREATE INDEX IF NOT EXISTS idx_software_transfer_status_que_history__file_name O
 CREATE INDEX IF NOT EXISTS idx_switch_power_consumption__ipv4_loopback ON switch_power_consumption (ipv4_loopback);
 CREATE INDEX IF NOT EXISTS idx_switch_power_consumption__device_name ON switch_power_consumption (device_name);
 CREATE INDEX IF NOT EXISTS idx_switch_power_consumption__chassis_model ON switch_power_consumption (chassis_model);
-CREATE INDEX IF NOT EXISTS idx_switch_power_consumption__datetime_last_reached ON switch_power_consumption (datetime_last_reached);
+CREATE INDEX IF NOT EXISTS idx_switch_power_consumption__datetimestamp ON switch_power_consumption (datetimestamp);
 CREATE INDEX IF NOT EXISTS idx_device_mac_table_data__ipv4_loopback ON device_mac_table_data (ipv4_loopback);
 CREATE INDEX IF NOT EXISTS idx_device_mac_table_data__device_name ON device_mac_table_data (device_name);
 CREATE INDEX IF NOT EXISTS idx_device_mac_table_data__information_type ON device_mac_table_data (information_type);
@@ -968,7 +961,7 @@ CREATE INDEX IF NOT EXISTS idx_ip_arp_table__interface_description ON ip_arp_tab
 CREATE INDEX IF NOT EXISTS idx_ip_arp_table__datetimestamp ON ip_arp_table (datetimestamp);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__hub ON wiring_database (hub);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__port ON wiring_database (port);
-CREATE INDEX IF NOT EXISTS idx_wiring_database__type ON wiring_database (type);
+CREATE INDEX IF NOT EXISTS idx_wiring_database__port_type ON wiring_database (port_type);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__department ON wiring_database (department);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__originating_building ON wiring_database (originating_building);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__originating_room ON wiring_database (originating_room);
@@ -980,7 +973,6 @@ CREATE INDEX IF NOT EXISTS idx_wiring_database__station_pair ON wiring_database 
 CREATE INDEX IF NOT EXISTS idx_wiring_database__install_order_number ON wiring_database (install_order_number);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__change_order ON wiring_database (change_order);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__technician ON wiring_database (technician);
-CREATE INDEX IF NOT EXISTS idx_wiring_database__date ON wiring_database (date);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__datetimestamp ON wiring_database (datetimestamp);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__requester ON wiring_database (requester);
 CREATE INDEX IF NOT EXISTS idx_wiring_database__res_hall_service_number ON wiring_database (res_hall_service_number);
