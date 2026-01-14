@@ -1,0 +1,5 @@
+{
+  "ipv4_address": "10.0.0.101/32",
+  "task": "ssh",
+  "bypass_icmp": true
+}

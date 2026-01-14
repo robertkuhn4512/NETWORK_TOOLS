@@ -580,6 +580,9 @@ services:
     image: network_tools_fastapi:latest
     container_name: celery_worker
     restart: unless-stopped
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.60
     depends_on:
       vault_agent_fastapi:
         condition: service_healthy
@@ -587,8 +590,6 @@ services:
         condition: service_healthy
       postgres_primary:
         condition: service_started
-    networks:
-      db_net:
     volumes:
       - fastapi_vault_rendered:/run/vault:ro
     environment:
