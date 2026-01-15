@@ -29,6 +29,18 @@
 #     --payload-file "./backend/build_scripts/documentation/fastapi/test_scripts/test_payloads/device_discovery_start_device_discovery.json" \
 #     --ca-bundle "./backend/app/fastapi/certs/networktools_ca.crt"
 #
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 # Notes:
 # - Uses Keycloak Client Credentials Grant to obtain an access token, then calls
 #   a FastAPI endpoint with Authorization: Bearer <token>.

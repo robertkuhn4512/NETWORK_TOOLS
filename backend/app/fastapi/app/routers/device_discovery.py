@@ -15,6 +15,7 @@ Regular includes / imports etc.
 """
 from uuid import uuid4
 
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel, Field
 from app.security.auth import UserContext, get_current_user, require_roles
@@ -26,7 +27,8 @@ from app.celery_app import celery_app
 
 from app.shared_functions.helpers.helpers import (
     user_display,
-    scrub_secrets
+    scrub_secrets,
+    _insert_job_row_queued
 )
 
 import logging
@@ -62,144 +64,68 @@ backend/build_scripts/documentation/fastapi/test_scripts/test_fastapi_keycloak_c
 
 """
 
-@router.post("/start_device_discovery", summary="Initiate a device discovery job. ", status_code=200)
-async def discover_device_ipv4(
+"""
+Utility endpoints
+"""
+@router.post("/start_device_discovery", summary="Enqueue a device discovery job", status_code=200)
+async def start_device_discovery(
     payload: DiscoveryTarget,
     request: Request,
     user: UserContext = Depends(get_current_user),
 ):
-    #Hashing out for now - using the database.
-    #logger.info(
-    #    "device_discovery requested user=%s task=%s target=%s path=%s",
-    #    getattr(user, "preferred_username", None) or getattr(user, "username", None) or getattr(user, "sub", "unknown"),
-    #    payload.task,
-    #    payload.ipv4_address,
-    #    request.url.path,
-    #)
-
-    """
-    Only user / service accounts pass when their account has any of the
-    selected roles assigned to their account in keycloak
-    
-    fastapi_client          :: Role assigned to the account setup for the service account in fastapi
-    device_discovery_user   :: Role assigned to a service / user account given to a user account
-    """
-
+    # roles (ANY-of)
     required = {"fastapi_client", "device_discovery_user"}
-
     if not required.intersection(set(user.roles or [])):
         raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Insufficient role")
 
-    # Validate submitted data
-    proceed = False
-    if payload.ipv4_address is not None:
-        try:
-            ipaddress.ip_network(payload.ipv4_address)
-            target_ip = payload.ipv4_address.split('/')[0]
+    if not payload.ipv4_address:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="ipv4_address is required")
 
-            db_log = await insert_app_backend_tracking(
-                database=database,
-                route=request.url.path,
-                information={
-                    "event": "device_discovery_start - Success - Valid Target IPv4 Address",
-                    "requested_by": getattr(user, "preferred_username", None) or getattr(user, "username", None) or getattr(user, "sub", "unknown"),
-                    "azp": getattr(user, "azp", None),
-                    "roles": getattr(user, "roles", None),
-                    "payload": scrub_secrets(payload.model_dump()),
-                    "target_ip": target_ip,
-                },
-            )
+    # normalize "10.0.0.1/32" -> "10.0.0.1"
+    try:
+        ipaddress.ip_network(payload.ipv4_address)
+        target_ip = payload.ipv4_address.split("/")[0]
+    except ValueError:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="Invalid ipv4_address")
 
-            # Good to proceed to the next steps.
-            proceed = True
-
-            if "error" in db_log:
-                logger.info(
-                    "device_discovery database_error user=%s task=%s target=%s path=%s",
-                    getattr(user, "preferred_username", None) or getattr(user, "username", None) or getattr(user, "sub", "unknown"),
-                    payload.task,
-                    payload.ipv4_address,
-                    request.url.path,
-                )
-                return {"detail": {"status": "queued", "db_log_error": db_log["error"]}}
-
-            return {
-                    "event": "device_discovery_start - Success - Valid Target IPv4 Address",
-                    "requested_by": getattr(user, "preferred_username", None) or getattr(user, "username", None) or getattr(user, "sub", "unknown"),
-                    "azp": getattr(user, "azp", None),
-                    "roles": getattr(user, "roles", None),
-                    "payload": scrub_secrets(payload.model_dump()),
-                    "target_ip": target_ip,
-                }
-
-        except ValueError as e:
-            db_log = await insert_app_backend_tracking(
-                database=database,
-                route=request.url.path,
-                information={
-                    "event": "device_discovery_start - Failed - Invalid ipv4_address",
-                    "requested_by": getattr(user, "preferred_username", None) or getattr(user, "username", None) or getattr(user, "sub", "unknown"),
-                    "azp": getattr(user, "azp", None),
-                    "roles": getattr(user, "roles", None),
-                    "payload": scrub_secrets(payload.model_dump()),
-                },
-            )
-
-            if "error" in db_log:
-                logger.info(
-                    "device_discovery database_error user=%s task=%s target=%s path=%s",
-                    getattr(user, "preferred_username", None) or getattr(user, "username", None) or getattr(user, "sub", "unknown"),
-                    payload.task,
-                    payload.ipv4_address,
-                    request.url.path,
-                )
-                return {"detail": {"status": "queued", "db_log_error": db_log["error"]}}
-
-            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="Invalid data submitted (ipv4_address)")
-
-
-    requested_by = user_display(user)
-
-    db_log = await insert_app_backend_tracking(
-        database=database,
-        route=request.url.path,
-        information={
-            "event": "device_discovery_start",
-            "requested_by": getattr(user, "preferred_username", None) or getattr(user, "username", None) or getattr(user, "sub", "unknown"),
-            "azp": getattr(user, "azp", None),
-            "roles": getattr(user, "roles", None),
-            "payload": scrub_secrets(payload.model_dump()),
-        },
-    )
-
-    if "error" in db_log:
-        return {"detail": {"status": "queued", "db_log_error": db_log["error"]}}
-
-    return {
-        "detail": {
-            "requested_by": user.username,
-            "client_id": user.azp,
-            "payload": payload.model_dump(),
-        }
-    }
-
-@router.post("/test_celery", summary="Enqueue a test Celery task.", status_code=200)
-async def test_celery(
-    request: Request,
-    user: UserContext = Depends(get_current_user),
-):
     job_id = str(uuid4())
+    requested_by = user_display(user)
 
     meta = {
         "job_id": job_id,
         "route": str(request.url.path),
-        "requested_by": user.username,
+        "requested_by": requested_by,
         "azp": getattr(user, "azp", None),
         "roles": user.roles or [],
+        "target_ip": target_ip,
+        "payload": scrub_secrets(payload.model_dump()),
     }
 
-    async_result = celery_app.send_task("tracking.test", args=[meta])
+    # enqueue
+    async_result = celery_app.send_task("device_discovery.start_device_discovery", args=[meta])
+    celery_task_id = async_result.id
 
-    logger.info("enqueued tracking.test job_id=%s celery_task_id=%s", job_id, async_result.id)
+    # create job row immediately (so /celery_jobs/{job_id} works right away)
+    await _insert_job_row_queued(
+        job_id=job_id,
+        task_id=celery_task_id,
+        job_name="device_discovery.start_device_discovery",
+        request_payload=meta,
+    )
 
-    return {"detail": {"job_id": job_id, "celery_task_id": async_result.id}}
+    # optional: log event in backend tracking table too
+    await insert_app_backend_tracking(
+        database=database,
+        route=request.url.path,
+        information={
+            "event": "start_device_discovery_enqueued",
+            "job_id": job_id,
+            "celery_task_id": celery_task_id,
+            "requested_by": requested_by,
+            "azp": getattr(user, "azp", None),
+            "roles": user.roles or [],
+            "target_ip": target_ip,
+        },
+    )
+
+    return {"detail": {"job_id": job_id, "celery_task_id": celery_task_id, "status": "QUEUED"}}

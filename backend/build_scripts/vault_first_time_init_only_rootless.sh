@@ -1036,6 +1036,17 @@ path "${kv_prefix}/fastapi*" {
 path "${FASTAPI_KV_MOUNT}/metadata/fastapi*" {
   capabilities = ["list"]
 }
+
+# Allow read access to the 'device_login_profiles' secret
+path "${FASTAPI_KV_MOUNT}/data/device_login_profiles" {
+    capabilities = ["read"]
+}
+
+# Allow listing of secrets within the 'app_network_tools_secrets' mount for UI/CLI navigation
+path "${FASTAPI_KV_MOUNT}/metadata/device_login_profiles/*" {
+    capabilities = ["list"]
+}
+
 HCL
 )"
 

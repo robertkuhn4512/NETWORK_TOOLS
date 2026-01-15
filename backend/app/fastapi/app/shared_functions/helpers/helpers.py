@@ -4,6 +4,7 @@ import json
 import os
 from typing import Any
 from urllib.parse import quote
+from app.database import database
 
 """
 Sanitation helper functions
@@ -253,4 +254,41 @@ def build_postgres_async_dsn() -> str:
 
     return f"postgresql+asyncpg://{user}:{pw}@{host}:{port}/{db_enc}"
 
-
+async def _insert_job_row_queued(*, job_id: str, task_id: str, job_name: str, request_payload: dict) -> None:
+    """
+    Create the row the UI reads from app_tracking_celery (your celery_jobs router SELECTs from it).
+    """
+    sql = """
+    INSERT INTO app_tracking_celery (
+        job_id, 
+        task_id, 
+        job_name, 
+        status,
+        request, 
+        created_at, 
+        updated_at
+    )
+    VALUES (
+        :job_id, 
+        :task_id, 
+        :job_name, 
+        :status,
+        CAST(:request AS jsonb), now(), now()
+    )
+    ON CONFLICT (job_id) DO UPDATE
+    SET task_id = EXCLUDED.task_id,
+        job_name = EXCLUDED.job_name,
+        status  = EXCLUDED.status,
+        request = EXCLUDED.request,
+        updated_at = now()
+    """
+    await database.execute(
+        sql,
+        {
+            "job_id": job_id,
+            "task_id": task_id,
+            "job_name": job_name,
+            "status": "QUEUED",
+            "request": json.dumps(request_payload),
+        },
+    )

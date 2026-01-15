@@ -24,6 +24,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.routers.auth_test import router as auth_test_router
 from app.routers.device_discovery import router as device_discovery_router
+from app.routers.celery_jobs import router as celery_jobs_router
 
 from app.shared_functions.helpers.logging_config import setup_logging, load_env_from_vault_json
 from app.database import connect_db, disconnect_db
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     # -------------------------
     app.include_router(auth_test_router)
     app.include_router(device_discovery_router)
+    app.include_router(celery_jobs_router)
 
     @app.on_event("startup")
     async def on_startup():

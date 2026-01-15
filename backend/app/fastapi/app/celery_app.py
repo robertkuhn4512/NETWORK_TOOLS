@@ -21,7 +21,9 @@ celery_app = Celery(
     "network_tools",
     broker=BROKER_URL,
     backend=RESULT_BACKEND,
-    include=["app.tasks"],
+    include=[
+        "app.tasks"
+    ],
 )
 
 celery_app.conf.update(

@@ -160,32 +160,6 @@ FASTAPI_DB_USERNAME="network_tools_fastapi"
 FASTAPI_DB_PASSWORD=""
 FASTAPI_DB_SCHEMA="public"
 
-# FastAPI runtime / auth / logging (stored in Vault under fastapi_secrets)
-# Note: These are non-secret config defaults. Override via env/.env if desired.
-APP_ENV="${APP_ENV:-}"
-
-CORS_ALLOW_CREDENTIALS="${CORS_ALLOW_CREDENTIALS:-}"
-CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS:-}"
-# Regex as a literal string; jq will escape backslashes as needed in JSON output.
-CORS_ALLOW_ORIGIN_REGEX="${CORS_ALLOW_ORIGIN_REGEX:-}"
-
-FASTAPI_ALLOWED_AZP="${FASTAPI_ALLOWED_AZP:-}"
-FASTAPI_VERIFY_AUDIENCE="${FASTAPI_VERIFY_AUDIENCE:-}"
-
-KEYCLOAK_BASE_URL="${KEYCLOAK_BASE_URL:-}"
-KEYCLOAK_REALM="${KEYCLOAK_REALM:-}"
-# Optional; only required if you choose token introspection instead of JWT validation.
-KEYCLOAK_INTROSPECTION_CLIENT_ID="${KEYCLOAK_INTROSPECTION_CLIENT_ID:-}"
-KEYCLOAK_INTROSPECTION_CLIENT_SECRET="${KEYCLOAK_INTROSPECTION_CLIENT_SECRET:-}"
-
-LOG_DIR="${LOG_DIR:-}"
-LOG_FILE="${LOG_FILE:-}"
-LOG_LEVEL="${LOG_LEVEL:-}"
-LOG_TO_STDOUT="${LOG_TO_STDOUT:-}"
-
-TRUSTED_HOSTS="${TRUSTED_HOSTS:-}"
-
-
 
 # Redis / Celery (FastAPI background jobs)
 INCLUDE_REDIS=1
@@ -666,48 +640,6 @@ load_from_local_env_if_present() {
     FASTAPI_DB_USERNAME="${fa_user}"
     FASTAPI_DB_PASSWORD="${fa_pass}"
     [[ -n "${fa_schema}" ]] && FASTAPI_DB_SCHEMA="${fa_schema}"
-
-  # FastAPI runtime/auth/logging (optional)
-  local fa_app_env fa_cors_creds fa_cors_origins fa_cors_regex fa_allowed_azp fa_verify_aud
-  local fa_kc_base_url fa_kc_realm fa_kc_introspect_id fa_kc_introspect_secret
-  local fa_log_dir fa_log_file fa_log_level fa_log_to_stdout fa_trusted_hosts
-
-  fa_app_env="$(load_env_value "${src}" "APP_ENV")"
-  fa_cors_creds="$(load_env_value "${src}" "CORS_ALLOW_CREDENTIALS")"
-  fa_cors_origins="$(load_env_value "${src}" "CORS_ALLOW_ORIGINS")"
-  fa_cors_regex="$(load_env_value "${src}" "CORS_ALLOW_ORIGIN_REGEX")"
-  fa_allowed_azp="$(load_env_value "${src}" "FASTAPI_ALLOWED_AZP")"
-  fa_verify_aud="$(load_env_value "${src}" "FASTAPI_VERIFY_AUDIENCE")"
-
-  fa_kc_base_url="$(load_env_value "${src}" "KEYCLOAK_BASE_URL")"
-  fa_kc_realm="$(load_env_value "${src}" "KEYCLOAK_REALM")"
-  fa_kc_introspect_id="$(load_env_value "${src}" "KEYCLOAK_INTROSPECTION_CLIENT_ID")"
-  fa_kc_introspect_secret="$(load_env_value "${src}" "KEYCLOAK_INTROSPECTION_CLIENT_SECRET")"
-
-  fa_log_dir="$(load_env_value "${src}" "LOG_DIR")"
-  fa_log_file="$(load_env_value "${src}" "LOG_FILE")"
-  fa_log_level="$(load_env_value "${src}" "LOG_LEVEL")"
-  fa_log_to_stdout="$(load_env_value "${src}" "LOG_TO_STDOUT")"
-  fa_trusted_hosts="$(load_env_value "${src}" "TRUSTED_HOSTS")"
-
-  [[ -n "${fa_app_env}" ]] && APP_ENV="${fa_app_env}"
-  [[ -n "${fa_cors_creds}" ]] && CORS_ALLOW_CREDENTIALS="${fa_cors_creds}"
-  [[ -n "${fa_cors_origins}" ]] && CORS_ALLOW_ORIGINS="${fa_cors_origins}"
-  [[ -n "${fa_cors_regex}" ]] && CORS_ALLOW_ORIGIN_REGEX="${fa_cors_regex}"
-  [[ -n "${fa_allowed_azp}" ]] && FASTAPI_ALLOWED_AZP="${fa_allowed_azp}"
-  [[ -n "${fa_verify_aud}" ]] && FASTAPI_VERIFY_AUDIENCE="${fa_verify_aud}"
-
-  [[ -n "${fa_kc_base_url}" ]] && KEYCLOAK_BASE_URL="${fa_kc_base_url}"
-  [[ -n "${fa_kc_realm}" ]] && KEYCLOAK_REALM="${fa_kc_realm}"
-  # These may intentionally be empty; only override if present.
-  [[ -n "${fa_kc_introspect_id}" ]] && KEYCLOAK_INTROSPECTION_CLIENT_ID="${fa_kc_introspect_id}"
-  [[ -n "${fa_kc_introspect_secret}" ]] && KEYCLOAK_INTROSPECTION_CLIENT_SECRET="${fa_kc_introspect_secret}"
-
-  [[ -n "${fa_log_dir}" ]] && LOG_DIR="${fa_log_dir}"
-  [[ -n "${fa_log_file}" ]] && LOG_FILE="${fa_log_file}"
-  [[ -n "${fa_log_level}" ]] && LOG_LEVEL="${fa_log_level}"
-  [[ -n "${fa_log_to_stdout}" ]] && LOG_TO_STDOUT="${fa_log_to_stdout}"
-  [[ -n "${fa_trusted_hosts}" ]] && TRUSTED_HOSTS="${fa_trusted_hosts}"
   fi
 
   # Redis / Celery (optional)
@@ -894,117 +826,6 @@ vault_kv2_get_data_json() {
   echo "${resp}" | jq -e '.data.data' >/dev/null 2>&1 || return 2
   echo "${resp}" | jq -c '.data.data'
 }
-
-ensure_fastapi_secrets_complete_in_vault() {
-  # Non-destructive: only fills keys that are missing or empty.
-  # Uses Vault KV v2 write to create a new version containing the existing keys plus defaults.
-  [[ "${INCLUDE_FASTAPI}" -eq 1 ]] || return 0
-
-  vault_token_acquire_if_needed || {
-    warn "Skipping fastapi_secrets convergence: VAULT_TOKEN not available"
-    return 0
-  }
-
-  need_cmd jq
-
-  local fastapi_path existing desired payload
-  fastapi_path="$(prefixed_path "fastapi_secrets")"
-
-  existing="$(vault_kv2_get_data_json "${VAULT_MOUNT}" "${fastapi_path}" 2>/dev/null || echo '{}')"
-  # Defensive: if Vault returns non-object, treat as empty.
-  echo "${existing}" | jq -e 'type=="object"' >/dev/null 2>&1 || existing='{}'
-
-  desired="$(jq -n \
-    --argjson existing "${existing}" \
-    --arg FASTAPI_DB_URL_HOST "${FASTAPI_DB_URL_HOST}" \
-    --arg FASTAPI_DB_URL_PORT "${FASTAPI_DB_URL_PORT}" \
-    --arg FASTAPI_DB_URL_DATABASE "${FASTAPI_DB_URL_DATABASE}" \
-    --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
-    --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
-    --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
-    --arg APP_ENV "${APP_ENV}" \
-    --arg CORS_ALLOW_CREDENTIALS "${CORS_ALLOW_CREDENTIALS}" \
-    --arg CORS_ALLOW_ORIGINS "${CORS_ALLOW_ORIGINS}" \
-    --arg CORS_ALLOW_ORIGIN_REGEX "${CORS_ALLOW_ORIGIN_REGEX}" \
-    --arg FASTAPI_ALLOWED_AZP "${FASTAPI_ALLOWED_AZP}" \
-    --arg FASTAPI_VERIFY_AUDIENCE "${FASTAPI_VERIFY_AUDIENCE}" \
-    --arg KEYCLOAK_BASE_URL "${KEYCLOAK_BASE_URL}" \
-    --arg KEYCLOAK_REALM "${KEYCLOAK_REALM}" \
-    --arg KEYCLOAK_INTROSPECTION_CLIENT_ID "${KEYCLOAK_INTROSPECTION_CLIENT_ID}" \
-    --arg KEYCLOAK_INTROSPECTION_CLIENT_SECRET "${KEYCLOAK_INTROSPECTION_CLIENT_SECRET}" \
-    --arg LOG_DIR "${LOG_DIR}" \
-    --arg LOG_FILE "${LOG_FILE}" \
-    --arg LOG_LEVEL "${LOG_LEVEL}" \
-    --arg LOG_TO_STDOUT "${LOG_TO_STDOUT}" \
-    --arg TRUSTED_HOSTS "${TRUSTED_HOSTS}" \
-    --arg REDIS_HOST "${REDIS_HOST}" \
-    --arg REDIS_PORT "${REDIS_PORT}" \
-    --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
-    --arg CELERY_BROKER_DB "${CELERY_BROKER_DB}" \
-    --arg CELERY_RESULT_DB "${CELERY_RESULT_DB}" \
-    --arg CELERY_BROKER_URL "${CELERY_BROKER_URL}" \
-    --arg CELERY_RESULT_BACKEND "${CELERY_RESULT_BACKEND}" \
-    --arg INCLUDE_REDIS "${INCLUDE_REDIS}" \
-    --arg INCLUDE_CELERY "${INCLUDE_CELERY}" \
-    '
-    def missing($v):
-      ($v == null)
-      or ($v | type == "string" and ($v | length) == 0);
-
-    ($existing
-      | .FASTAPI_DB_URL_HOST = (if missing(.FASTAPI_DB_URL_HOST) then $FASTAPI_DB_URL_HOST else .FASTAPI_DB_URL_HOST end)
-      | .FASTAPI_DB_URL_PORT = (if missing(.FASTAPI_DB_URL_PORT) then $FASTAPI_DB_URL_PORT else .FASTAPI_DB_URL_PORT end)
-      | .FASTAPI_DB_URL_DATABASE = (if missing(.FASTAPI_DB_URL_DATABASE) then $FASTAPI_DB_URL_DATABASE else .FASTAPI_DB_URL_DATABASE end)
-      | .FASTAPI_DB_USERNAME = (if missing(.FASTAPI_DB_USERNAME) then $FASTAPI_DB_USERNAME else .FASTAPI_DB_USERNAME end)
-      | .FASTAPI_DB_PASSWORD = (if missing(.FASTAPI_DB_PASSWORD) then $FASTAPI_DB_PASSWORD else .FASTAPI_DB_PASSWORD end)
-      | .FASTAPI_DB_SCHEMA = (if missing(.FASTAPI_DB_SCHEMA) then $FASTAPI_DB_SCHEMA else .FASTAPI_DB_SCHEMA end)
-
-      | .APP_ENV = (if missing(.APP_ENV) then $APP_ENV else .APP_ENV end)
-      | .CORS_ALLOW_CREDENTIALS = (if missing(.CORS_ALLOW_CREDENTIALS) then $CORS_ALLOW_CREDENTIALS else .CORS_ALLOW_CREDENTIALS end)
-      | .CORS_ALLOW_ORIGINS = (if missing(.CORS_ALLOW_ORIGINS) then $CORS_ALLOW_ORIGINS else .CORS_ALLOW_ORIGINS end)
-      | .CORS_ALLOW_ORIGIN_REGEX = (if missing(.CORS_ALLOW_ORIGIN_REGEX) then $CORS_ALLOW_ORIGIN_REGEX else .CORS_ALLOW_ORIGIN_REGEX end)
-      | .FASTAPI_ALLOWED_AZP = (if missing(.FASTAPI_ALLOWED_AZP) then $FASTAPI_ALLOWED_AZP else .FASTAPI_ALLOWED_AZP end)
-      | .FASTAPI_VERIFY_AUDIENCE = (if missing(.FASTAPI_VERIFY_AUDIENCE) then $FASTAPI_VERIFY_AUDIENCE else .FASTAPI_VERIFY_AUDIENCE end)
-
-      | .KEYCLOAK_BASE_URL = (if missing(.KEYCLOAK_BASE_URL) then $KEYCLOAK_BASE_URL else .KEYCLOAK_BASE_URL end)
-      | .KEYCLOAK_REALM = (if missing(.KEYCLOAK_REALM) then $KEYCLOAK_REALM else .KEYCLOAK_REALM end)
-      | .KEYCLOAK_INTROSPECTION_CLIENT_ID = (if .KEYCLOAK_INTROSPECTION_CLIENT_ID == null then $KEYCLOAK_INTROSPECTION_CLIENT_ID else .KEYCLOAK_INTROSPECTION_CLIENT_ID end)
-      | .KEYCLOAK_INTROSPECTION_CLIENT_SECRET = (if .KEYCLOAK_INTROSPECTION_CLIENT_SECRET == null then $KEYCLOAK_INTROSPECTION_CLIENT_SECRET else .KEYCLOAK_INTROSPECTION_CLIENT_SECRET end)
-
-      | .LOG_DIR = (if missing(.LOG_DIR) then $LOG_DIR else .LOG_DIR end)
-      | .LOG_FILE = (if missing(.LOG_FILE) then $LOG_FILE else .LOG_FILE end)
-      | .LOG_LEVEL = (if missing(.LOG_LEVEL) then $LOG_LEVEL else .LOG_LEVEL end)
-      | .LOG_TO_STDOUT = (if missing(.LOG_TO_STDOUT) then $LOG_TO_STDOUT else .LOG_TO_STDOUT end)
-      | .TRUSTED_HOSTS = (if missing(.TRUSTED_HOSTS) then $TRUSTED_HOSTS else .TRUSTED_HOSTS end)
-
-      | (if $INCLUDE_REDIS == "1" then
-            .REDIS_HOST = (if missing(.REDIS_HOST) then $REDIS_HOST else .REDIS_HOST end)
-          | .REDIS_PORT = (if missing(.REDIS_PORT) then $REDIS_PORT else .REDIS_PORT end)
-          | .REDIS_PASSWORD = (if missing(.REDIS_PASSWORD) then $REDIS_PASSWORD else .REDIS_PASSWORD end)
-        else . end)
-
-      | (if $INCLUDE_CELERY == "1" then
-            .CELERY_BROKER_DB = (if missing(.CELERY_BROKER_DB) then $CELERY_BROKER_DB else .CELERY_BROKER_DB end)
-          | .CELERY_RESULT_DB = (if missing(.CELERY_RESULT_DB) then $CELERY_RESULT_DB else .CELERY_RESULT_DB end)
-          | .CELERY_BROKER_URL = (if missing(.CELERY_BROKER_URL) then $CELERY_BROKER_URL else .CELERY_BROKER_URL end)
-          | .CELERY_RESULT_BACKEND = (if missing(.CELERY_RESULT_BACKEND) then $CELERY_RESULT_BACKEND else .CELERY_RESULT_BACKEND end)
-        else . end)
-    )
-  ')" || return 1
-
-  # No-op if nothing would change.
-  if jq -e --argjson a "${existing}" --argjson b "${desired}" '$a == $b' >/dev/null 2>&1; then
-    log "Vault fastapi_secrets already contains all required keys: ${VAULT_MOUNT}/${fastapi_path}"
-    return 0
-  fi
-
-  payload="$(jq -cn --argjson data "${desired}" '{data: $data}')" || return 1
-
-  log "Converging Vault secret (fill missing keys only): ${VAULT_MOUNT}/${fastapi_path}"
-  vault_curl "POST" "${VAULT_MOUNT}/data/${fastapi_path}" "${payload}" >/dev/null || return 1
-  return 0
-}
-
 
 vault_try_load_from_vault() {
   # Only used in generate mode when prefer vault and token is available.
@@ -1334,23 +1155,6 @@ FASTAPI_DB_USERNAME=${FASTAPI_DB_USERNAME}
 FASTAPI_DB_PASSWORD=${FASTAPI_DB_PASSWORD}
 FASTAPI_DB_SCHEMA=${FASTAPI_DB_SCHEMA}
 
-# FastAPI runtime / auth / logging
-APP_ENV=${APP_ENV}
-CORS_ALLOW_CREDENTIALS=${CORS_ALLOW_CREDENTIALS}
-CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS}
-CORS_ALLOW_ORIGIN_REGEX=${CORS_ALLOW_ORIGIN_REGEX}
-FASTAPI_ALLOWED_AZP=${FASTAPI_ALLOWED_AZP}
-FASTAPI_VERIFY_AUDIENCE=${FASTAPI_VERIFY_AUDIENCE}
-KEYCLOAK_BASE_URL=${KEYCLOAK_BASE_URL}
-KEYCLOAK_REALM=${KEYCLOAK_REALM}
-KEYCLOAK_INTROSPECTION_CLIENT_ID=${KEYCLOAK_INTROSPECTION_CLIENT_ID}
-KEYCLOAK_INTROSPECTION_CLIENT_SECRET=${KEYCLOAK_INTROSPECTION_CLIENT_SECRET}
-LOG_DIR=${LOG_DIR}
-LOG_FILE=${LOG_FILE}
-LOG_LEVEL=${LOG_LEVEL}
-LOG_TO_STDOUT=${LOG_TO_STDOUT}
-TRUSTED_HOSTS=${TRUSTED_HOSTS}
-
 # Redis / Celery
 INCLUDE_REDIS=${INCLUDE_REDIS}
 INCLUDE_CELERY=${INCLUDE_CELERY}
@@ -1413,8 +1217,6 @@ fi
 export INCLUDE_FASTAPI INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
 
 jq -n \
-    --arg INCLUDE_REDIS "$INCLUDE_REDIS" \
-    --arg INCLUDE_CELERY "$INCLUDE_CELERY" \
   --arg generated_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
   --arg vault_mount "${VAULT_MOUNT}" \
   --arg vault_prefix "${VAULT_PREFIX}" \
@@ -1429,21 +1231,6 @@ jq -n \
   --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
   --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
   --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
-  --arg APP_ENV "${APP_ENV}" \
-  --arg CORS_ALLOW_CREDENTIALS "${CORS_ALLOW_CREDENTIALS}" \
-  --arg CORS_ALLOW_ORIGINS "${CORS_ALLOW_ORIGINS}" \
-  --arg CORS_ALLOW_ORIGIN_REGEX "${CORS_ALLOW_ORIGIN_REGEX}" \
-  --arg FASTAPI_ALLOWED_AZP "${FASTAPI_ALLOWED_AZP}" \
-  --arg FASTAPI_VERIFY_AUDIENCE "${FASTAPI_VERIFY_AUDIENCE}" \
-  --arg KEYCLOAK_BASE_URL "${KEYCLOAK_BASE_URL}" \
-  --arg KEYCLOAK_REALM "${KEYCLOAK_REALM}" \
-  --arg KEYCLOAK_INTROSPECTION_CLIENT_ID "${KEYCLOAK_INTROSPECTION_CLIENT_ID}" \
-  --arg KEYCLOAK_INTROSPECTION_CLIENT_SECRET "${KEYCLOAK_INTROSPECTION_CLIENT_SECRET}" \
-  --arg LOG_DIR "${LOG_DIR}" \
-  --arg LOG_FILE "${LOG_FILE}" \
-  --arg LOG_LEVEL "${LOG_LEVEL}" \
-  --arg LOG_TO_STDOUT "${LOG_TO_STDOUT}" \
-  --arg TRUSTED_HOSTS "${TRUSTED_HOSTS}" \
   --arg REDIS_HOST "${REDIS_HOST}" \
   --arg REDIS_PORT "${REDIS_PORT}" \
   --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
@@ -1490,29 +1277,14 @@ jq -n \
           FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
           FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
           FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
-          FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA,
-          APP_ENV: $APP_ENV,
-          CORS_ALLOW_CREDENTIALS: $CORS_ALLOW_CREDENTIALS,
-          CORS_ALLOW_ORIGINS: $CORS_ALLOW_ORIGINS,
-          CORS_ALLOW_ORIGIN_REGEX: $CORS_ALLOW_ORIGIN_REGEX,
-          FASTAPI_ALLOWED_AZP: $FASTAPI_ALLOWED_AZP,
-          FASTAPI_VERIFY_AUDIENCE: $FASTAPI_VERIFY_AUDIENCE,
-          KEYCLOAK_BASE_URL: $KEYCLOAK_BASE_URL,
-          KEYCLOAK_REALM: $KEYCLOAK_REALM,
-          KEYCLOAK_INTROSPECTION_CLIENT_ID: $KEYCLOAK_INTROSPECTION_CLIENT_ID,
-          KEYCLOAK_INTROSPECTION_CLIENT_SECRET: $KEYCLOAK_INTROSPECTION_CLIENT_SECRET,
-          LOG_DIR: $LOG_DIR,
-          LOG_FILE: $LOG_FILE,
-          LOG_LEVEL: $LOG_LEVEL,
-          LOG_TO_STDOUT: $LOG_TO_STDOUT,
-          TRUSTED_HOSTS: $TRUSTED_HOSTS
+          FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
         }
-        + (if $INCLUDE_REDIS == "1" then {
+        + (if env.INCLUDE_REDIS == "1" then {
               REDIS_HOST: $REDIS_HOST,
               REDIS_PORT: $REDIS_PORT,
               REDIS_PASSWORD: $REDIS_PASSWORD
             } else {} end)
-        + (if $INCLUDE_CELERY == "1" then {
+        + (if env.INCLUDE_CELERY == "1" then {
               CELERY_BROKER_DB: $CELERY_BROKER_DB,
               CELERY_RESULT_DB: $CELERY_RESULT_DB,
               CELERY_BROKER_URL: $CELERY_BROKER_URL,
@@ -1564,8 +1336,6 @@ export INCLUDE_FASTAPI INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK INCLUDE_KEY
 
 if [[ -n "${VAULT_PREFIX}" ]]; then
   jq -n \
-    --arg INCLUDE_REDIS "$INCLUDE_REDIS" \
-    --arg INCLUDE_CELERY "$INCLUDE_CELERY" \
     --arg mount "${VAULT_MOUNT}" \
     --arg prefix "${VAULT_PREFIX}" \
     --arg POSTGRES_DB "${POSTGRES_DB}" \
@@ -1579,28 +1349,13 @@ if [[ -n "${VAULT_PREFIX}" ]]; then
     --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
     --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
     --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
-    --arg APP_ENV "${APP_ENV}" \
-    --arg CORS_ALLOW_CREDENTIALS "${CORS_ALLOW_CREDENTIALS}" \
-    --arg CORS_ALLOW_ORIGINS "${CORS_ALLOW_ORIGINS}" \
-    --arg CORS_ALLOW_ORIGIN_REGEX "${CORS_ALLOW_ORIGIN_REGEX}" \
-    --arg FASTAPI_ALLOWED_AZP "${FASTAPI_ALLOWED_AZP}" \
-    --arg FASTAPI_VERIFY_AUDIENCE "${FASTAPI_VERIFY_AUDIENCE}" \
-    --arg KEYCLOAK_BASE_URL "${KEYCLOAK_BASE_URL}" \
-    --arg KEYCLOAK_REALM "${KEYCLOAK_REALM}" \
-    --arg KEYCLOAK_INTROSPECTION_CLIENT_ID "${KEYCLOAK_INTROSPECTION_CLIENT_ID}" \
-    --arg KEYCLOAK_INTROSPECTION_CLIENT_SECRET "${KEYCLOAK_INTROSPECTION_CLIENT_SECRET}" \
-    --arg LOG_DIR "${LOG_DIR}" \
-    --arg LOG_FILE "${LOG_FILE}" \
-    --arg LOG_LEVEL "${LOG_LEVEL}" \
-    --arg LOG_TO_STDOUT "${LOG_TO_STDOUT}" \
-    --arg TRUSTED_HOSTS "${TRUSTED_HOSTS}" \
-    --arg REDIS_HOST "${REDIS_HOST}" \
-    --arg REDIS_PORT "${REDIS_PORT}" \
-    --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
-    --arg CELERY_BROKER_DB "${CELERY_BROKER_DB}" \
-    --arg CELERY_RESULT_DB "${CELERY_RESULT_DB}" \
-    --arg CELERY_BROKER_URL "${CELERY_BROKER_URL}" \
-    --arg CELERY_RESULT_BACKEND "${CELERY_RESULT_BACKEND}" \
+  --arg REDIS_HOST "${REDIS_HOST}" \
+  --arg REDIS_PORT "${REDIS_PORT}" \
+  --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
+  --arg CELERY_BROKER_DB "${CELERY_BROKER_DB}" \
+  --arg CELERY_RESULT_DB "${CELERY_RESULT_DB}" \
+  --arg CELERY_BROKER_URL "${CELERY_BROKER_URL}" \
+  --arg CELERY_RESULT_BACKEND "${CELERY_RESULT_BACKEND}" \
     --arg KC_DB "postgres" \
     --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}" \
     --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}" \
@@ -1636,6 +1391,13 @@ if [[ -n "${VAULT_PREFIX}" ]]; then
           secrets: (
             { postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
               pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD } }
+            + { device_login_profiles: {
+                  profile_one: {
+                    username: "some username",
+                    password: "some password",
+                    enable_secret: "some password"
+                  }
+                } }
             + (if env.INCLUDE_FASTAPI == "1" then { fastapi_secrets: (
         {
           FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
@@ -1643,29 +1405,14 @@ if [[ -n "${VAULT_PREFIX}" ]]; then
           FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
           FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
           FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
-          FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA,
-          APP_ENV: $APP_ENV,
-          CORS_ALLOW_CREDENTIALS: $CORS_ALLOW_CREDENTIALS,
-          CORS_ALLOW_ORIGINS: $CORS_ALLOW_ORIGINS,
-          CORS_ALLOW_ORIGIN_REGEX: $CORS_ALLOW_ORIGIN_REGEX,
-          FASTAPI_ALLOWED_AZP: $FASTAPI_ALLOWED_AZP,
-          FASTAPI_VERIFY_AUDIENCE: $FASTAPI_VERIFY_AUDIENCE,
-          KEYCLOAK_BASE_URL: $KEYCLOAK_BASE_URL,
-          KEYCLOAK_REALM: $KEYCLOAK_REALM,
-          KEYCLOAK_INTROSPECTION_CLIENT_ID: $KEYCLOAK_INTROSPECTION_CLIENT_ID,
-          KEYCLOAK_INTROSPECTION_CLIENT_SECRET: $KEYCLOAK_INTROSPECTION_CLIENT_SECRET,
-          LOG_DIR: $LOG_DIR,
-          LOG_FILE: $LOG_FILE,
-          LOG_LEVEL: $LOG_LEVEL,
-          LOG_TO_STDOUT: $LOG_TO_STDOUT,
-          TRUSTED_HOSTS: $TRUSTED_HOSTS
+          FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
         }
-        + (if $INCLUDE_REDIS == "1" then {
+        + (if env.INCLUDE_REDIS == "1" then {
               REDIS_HOST: $REDIS_HOST,
               REDIS_PORT: $REDIS_PORT,
               REDIS_PASSWORD: $REDIS_PASSWORD
             } else {} end)
-        + (if $INCLUDE_CELERY == "1" then {
+        + (if env.INCLUDE_CELERY == "1" then {
               CELERY_BROKER_DB: $CELERY_BROKER_DB,
               CELERY_RESULT_DB: $CELERY_RESULT_DB,
               CELERY_BROKER_URL: $CELERY_BROKER_URL,
@@ -1706,8 +1453,6 @@ if [[ -n "${VAULT_PREFIX}" ]]; then
     }' > "${SPEC_FILE}"
 else
   jq -n \
-    --arg INCLUDE_REDIS "$INCLUDE_REDIS" \
-    --arg INCLUDE_CELERY "$INCLUDE_CELERY" \
     --arg mount "${VAULT_MOUNT}" \
     --arg POSTGRES_DB "${POSTGRES_DB}" \
     --arg POSTGRES_USER "${POSTGRES_USER}" \
@@ -1720,30 +1465,13 @@ else
     --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
     --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
     --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
-    --arg APP_ENV "${APP_ENV:-}" \
-    --arg CORS_ALLOW_CREDENTIALS "${CORS_ALLOW_CREDENTIALS:-}" \
-    --arg CORS_ALLOW_ORIGINS "${CORS_ALLOW_ORIGINS:-}" \
-    --arg CORS_ALLOW_ORIGIN_REGEX "${CORS_ALLOW_ORIGIN_REGEX:-}" \
-    --arg FASTAPI_ALLOWED_AZP "${FASTAPI_ALLOWED_AZP:-}" \
-    --arg FASTAPI_VERIFY_AUDIENCE "${FASTAPI_VERIFY_AUDIENCE:-}" \
-    --arg KEYCLOAK_BASE_URL "${KEYCLOAK_BASE_URL:-}" \
-    --arg KEYCLOAK_REALM "${KEYCLOAK_REALM:-}" \
-    --arg KEYCLOAK_INTROSPECTION_CLIENT_ID "${KEYCLOAK_INTROSPECTION_CLIENT_ID:-}" \
-    --arg KEYCLOAK_INTROSPECTION_CLIENT_SECRET "${KEYCLOAK_INTROSPECTION_CLIENT_SECRET:-}" \
-    --arg LOG_DIR "${LOG_DIR:-}" \
-    --arg LOG_FILE "${LOG_FILE:-}" \
-    --arg LOG_LEVEL "${LOG_LEVEL:-}" \
-    --arg LOG_TO_STDOUT "${LOG_TO_STDOUT:-}" \
-    --arg TRUSTED_HOSTS "${TRUSTED_HOSTS:-}" \
-    --arg INCLUDE_REDIS "${INCLUDE_REDIS:-1}" \
-    --arg INCLUDE_CELERY "${INCLUDE_CELERY:-1}" \
-    --arg REDIS_HOST "${REDIS_HOST}" \
-    --arg REDIS_PORT "${REDIS_PORT}" \
-    --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
-    --arg CELERY_BROKER_DB "${CELERY_BROKER_DB}" \
-    --arg CELERY_RESULT_DB "${CELERY_RESULT_DB}" \
-    --arg CELERY_BROKER_URL "${CELERY_BROKER_URL}" \
-    --arg CELERY_RESULT_BACKEND "${CELERY_RESULT_BACKEND}" \
+  --arg REDIS_HOST "${REDIS_HOST}" \
+  --arg REDIS_PORT "${REDIS_PORT}" \
+  --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
+  --arg CELERY_BROKER_DB "${CELERY_BROKER_DB}" \
+  --arg CELERY_RESULT_DB "${CELERY_RESULT_DB}" \
+  --arg CELERY_BROKER_URL "${CELERY_BROKER_URL}" \
+  --arg CELERY_RESULT_BACKEND "${CELERY_RESULT_BACKEND}" \
     --arg KC_DB "postgres" \
     --arg KC_DB_URL_HOST "${KEYCLOAK_DB_URL_HOST}" \
     --arg KC_DB_URL_PORT "${KEYCLOAK_DB_URL_PORT}" \
@@ -1778,6 +1506,13 @@ else
           secrets: (
             { postgres: { POSTGRES_DB: $POSTGRES_DB, POSTGRES_USER: $POSTGRES_USER, POSTGRES_PASSWORD: $POSTGRES_PASSWORD },
               pgadmin: { PGADMIN_DEFAULT_EMAIL: $PGADMIN_DEFAULT_EMAIL, PGADMIN_DEFAULT_PASSWORD: $PGADMIN_DEFAULT_PASSWORD } }
+            + { device_login_profiles: {
+                  profile_one: {
+                    username: "some username",
+                    password: "some password",
+                    enable_secret: "some password"
+                  }
+                } }
             + (if env.INCLUDE_FASTAPI == "1" then { fastapi_secrets: (
         {
           FASTAPI_DB_URL_HOST: $FASTAPI_DB_URL_HOST,
@@ -1785,29 +1520,14 @@ else
           FASTAPI_DB_URL_DATABASE: $FASTAPI_DB_URL_DATABASE,
           FASTAPI_DB_USERNAME: $FASTAPI_DB_USERNAME,
           FASTAPI_DB_PASSWORD: $FASTAPI_DB_PASSWORD,
-          FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA,
-          APP_ENV: $APP_ENV,
-          CORS_ALLOW_CREDENTIALS: $CORS_ALLOW_CREDENTIALS,
-          CORS_ALLOW_ORIGINS: $CORS_ALLOW_ORIGINS,
-          CORS_ALLOW_ORIGIN_REGEX: $CORS_ALLOW_ORIGIN_REGEX,
-          FASTAPI_ALLOWED_AZP: $FASTAPI_ALLOWED_AZP,
-          FASTAPI_VERIFY_AUDIENCE: $FASTAPI_VERIFY_AUDIENCE,
-          KEYCLOAK_BASE_URL: $KEYCLOAK_BASE_URL,
-          KEYCLOAK_REALM: $KEYCLOAK_REALM,
-          KEYCLOAK_INTROSPECTION_CLIENT_ID: $KEYCLOAK_INTROSPECTION_CLIENT_ID,
-          KEYCLOAK_INTROSPECTION_CLIENT_SECRET: $KEYCLOAK_INTROSPECTION_CLIENT_SECRET,
-          LOG_DIR: $LOG_DIR,
-          LOG_FILE: $LOG_FILE,
-          LOG_LEVEL: $LOG_LEVEL,
-          LOG_TO_STDOUT: $LOG_TO_STDOUT,
-          TRUSTED_HOSTS: $TRUSTED_HOSTS
+          FASTAPI_DB_SCHEMA: $FASTAPI_DB_SCHEMA
         }
-        + (if $INCLUDE_REDIS == "1" then {
+        + (if env.INCLUDE_REDIS == "1" then {
               REDIS_HOST: $REDIS_HOST,
               REDIS_PORT: $REDIS_PORT,
               REDIS_PASSWORD: $REDIS_PASSWORD
             } else {} end)
-        + (if $INCLUDE_CELERY == "1" then {
+        + (if env.INCLUDE_CELERY == "1" then {
               CELERY_BROKER_DB: $CELERY_BROKER_DB,
               CELERY_RESULT_DB: $CELERY_RESULT_DB,
               CELERY_BROKER_URL: $CELERY_BROKER_URL,
@@ -1910,10 +1630,6 @@ if [[ "${SEED_VAULT}" -eq 1 ]]; then
   fi
 
   bash "${SEED_SCRIPT}" "${seed_args[@]}"
-
-  # Ensure fastapi_secrets contains a complete key set (non-destructive fill).
-  ensure_fastapi_secrets_complete_in_vault || err "Failed to converge fastapi_secrets in Vault"
-
   log "Vault seeding completed."
 else
   log "Vault seeding skipped (--no-seed)."
