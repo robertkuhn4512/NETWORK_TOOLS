@@ -99,7 +99,7 @@ def load_env_from_vault_json(
         stats["loaded"] += 1
 
     _VAULT_ENV_LOADED = True
-    print(f"[vault_env] loaded={stats['loaded']} skipped={stats['skipped']} path={path}", file=sys.stderr)
+    #print(f"[vault_env] loaded={stats['loaded']} skipped={stats['skipped']} path={path}", file=sys.stderr)
     return stats
 
 

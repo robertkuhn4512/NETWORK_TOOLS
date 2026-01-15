@@ -1,3 +1,17 @@
+-- ============================================================
+-- COMBINED INIT SCRIPT
+-- Source 1: 20_network_tools_schema.sql
+-- Source 2: 30_app_tracking_celery.sql
+--
+-- Purpose:
+--   Single init SQL that creates the network_tools schema objects
+--   plus the app_tracking_celery job tracking table.
+--
+-- Recommended:
+--   Place this file in /docker-entrypoint-initdb.d/ if you prefer
+--   one init script instead of 20_ + 30_ split scripts.
+-- ============================================================
+
 -- Standardized index names generated on 2026-01-13 22:08:55Z
 -- Convention:
 --   Non-unique: idx_<table>__<col1>__[<col2>...]
@@ -998,3 +1012,144 @@ CREATE INDEX IF NOT EXISTS idx_discovered_device_configuration_profiles__hostnam
 CREATE INDEX IF NOT EXISTS idx_discovered_device_configuration_profiles__system_s_fca6e698 ON discovered_device_configuration_profiles (system_serial_number);
 CREATE INDEX IF NOT EXISTS idx_discovered_device_configuration_profiles__model_number ON discovered_device_configuration_profiles (model_number);
 COMMIT;
+
+-- ============================================================
+-- BEGIN MERGED: 30_app_tracking_celery.sql
+-- ============================================================
+BEGIN;
+
+-- ============================================================
+-- app_tracking_celery.sql
+-- Durable job tracking table for Celery-backed workloads.
+-- ============================================================
+
+-- Required for gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- -------------------------
+-- TABLE: app_tracking_celery
+-- -------------------------
+CREATE TABLE IF NOT EXISTS app_tracking_celery (
+  job_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  -- Celery's ID (AsyncResult.id). Store as text because Celery IDs may not always be UUID.
+  task_id          TEXT NOT NULL,
+
+  -- Your internal meaning (task name / logical job name)
+  job_name         TEXT NOT NULL,
+
+  -- Optional celery routing metadata (helpful for ops)
+  queue            TEXT,
+  routing_key      TEXT,
+  exchange         TEXT,
+  priority         INTEGER,
+
+  -- Job lifecycle state
+  status           TEXT NOT NULL DEFAULT 'QUEUED',
+  retries          INTEGER NOT NULL DEFAULT 0,
+  max_retries      INTEGER,
+  eta             TIMESTAMPTZ,
+  expires_at       TIMESTAMPTZ,
+
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  started_at       TIMESTAMPTZ,
+  completed_at     TIMESTAMPTZ,
+
+  -- Duration recorded at completion (optional)
+  duration_ms      INTEGER,
+
+  -- Tracking/diagnostics
+  worker_hostname  TEXT,
+  worker_pid       INTEGER,
+  correlation_id   TEXT,
+
+  -- Relationships
+  parent_job_id    UUID REFERENCES app_tracking_celery(job_id) ON DELETE SET NULL,
+
+  -- Payloads
+  request          JSONB NOT NULL DEFAULT '{}'::jsonb,
+  result           JSONB,
+  error_type       TEXT,
+  error_message    TEXT,
+  traceback        TEXT,
+
+  -- Optional tags for UI grouping
+  tags             TEXT[],
+
+  -- Deletion controls (prefer soft-delete so you keep auditability)
+  is_deleted       BOOLEAN NOT NULL DEFAULT FALSE,
+  deleted_at       TIMESTAMPTZ,
+  deleted_by       TEXT,
+
+  CONSTRAINT app_tracking_celery__status__chk CHECK (
+    status IN (
+      'QUEUED',
+      'RECEIVED',
+      'STARTED',
+      'RETRY',
+      'SUCCESS',
+      'FAILURE',
+      'REVOKED',
+      'EXPIRED',
+      'CANCELED'
+    )
+  )
+);
+
+-- ----------------------------------------
+-- Trigger: updated_at auto-maintained
+-- ----------------------------------------
+CREATE OR REPLACE FUNCTION trg_set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS app_tracking_celery_set_updated_at ON app_tracking_celery;
+CREATE TRIGGER app_tracking_celery_set_updated_at
+BEFORE UPDATE ON app_tracking_celery
+FOR EACH ROW
+EXECUTE FUNCTION trg_set_updated_at();
+
+-- -------------------------
+-- INDEXES (bottom)
+-- -------------------------
+
+-- Celery task id should be unique in normal flows.
+CREATE UNIQUE INDEX IF NOT EXISTS app_tracking_celery__uidx_task_id
+  ON app_tracking_celery (task_id);
+
+-- Common UI filter: status + recency
+CREATE INDEX IF NOT EXISTS app_tracking_celery__idx_status_created_at
+  ON app_tracking_celery (status, created_at DESC);
+
+-- Cleanup/purge scans (completed jobs)
+CREATE INDEX IF NOT EXISTS app_tracking_celery__idx_completed_at
+  ON app_tracking_celery (completed_at DESC);
+
+-- Query by correlation_id (request-level tracking across systems)
+CREATE INDEX IF NOT EXISTS app_tracking_celery__idx_correlation_id
+  ON app_tracking_celery (correlation_id);
+
+-- Query by job_name (UI grouping)
+CREATE INDEX IF NOT EXISTS app_tracking_celery__idx_job_name_created_at
+  ON app_tracking_celery (job_name, created_at DESC);
+
+-- Fast “active jobs” query (queue/running/retry, not deleted)
+CREATE INDEX IF NOT EXISTS app_tracking_celery__idx_active_jobs
+  ON app_tracking_celery (created_at DESC)
+  WHERE is_deleted = FALSE AND status IN ('QUEUED', 'RECEIVED', 'STARTED', 'RETRY');
+
+-- Optional: JSONB search (only if you actually query inside request/result often)
+-- This index is heavier; enable if needed.
+-- CREATE INDEX IF NOT EXISTS app_tracking_celery__gin_request
+--   ON app_tracking_celery USING GIN (request);
+
+COMMIT;
+
+-- ============================================================
+-- END MERGED: 30_app_tracking_celery.sql
+-- ============================================================

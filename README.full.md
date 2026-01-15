@@ -553,6 +553,8 @@ Update package metadata and upgrade all installed packages:
 sudo apt update
 sudo apt install -y openssl
 sudo apt full-upgrade -y
+# Enable containers to use the ping command 
+sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 ```
 
 A reboot is recommended after major upgrades, especially if a new kernel or critical libraries are installed:

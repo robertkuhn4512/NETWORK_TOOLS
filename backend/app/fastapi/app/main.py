@@ -23,7 +23,11 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.routers.auth_test import router as auth_test_router
+from app.routers.device_discovery import router as device_discovery_router
+from app.routers.celery_jobs import router as celery_jobs_router
+
 from app.shared_functions.helpers.logging_config import setup_logging, load_env_from_vault_json
+from app.database import connect_db, disconnect_db
 
 # 1) Load env from Vault-rendered JSON FIRST (so LOG_LEVEL, CORS, etc. come from it)
 load_env_from_vault_json("/run/vault/fastapi_secrets.json")
@@ -33,8 +37,6 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 access_logger = logging.getLogger("app.access")
-
-
 
 def _parse_csv_env(name: str, default: Optional[list[str]] = None) -> Optional[list[str]]:
     raw = os.getenv(name, "").strip()
@@ -105,10 +107,12 @@ def create_app() -> FastAPI:
     # Routers
     # -------------------------
     app.include_router(auth_test_router)
+    app.include_router(device_discovery_router)
+    app.include_router(celery_jobs_router)
 
     @app.on_event("startup")
     async def on_startup():
-        # Do NOT log secret values; just show high-level state
+        await connect_db()
         logger.info(
             "startup complete (APP_ENV=%s LOG_LEVEL=%s)",
             os.getenv("APP_ENV", "dev"),
@@ -118,6 +122,7 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def on_shutdown():
         logger.info("shutdown starting")
+        await disconnect_db()
 
     return app
 
