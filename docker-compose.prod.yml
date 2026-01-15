@@ -521,9 +521,6 @@ services:
       db_net:
         ipv4_address: 172.30.20.40
       public_net:
-      # Hash out the ports when routing through nginx. Unhash if you want to run this as a standalone container.
-      # ports:
-      #   - "8000:8000"
     ports:
       - "8000:8000"
     volumes:
@@ -532,12 +529,14 @@ services:
       - ./backend/app/nginx/certs/ca.crt:/run/certs/networktools_ca.crt:ro
       - ./container_data/logs/fastapi:/var/log/network_tools/fastapi
     environment:
+      VAULT_TOKEN_FILE: "/run/vault/.vault-token"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
       APP_MODULE: "app.main:app"
       BIND_HOST: "0.0.0.0"
       BIND_PORT: "8000"
       WEB_CONCURRENCY: "2"
-      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN}"
+      PRIMARY_SERVER_FQDN: "PRIMARY_SERVER_FQDN"
       SSL_CERT_FILE: /run/certs/networktools_ca.crt
       FASTAPI_OIDC_CA_BUNDLE: /run/certs/networktools_ca.crt
     command: [ "python", "/app/run_server.py" ]
@@ -580,6 +579,10 @@ services:
     image: network_tools_fastapi:latest
     container_name: celery_worker
     restart: unless-stopped
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.60
+      public_net:
     depends_on:
       vault_agent_fastapi:
         condition: service_healthy
@@ -587,11 +590,13 @@ services:
         condition: service_healthy
       postgres_primary:
         condition: service_started
-    networks:
-      db_net:
     volumes:
       - fastapi_vault_rendered:/run/vault:ro
+      - ./backend/app/nginx/certs/ca.crt:/run/certs/networktools_ca.crt:ro
     environment:
+      VAULT_TOKEN_FILE: "/run/vault/.vault-token"
+      VAULT_CACERT: "/run/certs/networktools_ca.crt"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
     command:
       - "python"

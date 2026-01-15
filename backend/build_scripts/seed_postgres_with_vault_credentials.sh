@@ -5,29 +5,28 @@ set -euo pipefail
 #
 # Notes
 # - Purpose: Make PostgreSQL match the authoritative credentials stored in Vault.
-# - Vault paths are HARD-CODED (as requested):
+# - Vault paths are HARD-CODED (as requested), with one added for FastAPI:
 #     - /v1/app_network_tools_secrets/data/postgres
 #     - /v1/app_network_tools_secrets/data/keycloak_postgres
+#     - /v1/app_network_tools_secrets/data/fastapi_runtime   (default; override via --fastapi-secret-path)
+#
 # - This script:
 #     1) Reads master Postgres credentials from Vault (POSTGRES_USER/POSTGRES_PASSWORD).
 #     2) Reads Keycloak DB credentials from Vault (KC_DB_URL_DATABASE/KC_DB_USERNAME/KC_DB_PASSWORD, optional KC_DB_SCHEMA).
-#     3) Connects to the Postgres container using the master credentials (TCP 127.0.0.1, so password auth is tested).
-#     4) Ensures the Keycloak database exists (create if missing).
-#     5) Ensures the Keycloak role exists (create if missing) and sets its password to the Vault value.
-#     6) Ensures the schema exists (KC_DB_SCHEMA; default "public") and grants required privileges.
-#     7) Verifies the Keycloak role can log in and access the Keycloak database.
+#     3) Reads FastAPI DB credentials from Vault (FASTAPI_DB_URL_DATABASE/FASTAPI_DB_USERNAME/FASTAPI_DB_PASSWORD, optional FASTAPI_DB_SCHEMA).
+#     4) Connects to the Postgres container using the master credentials (TCP 127.0.0.1, so password auth is tested).
+#     5) Ensures Keycloak role/db/schema exist and are configured.
+#     6) Ensures FastAPI role exists and grants least-privilege (no CREATE on schema; no ownership; no DROP-type permissions).
+#     7) Verifies Keycloak role can log in.
+#     8) Verifies FastAPI role can log in.
 #
 # How to run
 #   chmod +x ./backend/build_scripts/seed_postgres_with_vault_credentials.sh
 #   ./backend/build_scripts/seed_postgres_with_vault_credentials.sh \
 #     --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
 #
-# Common overrides
-#   --env-file <path>                  (default: auto-detect repo .env; fallback: $HOME/NETWORK_TOOLS/.env)
-#   --vault-host <FQDN|container_name>  (default: PRIMARY_SERVER_FQDN from env file; fallback: vault_production_node)
-#   --vault-addr <https://host:8200>    (overrides --vault-host/--vault-port)
-#   --token-file <path>                (default: $HOME/NETWORK_TOOLS/.../bootstrap/root_token; prompts if missing)
-#   --postgres-container <name>         (default: postgres_primary)
+# Optional:
+#   --fastapi-secret-path fastapi_runtime|fastapi_postgres|...  (default: fastapi_runtime)
 #
 # Exit codes
 #   0  success
@@ -45,6 +44,7 @@ DEFAULT_VAULT_MOUNT="app_network_tools_secrets"
 
 KEYCLOAK_SECRET_PATH="keycloak_postgres"
 POSTGRES_SECRET_PATH="postgres"
+FASTAPI_SECRET_PATH_DEFAULT="fastapi_runtime"
 
 DEFAULT_BOOTSTRAP_DIR="${HOME}/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap"
 DEFAULT_TOKEN_FILE="${DEFAULT_BOOTSTRAP_DIR}/root_token"
@@ -84,6 +84,7 @@ Optional:
   --token-file PATH             Default: $HOME/NETWORK_TOOLS/.../bootstrap/root_token (prompts if missing)
   --postgres-container NAME     Default: postgres_primary
   --pg-port PORT                Default: 5432
+  --fastapi-secret-path NAME    Default: fastapi_runtime
   --insecure                    Skip TLS verification for Vault curl (dev-only)
   -h, --help                    Show this help.
 
@@ -99,23 +100,17 @@ need_bin() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $
 
 # Safe SQL quoting helpers
 sql_ident() {
-  # Double-quote an identifier, escaping embedded quotes.
-  # Usage: sql_ident "myRole" -> "myRole"
   local s="$1"
   s="${s//\"/\"\"}"
   printf '"%s"' "$s"
 }
 sql_lit() {
-  # Single-quote a literal, escaping embedded quotes.
-  # Usage: sql_lit "pa'ss" -> 'pa''ss'
   local s="$1"
   s="${s//\'/\'\'}"
   printf "'%s'" "$s"
 }
 
 validate_name_soft() {
-  # Basic guardrail: disallow empty and whitespace-only; allow most printable.
-  # (Keycloak/user/db names are expected to be simple.)
   local v="$1"
   [[ -n "$v" ]] || return 1
   [[ "$v" != *$'\n'* ]] || return 1
@@ -123,15 +118,12 @@ validate_name_soft() {
   return 0
 }
 
-
 #######################################
 # Repo/env discovery (for PRIMARY_SERVER_FQDN)
 #######################################
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 derive_repo_root() {
-  # Walk upward until we find a directory that looks like the repo root.
-  # Heuristics: contains backend/ and (preferably) a .env file.
   local d="$SCRIPT_DIR"
   while [[ "$d" != "/" && -n "$d" ]]; do
     if [[ -d "$d/backend/build_scripts" ]]; then
@@ -155,20 +147,16 @@ elif [[ -r "$PWD/.env" ]]; then
 fi
 
 read_env_var_from_file() {
-  # Reads KEY=VALUE from a dotenv-style file without executing it.
-  # Supports optional leading "export " and optional single/double quotes around values.
   local key="$1"
   local file="$2"
   [[ -r "$file" ]] || return 1
 
   local line
   while IFS= read -r line || [[ -n "$line" ]]; do
-    # trim leading whitespace
     line="${line#"${line%%[![:space:]]*}"}"
     [[ -z "$line" ]] && continue
     [[ "$line" == \#* ]] && continue
 
-    # allow "export KEY=..."
     if [[ "$line" == export\ * ]]; then
       line="${line#export }"
       line="${line#"${line%%[![:space:]]*}"}"
@@ -176,12 +164,9 @@ read_env_var_from_file() {
 
     if [[ "$line" == "$key="* ]]; then
       local val="${line#*=}"
-
-      # trim whitespace
       val="${val#"${val%%[![:space:]]*}"}"
       val="${val%"${val##*[![:space:]]}"}"
 
-      # strip surrounding quotes
       if [[ "$val" =~ ^\"(.*)\"$ ]]; then
         val="${BASH_REMATCH[1]}"
       elif [[ "$val" =~ ^\'(.*)\'$ ]]; then
@@ -195,6 +180,7 @@ read_env_var_from_file() {
 
   return 1
 }
+
 #######################################
 # Args
 #######################################
@@ -209,6 +195,8 @@ INSECURE="0"
 
 POSTGRES_CONTAINER="$DEFAULT_POSTGRES_CONTAINER"
 PG_PORT="$DEFAULT_PG_PORT"
+
+FASTAPI_SECRET_PATH="$FASTAPI_SECRET_PATH_DEFAULT"
 
 ENV_FILE="${ENV_FILE:-$DEFAULT_ENV_FILE}"
 VAULT_HOST_SET_BY_CLI="0"
@@ -225,12 +213,12 @@ while [[ $# -gt 0 ]]; do
     --token-file) TOKEN_FILE="$2"; shift 2;;
     --postgres-container) POSTGRES_CONTAINER="$2"; shift 2;;
     --pg-port) PG_PORT="$2"; shift 2;;
+    --fastapi-secret-path) FASTAPI_SECRET_PATH="$2"; shift 2;;
     --insecure) INSECURE="1"; shift 1;;
     -h|--help) usage; exit 0;;
     *) die "Unknown argument: $1" 1;;
   esac
 done
-
 
 #######################################
 # Env-based Vault host defaulting (PRIMARY_SERVER_FQDN)
@@ -244,14 +232,12 @@ if [[ -z "$PRIMARY_SERVER_FQDN_EFFECTIVE" ]]; then
       log "Loaded PRIMARY_SERVER_FQDN from env file: $ENV_FILE"
     fi
   else
-    # Only warn if the user expected a file (default or explicitly provided) but it is not readable.
     if [[ -n "$ENV_FILE" ]]; then
       warn "Env file not found/readable (skipping): $ENV_FILE"
     fi
   fi
 fi
 
-# If the caller did not explicitly set --vault-host/--vault-addr, prefer PRIMARY_SERVER_FQDN.
 if [[ -z "$VAULT_ADDR" && "$VAULT_HOST_SET_BY_CLI" == "0" ]]; then
   if [[ -n "$PRIMARY_SERVER_FQDN_EFFECTIVE" ]]; then
     VAULT_HOST="$PRIMARY_SERVER_FQDN_EFFECTIVE"
@@ -340,10 +326,27 @@ POSTGRES_PASSWORD="$(echo "$PG_JSON" | jq -r '.data.data.POSTGRES_PASSWORD // em
 validate_name_soft "$POSTGRES_USER" || die "Invalid POSTGRES_USER value" 2
 [[ -n "$POSTGRES_PASSWORD" ]] || die "Vault missing: POSTGRES_PASSWORD at ${VAULT_MOUNT}/${POSTGRES_SECRET_PATH}" 2
 
+log "Reading FastAPI Postgres secret from Vault: /v1/${VAULT_MOUNT}/data/${FASTAPI_SECRET_PATH}"
+FAPI_JSON="$(vault_get_kv2 "$FASTAPI_SECRET_PATH")" || die "Failed to read Vault fastapi secret path: ${FASTAPI_SECRET_PATH}" 2
+
+# Support the keys you showed in /run/vault/fastapi_secrets.json
+FASTAPI_DB_URL_DATABASE="$(echo "$FAPI_JSON" | jq -r '.data.data.FASTAPI_DB_URL_DATABASE // empty')"
+FASTAPI_DB_USERNAME="$(echo "$FAPI_JSON" | jq -r '.data.data.FASTAPI_DB_USERNAME // empty')"
+FASTAPI_DB_PASSWORD="$(echo "$FAPI_JSON" | jq -r '.data.data.FASTAPI_DB_PASSWORD // empty')"
+FASTAPI_DB_SCHEMA="$(echo "$FAPI_JSON" | jq -r '.data.data.FASTAPI_DB_SCHEMA // "public"')"
+
+validate_name_soft "$FASTAPI_DB_URL_DATABASE" || die "Invalid FASTAPI_DB_URL_DATABASE value" 2
+validate_name_soft "$FASTAPI_DB_USERNAME" || die "Invalid FASTAPI_DB_USERNAME value" 2
+[[ -n "$FASTAPI_DB_PASSWORD" ]] || die "Vault missing: FASTAPI_DB_PASSWORD at ${VAULT_MOUNT}/${FASTAPI_SECRET_PATH}" 2
+validate_name_soft "$FASTAPI_DB_SCHEMA" || die "Invalid FASTAPI_DB_SCHEMA value" 2
+
 log "Vault values loaded:"
 log "  Keycloak DB:     ${KC_DB_URL_DATABASE}"
 log "  Keycloak Role:   ${KC_DB_USERNAME}"
 log "  Keycloak Schema: ${KC_DB_SCHEMA}"
+log "  FastAPI DB:      ${FASTAPI_DB_URL_DATABASE}"
+log "  FastAPI Role:    ${FASTAPI_DB_USERNAME}"
+log "  FastAPI Schema:  ${FASTAPI_DB_SCHEMA}"
 log "  Postgres Master: ${POSTGRES_USER}"
 log "  Vault addr:      ${VAULT_ADDR}"
 log "  Vault mount:     ${VAULT_MOUNT}"
@@ -399,7 +402,7 @@ fi
 log "Wrong-password login failed as expected."
 
 #######################################
-# Seed role + DB (no psql :var expansion; use safe quoting)
+# Seed Keycloak role + DB
 #######################################
 KC_DB_SQL_IDENT="$(sql_ident "$KC_DB_URL_DATABASE")"
 KC_ROLE_SQL_IDENT="$(sql_ident "$KC_DB_USERNAME")"
@@ -437,11 +440,61 @@ log "Ensuring schema '${KC_DB_SCHEMA}' exists and privileges are set..."
 if [[ "$KC_DB_SCHEMA" != "public" ]]; then
   psql_master "$KC_DB_URL_DATABASE" "CREATE SCHEMA IF NOT EXISTS ${KC_SCHEMA_SQL_IDENT} AUTHORIZATION ${KC_ROLE_SQL_IDENT};"
   psql_master "$KC_DB_URL_DATABASE" "GRANT USAGE, CREATE ON SCHEMA ${KC_SCHEMA_SQL_IDENT} TO ${KC_ROLE_SQL_IDENT};"
-  # Keycloak commonly uses search_path; set it per DB for the role
   psql_master "$KC_DB_URL_DATABASE" "ALTER ROLE ${KC_ROLE_SQL_IDENT} IN DATABASE ${KC_DB_SQL_IDENT} SET search_path TO ${KC_SCHEMA_SQL_IDENT}, public;" >/dev/null
 else
   psql_master "$KC_DB_URL_DATABASE" "GRANT USAGE, CREATE ON SCHEMA public TO ${KC_ROLE_SQL_IDENT};"
 fi
+
+#######################################
+# Seed FastAPI least-privilege role
+#######################################
+FAPI_DB_SQL_IDENT="$(sql_ident "$FASTAPI_DB_URL_DATABASE")"
+FAPI_ROLE_SQL_IDENT="$(sql_ident "$FASTAPI_DB_USERNAME")"
+FAPI_PASS_SQL_LIT="$(sql_lit "$FASTAPI_DB_PASSWORD")"
+FAPI_SCHEMA_SQL_IDENT="$(sql_ident "$FASTAPI_DB_SCHEMA")"
+
+log "Ensuring FastAPI role exists..."
+FAPI_ROLE_EXISTS="$(psql_master_ta "postgres" "SELECT 1 FROM pg_roles WHERE rolname = $(sql_lit "$FASTAPI_DB_USERNAME") LIMIT 1;" || true)"
+if [[ "$FAPI_ROLE_EXISTS" != "1" ]]; then
+  log "Creating role '${FASTAPI_DB_USERNAME}'..."
+  psql_master "postgres" "CREATE ROLE ${FAPI_ROLE_SQL_IDENT} LOGIN;"
+else
+  log "Role '${FASTAPI_DB_USERNAME}' already exists."
+fi
+
+log "Setting FastAPI role password to match Vault..."
+psql_master "postgres" "ALTER ROLE ${FAPI_ROLE_SQL_IDENT} WITH LOGIN PASSWORD ${FAPI_PASS_SQL_LIT};"
+
+log "Checking whether FastAPI database exists..."
+FAPI_DB_EXISTS="$(psql_master_ta "postgres" "SELECT 1 FROM pg_database WHERE datname = $(sql_lit "$FASTAPI_DB_URL_DATABASE") LIMIT 1;" || true)"
+if [[ "$FAPI_DB_EXISTS" != "1" ]]; then
+  log "Creating database '${FASTAPI_DB_URL_DATABASE}' owned by '${POSTGRES_USER}' (NOT FastAPI role)..."
+  psql_master "postgres" "CREATE DATABASE ${FAPI_DB_SQL_IDENT} OWNER $(sql_ident "$POSTGRES_USER");"
+else
+  log "Database '${FASTAPI_DB_URL_DATABASE}' already exists."
+fi
+
+log "Granting CONNECT on FastAPI DB (no TEMP granted)..."
+psql_master "postgres" "GRANT CONNECT ON DATABASE ${FAPI_DB_SQL_IDENT} TO ${FAPI_ROLE_SQL_IDENT};" >/dev/null
+
+log "Ensuring schema '${FASTAPI_DB_SCHEMA}' exists and granting least-privilege..."
+if [[ "$FASTAPI_DB_SCHEMA" != "public" ]]; then
+  # Create schema owned by master role, not the FastAPI role.
+  psql_master "$FASTAPI_DB_URL_DATABASE" "CREATE SCHEMA IF NOT EXISTS ${FAPI_SCHEMA_SQL_IDENT} AUTHORIZATION $(sql_ident "$POSTGRES_USER");"
+fi
+
+# Ensure FastAPI can use schema but cannot create objects there.
+psql_master "$FASTAPI_DB_URL_DATABASE" "GRANT USAGE ON SCHEMA ${FAPI_SCHEMA_SQL_IDENT} TO ${FAPI_ROLE_SQL_IDENT};" >/dev/null
+psql_master "$FASTAPI_DB_URL_DATABASE" "REVOKE CREATE ON SCHEMA ${FAPI_SCHEMA_SQL_IDENT} FROM ${FAPI_ROLE_SQL_IDENT};" >/dev/null
+
+log "Granting non-destructive DML privileges to FastAPI role (existing objects)..."
+psql_master "$FASTAPI_DB_URL_DATABASE" "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${FAPI_SCHEMA_SQL_IDENT} TO ${FAPI_ROLE_SQL_IDENT};" >/dev/null
+psql_master "$FASTAPI_DB_URL_DATABASE" "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${FAPI_SCHEMA_SQL_IDENT} TO ${FAPI_ROLE_SQL_IDENT};" >/dev/null
+
+log "Setting default privileges for future tables/sequences created by '${POSTGRES_USER}' in schema '${FASTAPI_DB_SCHEMA}'..."
+# Default privileges apply to objects created by the role that runs this statement (here: POSTGRES_USER).
+psql_master "$FASTAPI_DB_URL_DATABASE" "ALTER DEFAULT PRIVILEGES IN SCHEMA ${FAPI_SCHEMA_SQL_IDENT} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${FAPI_ROLE_SQL_IDENT};" >/dev/null
+psql_master "$FASTAPI_DB_URL_DATABASE" "ALTER DEFAULT PRIVILEGES IN SCHEMA ${FAPI_SCHEMA_SQL_IDENT} GRANT USAGE, SELECT ON SEQUENCES TO ${FAPI_ROLE_SQL_IDENT};" >/dev/null
 
 #######################################
 # Verify Keycloak login
@@ -454,4 +507,18 @@ docker exec -i \
     -h 127.0.0.1 -p "$PG_PORT" -U "$KC_DB_USERNAME" -d "$KC_DB_URL_DATABASE" \
     -c "SELECT current_user, current_database();" >/dev/null
 
-log "SUCCESS: Postgres seeded to match Vault for Keycloak (db/role/schema) and verified login."
+log "SUCCESS: Keycloak verified login."
+
+#######################################
+# Verify FastAPI login
+#######################################
+log "Verifying FastAPI role can log in to '${FASTAPI_DB_URL_DATABASE}'..."
+docker exec -i \
+  -e PGPASSWORD="$FASTAPI_DB_PASSWORD" \
+  "$POSTGRES_CONTAINER" \
+  psql --no-password -v ON_ERROR_STOP=1 \
+    -h 127.0.0.1 -p "$PG_PORT" -U "$FASTAPI_DB_USERNAME" -d "$FASTAPI_DB_URL_DATABASE" \
+    -c "SELECT current_user, current_database(); SHOW search_path;" >/dev/null
+
+log "SUCCESS: FastAPI verified login and least-privilege grants applied."
+log "DONE: Postgres seeded to match Vault for Keycloak + FastAPI."

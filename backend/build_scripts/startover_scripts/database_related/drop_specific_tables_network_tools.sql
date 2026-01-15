@@ -886,4 +886,29 @@ DROP INDEX IF EXISTS public.idx_app_backend_tracking__route;
 -- Table
 DROP TABLE IF EXISTS public.app_backend_tracking CASCADE;
 
+
+-- ============================================================
+-- Table: public.app_tracking_celery
+-- ============================================================
+-- Constraints (drop first to avoid 'index required by constraint' errors)
+ALTER TABLE IF EXISTS public.app_tracking_celery DROP CONSTRAINT IF EXISTS app_tracking_celery_parent_job_id_fkey;
+ALTER TABLE IF EXISTS public.app_tracking_celery DROP CONSTRAINT IF EXISTS app_tracking_celery__pk;
+ALTER TABLE IF EXISTS public.app_tracking_celery DROP CONSTRAINT IF EXISTS app_tracking_celery_pkey;
+ALTER TABLE IF EXISTS public.app_tracking_celery DROP CONSTRAINT IF EXISTS app_tracking_celery__status__chk;
+
+-- Indexes
+DROP INDEX IF EXISTS public.app_tracking_celery__uidx_task_id;
+DROP INDEX IF EXISTS public.app_tracking_celery__idx_status_created_at;
+DROP INDEX IF EXISTS public.app_tracking_celery__idx_completed_at;
+DROP INDEX IF EXISTS public.app_tracking_celery__idx_correlation_id;
+DROP INDEX IF EXISTS public.app_tracking_celery__idx_job_name_created_at;
+DROP INDEX IF EXISTS public.app_tracking_celery__idx_active_jobs;
+DROP INDEX IF EXISTS public.app_tracking_celery__gin_request;
+
+-- Table
+DROP TABLE IF EXISTS public.app_tracking_celery CASCADE;
+
+-- Function (used by the updated_at trigger)
+DROP FUNCTION IF EXISTS public.trg_set_updated_at();
+
 COMMIT;
