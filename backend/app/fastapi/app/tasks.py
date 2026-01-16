@@ -6,6 +6,9 @@ How to run (worker):
 
 Purpose:
 - Celery tasks for Network Tools, including device discovery offloads.
+
+TODO : Setup to give this a larger subnet 10.0.0.0/24 for example, and have it save all the jobs for it
+and execute 1 by 1 for each ip.
 """
 
 from __future__ import annotations
