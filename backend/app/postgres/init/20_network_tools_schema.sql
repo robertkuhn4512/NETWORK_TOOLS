@@ -1038,6 +1038,10 @@ CREATE TABLE IF NOT EXISTS app_tracking_celery (
   -- Your internal meaning (task name / logical job name)
   job_name         TEXT NOT NULL,
 
+  -- Used for "no dupes while active"; app must set this.
+  -- NOTE: In older deployments this was added later via ALTER TABLE.
+  dedupe_key       TEXT NOT NULL,
+
   -- Optional celery routing metadata (helpful for ops)
   queue            TEXT,
   routing_key      TEXT,
@@ -1097,6 +1101,21 @@ CREATE TABLE IF NOT EXISTS app_tracking_celery (
   )
 );
 
+-- ------------------------------------------------------------
+-- Schema upgrades / hardening for dedupe_key
+-- ------------------------------------------------------------
+ALTER TABLE app_tracking_celery
+  ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+
+-- Backfill NULLs so UNIQUE + NOT NULL behaves deterministically.
+-- (Prevents NULL from bypassing the dedupe index.)
+UPDATE app_tracking_celery
+SET dedupe_key = job_id::text
+WHERE dedupe_key IS NULL;
+
+ALTER TABLE app_tracking_celery
+  ALTER COLUMN dedupe_key SET NOT NULL;
+
 -- ----------------------------------------
 -- Trigger: updated_at auto-maintained
 -- ----------------------------------------
@@ -1115,7 +1134,7 @@ FOR EACH ROW
 EXECUTE FUNCTION trg_set_updated_at();
 
 -- -------------------------
--- INDEXES (bottom)
+-- INDEXES
 -- -------------------------
 
 -- Celery task id should be unique in normal flows.
@@ -1148,8 +1167,19 @@ CREATE INDEX IF NOT EXISTS app_tracking_celery__idx_active_jobs
 -- CREATE INDEX IF NOT EXISTS app_tracking_celery__gin_request
 --   ON app_tracking_celery USING GIN (request);
 
-COMMIT;
+-- ------------------------------------------------------------
+-- DEDUPE: "No duplicates ever (while active)" guarantee
+-- Include RECEIVED as active to prevent duplicates after worker claims the job.
+-- ------------------------------------------------------------
+DROP INDEX IF EXISTS uq_app_tracking_celery_active_dedupe;
 
+CREATE UNIQUE INDEX uq_app_tracking_celery_active_dedupe
+ON app_tracking_celery (job_name, dedupe_key)
+WHERE is_deleted = FALSE
+  AND status IN ('QUEUED','RECEIVED','STARTED','RETRY');
+
+COMMIT;
 -- ============================================================
 -- END MERGED: 30_app_tracking_celery.sql
 -- ============================================================
+
