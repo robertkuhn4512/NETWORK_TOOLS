@@ -12,7 +12,7 @@ and execute 1 by 1 for each ip.
 """
 
 from __future__ import annotations
-
+import os
 import asyncio
 import json
 import logging
@@ -22,6 +22,9 @@ from typing import Any, Dict
 
 from app.celery_app import celery_app
 from app.database import database, connect_db, disconnect_db
+
+from app.shared_functions.helpers.helpers_logging_config import load_env_from_vault_json, setup_logging
+
 from app.database_queries.postgres_insert_queries import insert_app_backend_tracking
 
 from app.shared_functions.helpers.helpers_sanitation import scrub_secrets
@@ -41,6 +44,10 @@ from app.shared_functions.helpers.helpers_hashicorp_vault import (
 )
 
 from app.network_utilities.icmp_check import pingOk
+
+load_env_from_vault_json(os.getenv("VAULT_ENV_JSON", "/run/vault/fastapi_secrets.json"))
+
+setup_logging()
 
 logger = logging.getLogger("app.celery.tasks")
 
@@ -296,6 +303,19 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         enable_secret=p.get("enable_password"),
                                     )
 
+                                    # TODO - Add show version processing output checks to this
+                                    # Try and pull the SW version information from SVP and save it as well.
+                                    # TODO - Add a break out if the ad was done successfully - DONE
+                                    # Auto discover has the following info in the ad dict
+                                    # "autodiscover": {
+                                    #     "ok": true,
+                                    #     "host": "10.0.0.101",
+                                    #     "output": "",
+                                    #     "command": "No commands sent during discovery",
+                                    #     "device_type": "cisco_xe",
+                                    #     "detected_device_type": "cisco_xe"
+                                    # }
+
                                     await insert_app_backend_tracking(
                                         database=database,
                                         route=route,
@@ -332,6 +352,12 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
 
                                     # Add to a device discovery table / devices table
                                     # from here get the device type and add some device specific command to use for discovery
+
+                                    # Break out upon successful autodiscover.
+                                    # This prevents logging in with multiple accounts.
+
+                                    if ad.get("ok", False):
+                                        break
 
                                 else:
                                     await insert_app_backend_tracking(
