@@ -12,7 +12,7 @@ and execute 1 by 1 for each ip.
 """
 
 from __future__ import annotations
-
+import os
 import asyncio
 import json
 import logging
@@ -22,13 +22,28 @@ from typing import Any, Dict
 
 from app.celery_app import celery_app
 from app.database import database, connect_db, disconnect_db
+
+from app.shared_functions.helpers.helpers_logging_config import load_env_from_vault_json, setup_logging
+
 from app.database_queries.postgres_insert_queries import insert_app_backend_tracking
 
 from app.shared_functions.helpers.helpers_sanitation import scrub_secrets
 
+from app.shared_functions.helpers.helpers_configuration_backups import (
+    save_device_backup_text,
+    gzip_file_verified
+)
+
 from app.shared_functions.helpers.helpers_netmiko import (
     ssh_session,
-    netmiko_autodiscover
+    netmiko_autodiscover,
+    netmiko_fetch_command_output
+)
+
+from app.shared_functions.helpers.helpers_cisco import (
+    cisco_allowed_show_version_commands,
+    cisco_show_version_parse,
+    cisco_allowed_backup_commands
 )
 
 from app.shared_functions.helpers.helpers_generic import (
@@ -41,6 +56,10 @@ from app.shared_functions.helpers.helpers_hashicorp_vault import (
 )
 
 from app.network_utilities.icmp_check import pingOk
+
+load_env_from_vault_json(os.getenv("VAULT_SECRETS_JSON", "/run/vault/fastapi_secrets.json"))
+
+setup_logging()
 
 logger = logging.getLogger("app.celery.tasks")
 
@@ -183,7 +202,13 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
             If no errors device_profiles_error is None
             """
 
-            device_profiles_error = device_profiles.get('error', False)
+            # device_profiles is whatever vault_kv2_read returned (dict)
+            device_profiles_error = (device_profiles or {}).get("error", False)
+
+            # Treat "empty dict" as an error message (but don't overwrite a real error)
+            device_profiles_error_out = device_profiles_error
+            if not device_profiles_error_out and isinstance(device_profiles, dict) and not device_profiles:
+                device_profiles_error_out = "Unable to fetch device profiles"
 
             result = {
                 "ping_ok": ok,
@@ -193,7 +218,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                 "requested_by": meta.get("requested_by"),
                 "azp": meta.get("azp"),
                 "roles": meta.get("roles") or [],
-                "device_profiles_error": device_profiles_error,
+                "device_profiles_error": device_profiles_error_out,
                 "device_profiles": scrub_secrets(pretty_json_any(device_profiles)),
             }
 
@@ -282,9 +307,6 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                 )
 
                                 if proceed:
-                                    # TODO - Add target_ip or similar column to app backend tracking log
-                                    # Or rely on searching the json column information
-                                    # May be worth it to make searching faster etc.
 
                                     # Attempt to auto discover the device via ssh
 
@@ -296,6 +318,75 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         enable_secret=p.get("enable_password"),
                                     )
 
+                                    # Auto discover has the following info in the ad dict
+                                    # "autodiscover": {
+                                    #     "ok": true,
+                                    #     "host": "10.0.0.101",
+                                    #     "output": "",
+                                    #     "command": "No commands sent during discovery",
+                                    #     "device_type": "cisco_xe",
+                                    #     "detected_device_type": "cisco_xe"
+                                    # }
+
+                                    # if autodiscover has completed successfully then attempt to fetch
+                                    # any other device details.
+
+                                    if ad.get("ok", False):
+
+                                        # Fetch version information
+                                        show_version_command = cisco_allowed_show_version_commands(ad['device_type'])
+                                        if show_version_command is not None:
+                                            show_version_command_output = await netmiko_fetch_command_output(
+                                                host=target_ip,
+                                                username=p.get("username", ""),
+                                                password=p.get("password", ""),
+                                                port=int(p.get("ssh_port", 22)),
+                                                enable_secret=p.get("enable_password"),
+                                                device_type=ad.get("device_type"),
+                                                command=show_version_command
+                                            )
+
+                                        # Perform a backup of the device
+                                        backup_commands = cisco_allowed_backup_commands(ad['device_type'])
+                                        logger.info(f"Backup commands: {backup_commands}")
+                                        if backup_commands is not None:
+                                            backup_commands_output = await netmiko_fetch_command_output(
+                                                host=target_ip,
+                                                username=p.get("username", ""),
+                                                password=p.get("password", ""),
+                                                port=int(p.get("ssh_port", 22)),
+                                                enable_secret=p.get("enable_password"),
+                                                device_type=ad.get("device_type"),
+                                                command=backup_commands
+                                            )
+
+                                            # Save the raw configuration backup
+                                            backup_task = save_device_backup_text(
+                                                target_ip=target_ip,
+                                                raw_text=backup_commands_output.get('output', 'No output found'),
+                                                subfolder=f"{ad.get("device_type")}/{target_ip}",
+                                            )
+
+                                            logger.info(f"Backup task: {backup_task}")
+
+                                            if backup_task.get("error"):
+                                                logger.info(f"Failed to save backup for {target_ip}")
+                                                original_backup_file_path = None
+                                            else:
+                                                original_backup_file_path = backup_task["path"]
+
+                                                # Compress and remove the old file
+
+                                                compress_task = gzip_file_verified(
+                                                    input_path=original_backup_file_path,
+                                                    verify=True,
+                                                    remove_original_on_success=True,
+                                                )
+
+                                                # TODO Add encryption if specific variables are present
+                                                # TODO Add database entry saving into the device backup location table
+                                                # TODO Pull initial device stats and information. IE Mac tables / arp etc
+                                                
                                     await insert_app_backend_tracking(
                                         database=database,
                                         route=route,
@@ -305,8 +396,18 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             "meta": scrub_secrets(meta),
                                             "device_profile": scrub_secrets(p),
                                             "autodiscover": ad,
+                                            #"show_version_command_output": show_version_command_output,
+                                            "show_version_command_output": "Redacted - Only saved in the file system",
+                                            "show_version_command_output_parsed": cisco_show_version_parse(show_version_command_output.get('output', '')),
+                                            #"backup_commands_output": backup_commands_output,
+                                            "backup_commands_output": ({**backup_commands_output, "output": "Redacted - Only saved in the file system"} if isinstance(backup_commands_output, dict) and "output" in backup_commands_output else backup_commands_output),
+                                            "backup_task": backup_task,
+                                            "original_backup_file_path": original_backup_file_path,
+                                            "compress_task": compress_task
                                         },
                                     )
+
+
 
                                     result = {
                                         "ping_ok": ok,
@@ -332,6 +433,12 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
 
                                     # Add to a device discovery table / devices table
                                     # from here get the device type and add some device specific command to use for discovery
+
+                                    # Break out upon successful autodiscover.
+                                    # This prevents logging in with multiple accounts.
+
+                                    if ad.get("ok", False):
+                                        break
 
                                 else:
                                     await insert_app_backend_tracking(

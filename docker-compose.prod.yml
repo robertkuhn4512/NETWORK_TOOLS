@@ -536,7 +536,7 @@ services:
       BIND_HOST: "0.0.0.0"
       BIND_PORT: "8000"
       WEB_CONCURRENCY: "2"
-      PRIMARY_SERVER_FQDN: "PRIMARY_SERVER_FQDN"
+      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN}"
       SSL_CERT_FILE: /run/certs/networktools_ca.crt
       FASTAPI_OIDC_CA_BUNDLE: /run/certs/networktools_ca.crt
     command: [ "python", "/app/run_server.py" ]
@@ -592,12 +592,19 @@ services:
         condition: service_started
     volumes:
       - fastapi_vault_rendered:/run/vault:ro
+      - ./container_data/logs/celery:/var/log/network_tools/celery
+      - ./container_data/backups/device_configuration_backups:/backups/device_configuration_backups
       - ./backend/app/nginx/certs/ca.crt:/run/certs/networktools_ca.crt:ro
     environment:
+      VAULT_ENV_OVERRIDE: "0"
       VAULT_TOKEN_FILE: "/run/vault/.vault-token"
       VAULT_CACERT: "/run/certs/networktools_ca.crt"
       VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
+      LOG_DIR: "/var/log/network_tools/celery"
+      LOG_FILE: "network_tools_celery.log"
+      LOG_LEVEL: "DEBUG"
+      LOG_TO_STDOUT: "1"
     command:
       - "python"
       - "/app/vault_env_exec.py"
@@ -605,7 +612,7 @@ services:
       - "-A"
       - "app.celery_app:celery_app"
       - "worker"
-      - "--loglevel=INFO"
+      - "--loglevel=DEBUG"
       - "--concurrency=10"
 
   # ------------------------------------------------------------

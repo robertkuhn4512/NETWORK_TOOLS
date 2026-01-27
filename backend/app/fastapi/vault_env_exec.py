@@ -45,19 +45,35 @@ def inject_env(secrets: Dict[str, Any]) -> int:
     injected = 0
     skipped = 0
 
+    # Match helpers_logging_config semantics:
+    # VAULT_ENV_OVERRIDE=1 means JSON wins (default)
+    # VAULT_ENV_OVERRIDE=0 means keep existing env vars (Compose wins)
+    override_existing = os.getenv("VAULT_ENV_OVERRIDE", "1").strip() == "1"
+
     for k, v in secrets.items():
         if not isinstance(k, str) or not VALID_ENV_KEY.match(k):
             skipped += 1
             continue
+
+        if (k in os.environ) and (not override_existing):
+            skipped += 1
+            continue
+
         os.environ[k] = "" if v is None else str(v)
         injected += 1
 
-    print(f"[vault_env_exec] injected={injected} skipped_invalid_keys={skipped}", flush=True)
+    print(
+        f"[vault_env_exec] injected={injected} skipped={skipped} override_existing={int(override_existing)}",
+        flush=True,
+    )
     return injected
 
 
 def main() -> int:
-    secrets_path = os.getenv("VAULT_SECRETS_JSON", "/run/vault/fastapi_secrets.json")
+    secrets_path = (
+        os.getenv("VAULT_SECRETS_JSON")
+        or "/run/vault/fastapi_secrets.json"
+    )
     timeout_s = int(os.getenv("VAULT_WAIT_TIMEOUT", "90"))
 
     if len(sys.argv) < 2:

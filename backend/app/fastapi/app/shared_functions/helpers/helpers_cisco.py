@@ -3,13 +3,187 @@ from __future__ import annotations
 import json
 import ipaddress
 import os
-from typing import Any, Dict, Optional
+import re
+from typing import Any, Dict, Optional, List, Tuple, Sequence, Union
 from urllib.parse import quote
 from app.database import database
 from uuid import uuid4
 
-# Cisco
-def parse_show_capabilities(output: str) -> Dict[str, Dict]:
+
+def cisco_allowed_backup_commands(device_type) -> Dict[str, str]:
+    """
+
+    :param device_type (cisco_ios | cisco_xe | cisco_xr) etc:
+    :return: allowed commands that can be sent to a device for discovery / backup purposes
+
+    Device types are based off what netmiko uses to describe a device using the autodiscover process
+    The list can be found here
+    https://ktbyers.github.io/netmiko/PLATFORMS.html
+
+    """
+
+    _SHOW_CMD_BY_DEVICE: Mapping[str, str] = {
+        "cisco_ios": [
+            "show version",
+            "show interface description",
+            "show interface brief",
+            "show running-config",
+            "show mac address-table count",
+        ],
+        "cisco_xe": [
+            "show version",
+            "show interface description",
+            "show interface brief",
+            "show running-config",
+            "show mac address-table count",
+        ],
+        "cisco_xr": [
+            "show version",
+            "show interface description",
+            "show interface brief",
+            "show running-config",
+            "show mac address-table count",
+        ],
+        "cisco_nxos": [
+            "show version",
+            "show inventory",
+            "show interface description",
+            "show interface status",
+            "show running-config",
+            # "show startup-config",
+            "show mac address-table count",
+        ],
+    }
+
+    return _SHOW_CMD_BY_DEVICE.get(device_type)
+
+def cisco_allowed_show_version_commands(device_type) -> Dict[str, str]:
+    """
+
+    :param device_type (cisco_ios | cisco_xe | cisco_xr) etc:
+    :return: allowed commands that can be sent to a device for discovery / backup purposes
+
+    Device types are based off what netmiko uses to describe a device using the autodiscover process
+    The list can be found here
+    https://ktbyers.github.io/netmiko/PLATFORMS.html
+
+    """
+
+    _SHOW_VERSION_CMD_BY_DEVICE: Mapping[str, str] = {
+        "cisco_ios": "show version",
+        "cisco_xe":  "show version",
+        "cisco_xr":  "show version",
+    }
+
+    return _SHOW_VERSION_CMD_BY_DEVICE.get(device_type)
+
+
+def cisco_show_version_parse(output: str) -> Dict[str, str]:
+    """
+    Parse key bits out of Cisco 'show version' output (IOS-XE + older IOS/3x/4xx).
+
+    Rules:
+      - For each field, try regexes in priority order.
+      - For each regex, scan lines top-to-bottom.
+      - First match wins for that field (bail immediately).
+      - Returns a flat dict of discovered fields:
+          software_version, model_number, system_serial_number, base_ethernet_mac_address
+    """
+
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+
+    # Capture everything to a single key: software_version
+    version_patterns: List[re.Pattern] = [
+        # IOS-XE explicit
+        re.compile(
+            r"^Cisco IOS XE Software,\s*Version\s+"
+            r"(?P<software_version>\d+(?:\.[0-9A-Za-z]+)+)",
+            re.IGNORECASE,
+        ),
+        # Many platforms just have "Version X.Y..."
+        re.compile(
+            r"^(?:Cisco IOS XE Software,\s*Version|Version)\s+"
+            r"(?P<software_version>\d+(?:\.[0-9A-Za-z]+)+)",
+            re.IGNORECASE,
+        ),
+        # Older IOS: "Cisco IOS Software, ... Version 15.2(4)E10, ..."
+        re.compile(
+            r"^Cisco IOS Software,.*\bVersion\s+(?P<software_version>[^,]+)",
+            re.IGNORECASE,
+        ),
+        # Fallback: any "Version <until comma>"
+        re.compile(r"\bVersion\s+(?P<software_version>[^,]+)", re.IGNORECASE),
+    ]
+
+    field_patterns: List[Tuple[str, List[re.Pattern]]] = [
+        (
+            "software_version",
+            version_patterns,
+        ),
+        (
+            "model_number",
+            [
+                re.compile(
+                    r"^Model\s+Number\s*:\s*(?P<model_number>[A-Za-z0-9\-]+)$",
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r"^License\s+Information\s+for\s+'(?P<model_number>[A-Za-z0-9\-]+)'$",
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r"^Cisco\s+(?P<model_number>WS-[A-Za-z0-9\-]+)\s*\(",
+                    re.IGNORECASE,
+                ),
+            ],
+        ),
+        (
+            "system_serial_number",
+            [
+                re.compile(
+                    r"^System\s+Serial\s+Number\s*:\s*(?P<system_serial_number>[A-Za-z0-9\-]+)$",
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r"^Processor\s+board\s+ID\s+(?P<system_serial_number>[A-Za-z0-9\-]+)$",
+                    re.IGNORECASE,
+                ),
+            ],
+        ),
+        (
+            "base_ethernet_mac_address",
+            [
+                re.compile(
+                    r"^Base\s+Ethernet\s+MAC\s+Address\s*:\s*"
+                    r"(?P<base_ethernet_mac_address>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})$",
+                    re.IGNORECASE,
+                )
+            ],
+        ),
+    ]
+
+    results: Dict[str, str] = {}
+    remaining = {field for field, _ in field_patterns}
+
+    for field_name, regex_list in field_patterns:
+        found = False
+        for rx in regex_list:
+            for ln in lines:
+                m = rx.search(ln)
+                if m:
+                    results[field_name] = m.group(field_name).strip()
+                    remaining.discard(field_name)
+                    found = True
+                    break
+            if found:
+                break
+
+        if not remaining:
+            break
+
+    return results
+
+def cisco_parse_show_interface_capabilities(output: str) -> Dict[str, Dict]:
     """
     Parse the output of `show capabilities` and return a dict keyed by
     interface long name, each containing:
@@ -92,3 +266,26 @@ def parse_show_capabilities(output: str) -> Dict[str, Dict]:
             break
 
     return interfaces
+
+def cisco_hostname(output):
+    """
+    parse the output of a show running-config | i hostname
+    and return the hostname.
+    """
+
+    regex = re.compile(
+        r'^hostname\s(?P<hostname>.*)')
+
+    data = {}
+    data = {
+        'hostname': ''
+    }
+    count = 0
+    for line in output.splitlines():
+        a = re.search(regex, line.strip())
+        if a is not None and line.strip() != "":
+            data = {
+                'hostname': a.groupdict()['hostname']
+            }
+            return data
+    return data

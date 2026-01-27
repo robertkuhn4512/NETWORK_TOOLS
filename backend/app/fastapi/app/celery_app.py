@@ -2,6 +2,10 @@
 
 import os
 from celery import Celery
+from app.shared_functions.helpers.helpers_logging_config import load_env_from_vault_json, setup_logging
+
+load_env_from_vault_json("/run/vault/fastapi_secrets.json")  # or CELERY-specific path
+setup_logging()
 
 def _env(name: str, default: str = "") -> str:
     v = os.getenv(name, default)
@@ -34,4 +38,5 @@ celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
+    worker_hijack_root_logger=False,
 )
