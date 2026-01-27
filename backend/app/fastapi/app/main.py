@@ -26,7 +26,7 @@ from app.routers.auth_test import router as auth_test_router
 from app.routers.device_discovery import router as device_discovery_router
 from app.routers.celery_jobs import router as celery_jobs_router
 
-from app.shared_functions.helpers.logging_config import setup_logging, load_env_from_vault_json
+from app.shared_functions.helpers.helpers_logging_config import setup_logging, load_env_from_vault_json
 from app.database import connect_db, disconnect_db
 
 # 1) Load env from Vault-rendered JSON FIRST (so LOG_LEVEL, CORS, etc. come from it)

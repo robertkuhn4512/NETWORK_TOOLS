@@ -23,9 +23,19 @@ from typing import Any, Dict
 from app.celery_app import celery_app
 from app.database import database, connect_db, disconnect_db
 from app.database_queries.postgres_insert_queries import insert_app_backend_tracking
-from app.shared_functions.helpers.helpers import scrub_secrets
 
-from app.shared_functions.helpers.vault_client import (
+from app.shared_functions.helpers.helpers_sanitation import scrub_secrets
+
+from app.shared_functions.helpers.helpers_netmiko import (
+    ssh_session,
+    netmiko_autodiscover
+)
+
+from app.shared_functions.helpers.helpers_generic import (
+    pretty_json_any
+)
+
+from app.shared_functions.helpers.helpers_hashicorp_vault import (
     vault_kv2_read,
     vault_kv2_read_all_under_prefix
 )
@@ -125,9 +135,55 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
             )
 
             # run ICMP check (async helper)
-            ok = bool(await pingOk(target_ip))
+            # Only if bypass_icmp is false
+            # bypass_icmp = true means attempt ssh if the device is pingable. false means try anyways
+
+            fetch_bypass_icmp = meta['payload'].get("bypass_icmp", None)
+
+            # If able to fetch the bypass_icmp flag and it is not true
+            # Then the device will get an icmp test
+
+            if fetch_bypass_icmp is not None and not meta['payload'].get("bypass_icmp"):
+                ok = bool(await pingOk(target_ip))
+            else:
+                # Bypass the icmp test
+                ok = False
 
             ms = int((time.perf_counter() - t0) * 1000)
+
+            # TODO Left off here!
+            # Start SSH Discovery
+            # If icmp_bypass == false and ok == true
+            # or icmp_bypass == true
+
+            #device_profiles = await vault_kv2_read(
+            #    mount="app_network_tools_secrets",
+            #    secret_path="device_login_profiles"
+            #)
+
+            device_profiles_raw = await vault_kv2_read(mount="app_network_tools_secrets", secret_path="device_login_profiles")
+            device_profiles_error = device_profiles_raw.get("error", False)
+
+            device_profiles: dict[str, dict] = {}
+            if not device_profiles_error and isinstance(device_profiles_raw, dict):
+                for name, val in device_profiles_raw.items():
+                    if isinstance(val, dict):
+                        device_profiles[name] = val
+                    elif isinstance(val, str):
+                        try:
+                            parsed = json.loads(val)
+                            if isinstance(parsed, dict):
+                                device_profiles[name] = parsed
+                        except Exception:
+                            pass
+
+
+            """
+            Check to see if vault returned any errors. 
+            If no errors device_profiles_error is None
+            """
+
+            device_profiles_error = device_profiles.get('error', False)
 
             result = {
                 "ping_ok": ok,
@@ -137,9 +193,10 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                 "requested_by": meta.get("requested_by"),
                 "azp": meta.get("azp"),
                 "roles": meta.get("roles") or [],
+                "device_profiles_error": device_profiles_error,
+                "device_profiles": scrub_secrets(pretty_json_any(device_profiles)),
             }
 
-            # Store results of the ICMP task
             await insert_app_backend_tracking(
                 database=database,
                 route=route,
@@ -150,35 +207,167 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                 },
             )
 
+            # If no errors from vault but there were no credentials returned (Empty dict)
+            # The discovery will fail
 
-            # TODO Left off here!
-            # Start SSH Discovery
-            # If icmp_bypass == false and ok == true
-            # or icmp_bypass == true
+            if not device_profiles_error and not device_profiles:
 
-            # Temp logging to see how vault works with celery
-            device_profiles = await vault_kv2_read(
-                mount="app_network_tools_secrets",
-                secret_path="device_login_profiles"
-            )
+                await _update_job(
+                    job_id=job_id,
+                    status="FAILURE",
+                    completed=True,
+                    duration_ms=ms,
+                    worker_hostname=worker_hostname,
+                    result=result,
+                )
 
-            await insert_app_backend_tracking(
-                database=database,
-                route="Test device credential fetch",
-                information={
-                    "device_profiles": device_profiles
-                },
-            )
+            elif not device_profiles_error and device_profiles:
+                # If no errors from vault and there are profiles returned from vault attempt to do the targeted discovery
 
-            # update the job details in the database
-            await _update_job(
-                job_id=job_id,
-                status="SUCCESS" if ok else "FAILURE",
-                completed=True,
-                duration_ms=ms,
-                worker_hostname=worker_hostname,
-                result=result,
-            )
+                task = meta['payload'].get("task", None)
+                target_ip = meta.get("target_ip", None)
+
+                await insert_app_backend_tracking(
+                    database=database,
+                    route=route,
+                    information={
+                        "event": "device_discovery.start_device_discovery.starting_ssh",
+                        "result": scrub_secrets(result),
+                        "meta": scrub_secrets(meta),
+                        "task": task,
+                        "target_ip": target_ip,
+                    },
+                )
+
+                if task is not None:
+                    if task == 'ssh':
+                        # Attempt SSH discovery with all the profiles found in vault
+                        for profile_name, p in (device_profiles or {}).items():
+
+                            if not isinstance(p, dict):
+                                continue
+
+                            await insert_app_backend_tracking(
+                                database=database,
+                                route=route,
+                                information={
+                                    "event": "device_discovery.start_device_discovery.starting_ssh",
+                                    "result": scrub_secrets(result),
+                                    "meta": scrub_secrets(meta),
+                                    "device_profile_tried": scrub_secrets(p)
+                                },
+                            )
+
+                            if target_ip is not None:
+                                proceed = False
+
+                                # If the user selected bypass_icmp = True (Do not ping the device before attempting auto discover)
+                                if meta['payload'].get("bypass_icmp"):
+                                    proceed = True
+
+                                # If the user selected bypass_icmp = False (Ping the device and only attempt ssh discovery if a reply was seen)
+                                if not meta['payload'].get("bypass_icmp") and ok:
+                                    proceed = True
+
+                                await insert_app_backend_tracking(
+                                    database=database,
+                                    route=route,
+                                    information={
+                                        "event": f"device_discovery.start_device_discovery.starting_ssh.proceed.{proceed}",
+                                        "result": scrub_secrets(result),
+                                        "meta": scrub_secrets(meta),
+                                        "device_profile": scrub_secrets(p),
+                                        "proceed": proceed,
+                                    },
+                                )
+
+                                if proceed:
+                                    # TODO - Add target_ip or similar column to app backend tracking log
+                                    # Or rely on searching the json column information
+                                    # May be worth it to make searching faster etc.
+
+                                    # Attempt to auto discover the device via ssh
+
+                                    ad = await netmiko_autodiscover(
+                                        host=target_ip,
+                                        username=p.get("username", ""),
+                                        password=p.get("password", ""),
+                                        port=int(p.get("ssh_port", 22)),
+                                        enable_secret=p.get("enable_password"),
+                                    )
+
+                                    await insert_app_backend_tracking(
+                                        database=database,
+                                        route=route,
+                                        information={
+                                            "event": "device_discovery.start_device_discovery.finished_ssh.success",
+                                            "result": scrub_secrets(result),
+                                            "meta": scrub_secrets(meta),
+                                            "device_profile": scrub_secrets(p),
+                                            "autodiscover": ad,
+                                        },
+                                    )
+
+                                    result = {
+                                        "ping_ok": ok,
+                                        "target_ip": target_ip,
+                                        "job_id": job_id,
+                                        "celery_task_id": task_id,
+                                        "requested_by": meta.get("requested_by"),
+                                        "azp": meta.get("azp"),
+                                        "roles": meta.get("roles") or [],
+                                        "device_profiles_error": device_profiles_error,
+                                        "device_profiles": scrub_secrets(pretty_json_any(device_profiles)),
+                                        "autodiscover": ad,
+                                    }
+
+                                    await _update_job(
+                                        job_id=job_id,
+                                        status="SUCCESS",
+                                        completed=True,
+                                        duration_ms=ms,
+                                        worker_hostname=worker_hostname,
+                                        result=result,
+                                    )
+
+                                    # Add to a device discovery table / devices table
+                                    # from here get the device type and add some device specific command to use for discovery
+
+                                else:
+                                    await insert_app_backend_tracking(
+                                        database=database,
+                                        route=route,
+                                        information={
+                                            "event": "device_discovery.start_device_discovery.starting_ssh.failed.unable_to_proceed",
+                                            "result": scrub_secrets(result),
+                                            "meta": scrub_secrets(meta),
+                                            "device_profile": scrub_secrets(p)
+                                        },
+                                    )
+                                    break
+                            else:
+                                await insert_app_backend_tracking(
+                                    database=database,
+                                    route=route,
+                                    information={
+                                        "event": "device_discovery.start_device_discovery.starting_ssh.failed.invalid_target_ip",
+                                        "result": scrub_secrets(result),
+                                        "meta": scrub_secrets(meta),
+                                        "device_profile": scrub_secrets(p)
+                                    },
+                                )
+                                break
+
+            else:
+                # update the job details in the database
+                await _update_job(
+                    job_id=job_id,
+                    status="SUCCESS" if ok else "FAILURE",
+                    completed=True,
+                    duration_ms=ms,
+                    worker_hostname=worker_hostname,
+                    result=result,
+                )
 
 
 
