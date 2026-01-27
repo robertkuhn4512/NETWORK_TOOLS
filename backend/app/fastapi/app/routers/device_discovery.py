@@ -25,12 +25,13 @@ from app.database_queries.postgres_insert_queries import (insert_app_backend_tra
 
 from app.celery_app import celery_app
 
-from app.shared_functions.helpers.helpers import (
-    user_display,
-    scrub_secrets,
+from app.shared_functions.helpers.helpers_sanitation import scrub_secrets
+from app.shared_functions.helpers.helpers_authentication import user_display
+from app.shared_functions.helpers.helpers_subnetting import expand_ipv4_targets_max_value
+
+from app.shared_functions.helpers.helpers_postgres import (
     _reserve_job_row_queued,
     _attach_task_id,
-    expand_ipv4_targets_max_24,
     _mark_job_failed_enqueue
 )
 
@@ -91,7 +92,9 @@ async def start_device_discovery(
     user: UserContext = Depends(get_current_user),
 ):
     RETURN_PREVIEW = 25  # how many per-IP jobs to include in the response preview
+
     required = {"fastapi_client", "device_discovery_user"}
+
     if not required.intersection(set(user.roles or [])):
         raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Insufficient role")
 
@@ -99,7 +102,7 @@ async def start_device_discovery(
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="ipv4_address is required")
 
     try:
-        cidr_norm, targets = expand_ipv4_targets_max_24(payload.ipv4_address)
+        cidr_norm, targets = expand_ipv4_targets_max_value(payload.ipv4_address)
     except ValueError as exc:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc))
 

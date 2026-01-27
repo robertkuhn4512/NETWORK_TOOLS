@@ -15,6 +15,11 @@ venv/
 logs/
 *.log
 
+# Local test files
+test/
+test*.py
+**/test/
+
 # Cert Directory
 backend/app/security/configuration_files/vault/certs/
 

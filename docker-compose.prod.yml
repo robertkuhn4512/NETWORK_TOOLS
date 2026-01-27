@@ -606,7 +606,7 @@ services:
       - "app.celery_app:celery_app"
       - "worker"
       - "--loglevel=INFO"
-      - "--concurrency=2"
+      - "--concurrency=10"
 
   # ------------------------------------------------------------
   # flower - Frontend for celery
