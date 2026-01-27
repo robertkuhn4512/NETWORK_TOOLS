@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.shared_functions.helpers.helpers import json_dumps_safe
+from app.shared_functions.helpers.helpers_generic import pretty_json_any
 
 logger = logging.getLogger("app.db.insert_queries")
 
@@ -41,7 +41,7 @@ async def insert_app_backend_tracking(
 
     params = {
         "route": route,
-        "information": json_dumps_safe(information),
+        "information": pretty_json_any(information),
     }
 
     try:
