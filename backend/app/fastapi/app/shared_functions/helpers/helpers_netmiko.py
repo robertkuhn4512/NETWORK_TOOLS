@@ -1,7 +1,6 @@
 import json
 import logging
 import time
-logger = logging.getLogger("app.helpers_netmiko")
 from typing import Iterable, Any, Dict, List, Optional, Tuple, Union, Iterator
 from datetime import datetime, date, timezone
 from contextlib import contextmanager
@@ -16,8 +15,8 @@ from netmiko import (
     file_transfer,
 )
 
-setup_logging()
 logger = logging.getLogger(__name__)
+logger.warning("helpers_netmiko imported")
 
 @contextmanager
 def ssh_session(*, enable: bool = True, **connect_args) -> Iterator[Any]:
