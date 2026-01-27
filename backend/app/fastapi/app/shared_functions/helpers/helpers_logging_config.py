@@ -16,7 +16,7 @@ Environment variables (preferably injected via /run/vault/fastapi_secrets.json):
   LOG_FILE=network_tools_fastapi.log
 
 Vault env loader controls:
-  VAULT_ENV_JSON=/run/vault/fastapi_secrets.json
+  VAULT_SECRETS_JSON=/run/vault/fastapi_secrets.json
   VAULT_ENV_OVERRIDE=1|0        (default 1; JSON wins for keys it contains)
   VAULT_ENV_STRICT=1|0          (default 0; if 1, missing JSON is fatal)
 """
@@ -51,7 +51,7 @@ def load_env_from_vault_json(
     global _VAULT_ENV_LOADED
 
     if path is None:
-        path = os.getenv("VAULT_ENV_JSON", "/run/vault/fastapi_secrets.json")
+        path = os.getenv("VAULT_SECRETS_JSON", "/run/vault/fastapi_secrets.json")
 
     if override_existing is None:
         override_existing = os.getenv("VAULT_ENV_OVERRIDE", "1").strip() == "1"
