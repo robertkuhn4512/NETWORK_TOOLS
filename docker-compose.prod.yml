@@ -593,13 +593,14 @@ services:
     volumes:
       - fastapi_vault_rendered:/run/vault:ro
       - ./container_data/logs/celery:/var/log/network_tools/celery
+      - ./container_data/backups/device_configuration_backups:/backups/device_configuration_backups
       - ./backend/app/nginx/certs/ca.crt:/run/certs/networktools_ca.crt:ro
     environment:
       VAULT_ENV_OVERRIDE: "0"
       VAULT_TOKEN_FILE: "/run/vault/.vault-token"
       VAULT_CACERT: "/run/certs/networktools_ca.crt"
       VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
-      VAULT_ENV_JSON: "/run/vault/fastapi_secrets.json"
+      VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
       LOG_DIR: "/var/log/network_tools/celery"
       LOG_FILE: "network_tools_celery.log"
       LOG_LEVEL: "DEBUG"
