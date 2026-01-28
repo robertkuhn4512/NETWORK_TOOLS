@@ -68,8 +68,12 @@ def _is_path_within_base(*, candidate: Path, base: Path) -> bool:
 async def fetch_device_backup_file(
     payload: TargetFile,
     request: Request,
-    user: UserContext = Depends(require_any_role("device_backup_file_user"))
+    user: UserContext = Depends(require_any_role("device_backup_file_admin", "device_backup_file_user"))
 ):
+    # Roles
+    #
+    # device_backup_file_admin (Can see full configurations)
+    # device_backup_file_admin (WIP : Will be able to see redacted configurations - Users choice - remove credentials etc)
 
     file_location = (payload.file_location or "").strip()
     if not file_location:

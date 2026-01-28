@@ -23,7 +23,7 @@ It is organized in the execution order you will actually follow in production.
 - [4. Smoke tests (minimal production validation)](#4-smoke-tests-minimal-production-validation)
 - [Appendix A — Troubleshooting / Gotchas](#appendix-a--troubleshooting--gotchas)
 - [Appendix B — Additional How-Tos](#appendix-b--additional-how-tos)
-
+  (See Appendix B for required Vault variables needed as well)
 ---
 
 ## 1. Setup via build scripts (certificate + bootstrap + AppRole)
