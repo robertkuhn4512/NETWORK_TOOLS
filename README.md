@@ -662,6 +662,85 @@ docker exec -it pgadmin sh -lc '
 '
 ```
 
+### B.2 Vault — `fastapi_secrets.json` keys (FastAPI + Celery + device configuration backups)
+
+FastAPI and the Celery worker load their runtime configuration from the Vault Agent rendered JSON file (the path is
+controlled by `VAULT_SECRETS_JSON`). The keys below are required for device backup creation **and** for reading backups
+back through the API without writing anything to disk.
+
+#### Device backup + encryption keys (required for this feature)
+
+- `CELERY_WORKER_DEVICE_BACKUP_FILE_LOCATION`  
+  Base directory where device configuration backups are stored (and later read from).  
+  Example: `/backups/device_configuration_backups`
+
+- `ENABLE_FILE_ENCRYPTION`  
+  `true|false`. When `true`, backups are written as `*.enc` (AES-GCM) after gzip compression.  
+  When `false`, the system may leave backups as plain `*.txt` / `*.gz` depending on your pipeline.
+
+- `DEVICE_BACKUP_MASTER_KEY_B64`  
+  Base64-encoded **32-byte** master key (AES-256). This must be present to decrypt `*.enc` files.  
+  Generate: `openssl rand -base64 32`
+
+- `DEVICE_BACKUP_KDF_PEPPER`  
+  Additional “pepper” input into the key-derivation (KDF). Treat as a secret and keep stable.  
+  Changing this will prevent decrypting previously-encrypted backups unless you re-encrypt them.
+
+- `DEVICE_BACKUP_MAX_DECOMPRESSED_BYTES`  
+  Hard cap for in-memory decompression when reading backups through the API (protects against huge files).  
+  Recommended: **50 MiB** → `52428800`
+
+#### Example `fastapi_secrets.json` (Vault-rendered)
+
+> **Do not commit real secrets.** Keep the real values in Vault and render them via Vault Agent templates.
+
+```json
+{
+  "APP_ENV": "prod",
+
+  "CELERY_BROKER_DB": "0",
+  "CELERY_BROKER_URL": "redis://:<REDIS_PASSWORD>@redis:6379/0",
+  "CELERY_RESULT_BACKEND": "redis://:<REDIS_PASSWORD>@redis:6379/1",
+  "CELERY_RESULT_DB": "1",
+
+  "CELERY_WORKER_DEVICE_BACKUP_FILE_LOCATION": "/backups/device_configuration_backups",
+  "ENABLE_FILE_ENCRYPTION": "true",
+  "DEVICE_BACKUP_MASTER_KEY_B64": "<BASE64_32_BYTES>",
+  "DEVICE_BACKUP_KDF_PEPPER": "<SECRET_PEPPER>",
+  "DEVICE_BACKUP_MAX_DECOMPRESSED_BYTES": "52428800",
+
+  "CORS_ALLOW_CREDENTIALS": "0",
+  "CORS_ALLOW_ORIGINS": "https://networkengineertools.com,https://www.networkengineertools.com",
+  "CORS_ALLOW_ORIGIN_REGEX": "^https://([a-z0-9-]+\\\\.)?networkengineertools\\\\.com(:\\\\d+)?$",
+
+  "FASTAPI_ALLOWED_AZP": "networktools-web,networktools-cli,networktools-automation,fastapi-client",
+  "FASTAPI_DB_PASSWORD": "<DB_PASSWORD>",
+  "FASTAPI_DB_SCHEMA": "public",
+  "FASTAPI_DB_URL_DATABASE": "network_tools",
+  "FASTAPI_DB_URL_HOST": "postgres_primary",
+  "FASTAPI_DB_URL_PORT": "5432",
+  "FASTAPI_DB_USERNAME": "network_tools_fastapi",
+  "FASTAPI_VERIFY_AUDIENCE": "false",
+
+  "KEYCLOAK_BASE_URL": "https://auth.networkengineertools.com:8443",
+  "KEYCLOAK_REALM": "network_tools",
+  "KEYCLOAK_INTROSPECTION_CLIENT_ID": "<OPTIONAL_IF_USING_INTROSPECTION>",
+  "KEYCLOAK_INTROSPECTION_CLIENT_SECRET": "<OPTIONAL_IF_USING_INTROSPECTION>",
+
+  "LOG_DIR": "/var/log/network_tools/fastapi",
+  "LOG_FILE": "network_tools_fastapi.log",
+  "LOG_LEVEL": "DEBUG",
+  "LOG_TO_STDOUT": "1",
+
+  "REDIS_HOST": "redis",
+  "REDIS_PASSWORD": "<REDIS_PASSWORD>",
+  "REDIS_PORT": "6379",
+
+  "TRUSTED_HOSTS": "networkengineertools.com,*.networkengineertools.com,localhost,127.0.0.1",
+  "VAULT_ADDR": "https://vault.networkengineertools.com:8200"
+}
+```
+
 
 ## Appendix C - Final Directory Structure (Prior to removing sensitive files)
 ```bash

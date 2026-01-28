@@ -98,3 +98,21 @@ def require_roles(*required: str):
         return user
 
     return _dep
+
+def require_any_role(*required: str):
+    required_set = set(required)
+
+    def _dep(user: UserContext = Depends(get_current_user)) -> UserContext:
+        have = set(user.roles or [])
+        if not (have & required_set):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "missing_any_required_role",
+                    "required_any": sorted(required_set),
+                    "have": sorted(have),
+                },
+            )
+        return user
+
+    return _dep

@@ -57,6 +57,23 @@ def cisco_allowed_backup_commands(device_type) -> Dict[str, str]:
 
     return _SHOW_CMD_BY_DEVICE.get(device_type)
 
+def cisco_map_device_type_os_type(device_type) -> Dict[str, str]:
+    """
+    This is used when saving devices to the devices table.
+    This information is used when querying ciscos apis for info like cves etc
+
+    """
+
+    _OS_NAME_BY_DEVICE: Mapping[str, str] = {
+        "cisco_ios": "ios",
+        "cisco_xe":  "iosxe",
+        "cisco_xr":  "iosxr",
+        "cisco_nxos":  "nxos",
+        "cisco_asa":  "asa",
+    }
+
+    return _OS_NAME_BY_DEVICE.get(device_type)
+
 def cisco_allowed_show_version_commands(device_type) -> Dict[str, str]:
     """
 
@@ -73,6 +90,7 @@ def cisco_allowed_show_version_commands(device_type) -> Dict[str, str]:
         "cisco_ios": "show version",
         "cisco_xe":  "show version",
         "cisco_xr":  "show version",
+        "cisco_nxos":  "show version",
     }
 
     return _SHOW_VERSION_CMD_BY_DEVICE.get(device_type)

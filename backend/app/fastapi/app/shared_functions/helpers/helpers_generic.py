@@ -9,11 +9,37 @@ from urllib.parse import quote
 from app.database import database
 from uuid import uuid4
 
-def env_bool(name: str, default: bool = False) -> bool:
+
+
+
+def env_bool_if_set(name: str) -> Optional[bool]:
+    _TRUE = {"1", "true", "t", "yes", "y", "on"}
+    _FALSE = {"0", "false", "f", "no", "n", "off"}
+
+    """
+    Returns:
+      - True/False if env var exists and is parseable as boolean
+      - None if env var is missing OR empty OR unparseable
+
+    Missing -> None - Used if the variable is not set and I want to not proceed with something
+    """
     raw = os.getenv(name)
+
     if raw is None:
-        return default
-    return str(raw).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+        return None
+
+    s = raw.strip().lower()
+
+    if s == "":
+        return None
+
+    if s in _TRUE:
+        return True
+
+    if s in _FALSE:
+        return False
+
+    return None
 
 def pretty_json_any(
     value: Any,
@@ -115,3 +141,4 @@ def pretty_json_any(
 
 def _is_blank(v: Any) -> bool:
     return v is None or (isinstance(v, str) and v.strip() == "")
+

@@ -231,8 +231,8 @@ CREATE TABLE IF NOT EXISTS devices (
   ipv4_loopback varchar(15) NOT NULL DEFAULT '',
   ipv6_loopback varchar(255),
   device_type varchar(255) NOT NULL DEFAULT '',
-  information text,
-  information_detail text,
+  information JSONB NOT NULL DEFAULT '{}'::jsonb,
+  information_detail JSONB NOT NULL DEFAULT '{}'::jsonb,
   datetimestamp timestamp,
   CONSTRAINT devices__pk PRIMARY KEY (id),
   CONSTRAINT devices__device_name__uq UNIQUE (device_name),
@@ -250,8 +250,8 @@ CREATE TABLE IF NOT EXISTS devices_archive (
   ipv4_loopback varchar(15) NOT NULL DEFAULT '',
   ipv6_loopback varchar(255),
   device_type varchar(255) NOT NULL DEFAULT '',
-  information text,
-  information_detail text,
+  information JSONB NOT NULL DEFAULT '{}'::jsonb,
+  information_detail JSONB NOT NULL DEFAULT '{}'::jsonb,
   datetimestamp timestamp,
   CONSTRAINT devices_archive__pk PRIMARY KEY (id)
 );
