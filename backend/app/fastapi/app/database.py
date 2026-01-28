@@ -18,16 +18,12 @@ from urllib.parse import quote
 
 from databases import Database
 
+from app.shared_functions.helpers.helpers_environment import (
+    _env_int
+)
+
 logger = logging.getLogger("app.db")
 
-def _env_int(name: str, default: int) -> int:
-    raw = (os.getenv(name) or "").strip()
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
 
 def build_database_url() -> str:
     """

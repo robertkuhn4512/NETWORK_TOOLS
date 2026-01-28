@@ -528,6 +528,7 @@ services:
       # TLS material (read-only)
       - ./backend/app/nginx/certs/ca.crt:/run/certs/networktools_ca.crt:ro
       - ./container_data/logs/fastapi:/var/log/network_tools/fastapi
+      - ./container_data/backups/device_configuration_backups:/backups/device_configuration_backups
     environment:
       VAULT_TOKEN_FILE: "/run/vault/.vault-token"
       VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
