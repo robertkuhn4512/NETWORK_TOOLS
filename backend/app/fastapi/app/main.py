@@ -23,6 +23,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.routers.auth_test import router as auth_test_router
+from app.routers.device_backups import router as device_backups_router
 from app.routers.device_discovery import router as device_discovery_router
 from app.routers.celery_jobs import router as celery_jobs_router
 
@@ -108,6 +109,7 @@ def create_app() -> FastAPI:
     # -------------------------
     app.include_router(auth_test_router)
     app.include_router(device_discovery_router)
+    app.include_router(device_backups_router)
     app.include_router(celery_jobs_router)
 
     @app.on_event("startup")

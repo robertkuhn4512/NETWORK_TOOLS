@@ -19,19 +19,29 @@ import logging
 import time
 import traceback
 from typing import Any, Dict
+from datetime import datetime
 
 from app.celery_app import celery_app
 from app.database import database, connect_db, disconnect_db
 
 from app.shared_functions.helpers.helpers_logging_config import load_env_from_vault_json, setup_logging
 
-from app.database_queries.postgres_insert_queries import insert_app_backend_tracking
+from app.database_queries.postgres_insert_queries import (
+    insert_app_backend_tracking,
+    insert_device_backup_location,
+    upsert_device_with_archive
+)
 
 from app.shared_functions.helpers.helpers_sanitation import scrub_secrets
 
 from app.shared_functions.helpers.helpers_configuration_backups import (
     save_device_backup_text,
     gzip_file_verified
+)
+
+from app.shared_functions.helpers.helpers_file_encryption import (
+    encrypt_backup_gz_to_enc,
+    read_backup_enc_gz_text
 )
 
 from app.shared_functions.helpers.helpers_netmiko import (
@@ -43,11 +53,14 @@ from app.shared_functions.helpers.helpers_netmiko import (
 from app.shared_functions.helpers.helpers_cisco import (
     cisco_allowed_show_version_commands,
     cisco_show_version_parse,
-    cisco_allowed_backup_commands
+    cisco_allowed_backup_commands,
+    cisco_hostname,
+    cisco_map_device_type_os_type
 )
 
 from app.shared_functions.helpers.helpers_generic import (
-    pretty_json_any
+    pretty_json_any,
+    env_bool_if_set
 )
 
 from app.shared_functions.helpers.helpers_hashicorp_vault import (
@@ -170,15 +183,9 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
 
             ms = int((time.perf_counter() - t0) * 1000)
 
-            # TODO Left off here!
             # Start SSH Discovery
             # If icmp_bypass == false and ok == true
             # or icmp_bypass == true
-
-            #device_profiles = await vault_kv2_read(
-            #    mount="app_network_tools_secrets",
-            #    secret_path="device_login_profiles"
-            #)
 
             device_profiles_raw = await vault_kv2_read(mount="app_network_tools_secrets", secret_path="device_login_profiles")
             device_profiles_error = device_profiles_raw.get("error", False)
@@ -279,7 +286,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                     "event": "device_discovery.start_device_discovery.starting_ssh",
                                     "result": scrub_secrets(result),
                                     "meta": scrub_secrets(meta),
-                                    "device_profile_tried": scrub_secrets(p)
+                                    "device_profile_tried": {profile_name: scrub_secrets(p)},
                                 },
                             )
 
@@ -301,7 +308,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         "event": f"device_discovery.start_device_discovery.starting_ssh.proceed.{proceed}",
                                         "result": scrub_secrets(result),
                                         "meta": scrub_secrets(meta),
-                                        "device_profile": scrub_secrets(p),
+                                        "device_profile": {profile_name: scrub_secrets(p)},
                                         "proceed": proceed,
                                     },
                                 )
@@ -317,7 +324,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         port=int(p.get("ssh_port", 22)),
                                         enable_secret=p.get("enable_password"),
                                     )
-
+                                    logger.info(ad)
                                     # Auto discover has the following info in the ad dict
                                     # "autodiscover": {
                                     #     "ok": true,
@@ -334,7 +341,26 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                     if ad.get("ok", False):
 
                                         # Fetch version information
-                                        show_version_command = cisco_allowed_show_version_commands(ad['device_type'])
+
+                                        # Fetched version based on device type
+                                        # I am going to hard code ish this check for now.
+                                        # Device types to flag off of can be found here
+                                        # https://ktbyers.github.io/netmiko/PLATFORMS.html
+                                        # TODO - Find a cleaner way to impliment this check.
+
+                                        if 'cisco' in ad.get("device_type"):
+                                            show_version_command = cisco_allowed_show_version_commands(ad['device_type'])
+                                            backup_commands = cisco_allowed_backup_commands(ad['device_type'])
+                                            os_name = cisco_map_device_type_os_type(ad['device_type'])
+                                        else:
+                                            os_name = None
+                                            hostname = None
+                                            backup_commands = None
+                                            show_version_command = None
+                                            show_version_command_output = ''
+                                            device_backup_location = ''
+                                            show_version_parsed = {}
+
                                         if show_version_command is not None:
                                             show_version_command_output = await netmiko_fetch_command_output(
                                                 host=target_ip,
@@ -346,10 +372,13 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 command=show_version_command
                                             )
 
+                                            if 'cisco' in ad.get("device_type"):
+                                                show_version_parsed = cisco_show_version_parse(show_version_command_output.get('output', ''))
+
                                         # Perform a backup of the device
-                                        backup_commands = cisco_allowed_backup_commands(ad['device_type'])
-                                        logger.info(f"Backup commands: {backup_commands}")
+
                                         if backup_commands is not None:
+
                                             backup_commands_output = await netmiko_fetch_command_output(
                                                 host=target_ip,
                                                 username=p.get("username", ""),
@@ -360,17 +389,24 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 command=backup_commands
                                             )
 
+                                            # Fetch specific items based on device type. Some devices may have
+                                            # different ways of saving X data.
+
+                                            if 'cisco' in ad.get("device_type"):
+                                                hostname = cisco_hostname(backup_commands_output.get('output', '')).get('hostname', 'Unable to determine hostname')
+
+
                                             # Save the raw configuration backup
+                                            now = datetime.now()
+                                            day_folder = now.strftime("%Y_%m_%d")
+
                                             backup_task = save_device_backup_text(
                                                 target_ip=target_ip,
                                                 raw_text=backup_commands_output.get('output', 'No output found'),
-                                                subfolder=f"{ad.get("device_type")}/{target_ip}",
+                                                subfolder=f"{ad.get("device_type")}/{day_folder}/{target_ip}",
                                             )
 
-                                            logger.info(f"Backup task: {backup_task}")
-
                                             if backup_task.get("error"):
-                                                logger.info(f"Failed to save backup for {target_ip}")
                                                 original_backup_file_path = None
                                             else:
                                                 original_backup_file_path = backup_task["path"]
@@ -383,63 +419,162 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                     remove_original_on_success=True,
                                                 )
 
-                                                # TODO Add encryption if specific variables are present
-                                                # TODO Add database entry saving into the device backup location table
-                                                # TODO Pull initial device stats and information. IE Mac tables / arp etc
-                                                
-                                    await insert_app_backend_tracking(
-                                        database=database,
-                                        route=route,
-                                        information={
-                                            "event": "device_discovery.start_device_discovery.finished_ssh.success",
-                                            "result": scrub_secrets(result),
-                                            "meta": scrub_secrets(meta),
-                                            "device_profile": scrub_secrets(p),
+                                                # Encrypt the file if the ENV Variable ENABLE_FILE_ENCRYPTION is set to true
+                                                # If the variable is set to false, or not present at all no encryption will be
+                                                # Done.
+
+                                                encryption_warning_message = ''
+
+                                                if env_bool_if_set('ENABLE_FILE_ENCRYPTION') is True:
+                                                    # Encrypt the backup file
+
+                                                    encryption_task = encrypt_backup_gz_to_enc(
+                                                        input_gz_path=compress_task.get('output_path', None),
+                                                    )
+
+                                                    device_backup_location = encryption_task.get('output_path', 'Error fetching file location')
+
+                                                    decrypt_task = read_backup_enc_gz_text(
+                                                        enc_path=encryption_task.get('output_path', None),
+                                                    )
+
+                                                elif os.getenv("ENABLE_FILE_ENCRYPTION") is not None and env_bool_if_set('ENABLE_FILE_ENCRYPTION') is None:
+                                                    encryption_warning_message = f"ENABLE_FILE_ENCRYPTION is set but not a valid bool: %r", os.getenv("ENABLE_FILE_ENCRYPTION")
+                                                    encryption_task = False
+                                                    decrypt_task = False
+                                                else:
+                                                    encryption_warning_message = "File encryption variable missing or set to false. No encryption task is being run"
+                                                    encryption_task = False
+                                                    decrypt_task = False
+                                                    device_backup_location = encryption_task.get('output_path', 'Error fetching file location')
+
+                                                # Save the location of the backup file if present
+                                                await insert_device_backup_location(
+                                                    database=database,
+                                                    device_name=hostname,
+                                                    ipv4_loopback=target_ip,
+                                                    device_type=ad.get("device_type"),
+                                                    file_location=device_backup_location
+                                                )
+
+                                        await upsert_device_with_archive(
+                                            database=database,
+                                            device_name=hostname,
+                                            ipv4_loopback=target_ip,
+                                            device_type=ad.get("device_type"),
+                                            hub_id=None, # Need to update eventually - per user case - requires custom checks
+                                            site_abbreviation=None, # Need to update eventually - per user case - requires custom checks
+                                            os_name=os_name,
+                                            version=show_version_parsed.get('software_version', None),
+                                            chassis_model=show_version_parsed.get('model_number', None),
+                                            information={
+                                                "event": "device_discovery.start_device_discovery.finished_ssh.success",
+                                                "result": {**scrub_secrets(result), "device_profiles": {}},
+                                                "meta": scrub_secrets(meta),
+                                                "device_profile": {profile_name: scrub_secrets(p)},
+                                                "autodiscover": ad,
+                                                "hostname": hostname,
+                                                "show_version_command_output": "Redacted - Only saved in the file system",
+                                                "show_version_command_output_parsed": show_version_parsed,
+                                                "backup_commands_output": ({**backup_commands_output, "output": "Redacted - Only saved in the file system"} if isinstance(backup_commands_output, dict) and "output" in backup_commands_output else backup_commands_output),
+                                                "backup_task": backup_task,
+                                                "original_backup_file_path": original_backup_file_path,
+                                                "compress_task": compress_task,
+                                                "encryption_warning_message": encryption_warning_message,
+                                                "encryption_task": encryption_task,
+                                                "decrypt_task": ({**decrypt_task, "content": "Redacted - This was a test to see if the file could be decrypted"} if isinstance(decrypt_task, dict) and "content" in decrypt_task else decrypt_task),
+                                            },
+                                            information_detail={}
+                                        )
+
+                                        await insert_app_backend_tracking(
+                                            database=database,
+                                            route=route,
+                                            information={
+                                                "event": "device_discovery.start_device_discovery.finished_ssh.success",
+                                                "result": scrub_secrets(result),
+                                                "meta": scrub_secrets(meta),
+                                                "device_profile": {profile_name: scrub_secrets(p)},
+                                                "autodiscover": ad,
+                                                "hostname": hostname,
+                                                "show_version_command_output": "Redacted - Only saved in the file system",
+                                                "show_version_command_output_parsed": show_version_parsed,
+                                                "backup_commands_output": ({**backup_commands_output, "output": "Redacted - Only saved in the file system"} if isinstance(backup_commands_output, dict) and "output" in backup_commands_output else backup_commands_output),
+                                                "backup_task": backup_task,
+                                                "original_backup_file_path": original_backup_file_path,
+                                                "compress_task": compress_task,
+                                                "encryption_warning_message": encryption_warning_message,
+                                                "encryption_task": encryption_task,
+                                                "decrypt_task": ({**decrypt_task, "content": "Redacted - This was a test to see if the file could be decrypted"} if isinstance(decrypt_task, dict) and "content" in decrypt_task else decrypt_task),
+                                            },
+                                        )
+
+
+
+                                        result = {
+                                            "ping_ok": ok,
+                                            "target_ip": target_ip,
+                                            "job_id": job_id,
+                                            "celery_task_id": task_id,
+                                            "requested_by": meta.get("requested_by"),
+                                            "azp": meta.get("azp"),
+                                            "roles": meta.get("roles") or [],
+                                            "device_profiles_error": device_profiles_error,
+                                            "device_profiles": scrub_secrets(pretty_json_any(device_profiles)),
                                             "autodiscover": ad,
-                                            #"show_version_command_output": show_version_command_output,
-                                            "show_version_command_output": "Redacted - Only saved in the file system",
-                                            "show_version_command_output_parsed": cisco_show_version_parse(show_version_command_output.get('output', '')),
-                                            #"backup_commands_output": backup_commands_output,
-                                            "backup_commands_output": ({**backup_commands_output, "output": "Redacted - Only saved in the file system"} if isinstance(backup_commands_output, dict) and "output" in backup_commands_output else backup_commands_output),
-                                            "backup_task": backup_task,
-                                            "original_backup_file_path": original_backup_file_path,
-                                            "compress_task": compress_task
-                                        },
-                                    )
+                                        }
 
+                                        await _update_job(
+                                            job_id=job_id,
+                                            status="SUCCESS",
+                                            completed=True,
+                                            duration_ms=ms,
+                                            worker_hostname=worker_hostname,
+                                            result=result,
+                                        )
 
+                                        # Add to a device discovery table / devices table
+                                        # from here get the device type and add some device specific command to use for discovery
 
-                                    result = {
-                                        "ping_ok": ok,
-                                        "target_ip": target_ip,
-                                        "job_id": job_id,
-                                        "celery_task_id": task_id,
-                                        "requested_by": meta.get("requested_by"),
-                                        "azp": meta.get("azp"),
-                                        "roles": meta.get("roles") or [],
-                                        "device_profiles_error": device_profiles_error,
-                                        "device_profiles": scrub_secrets(pretty_json_any(device_profiles)),
-                                        "autodiscover": ad,
-                                    }
+                                        # Break out upon successful autodiscover.
+                                        # This prevents logging in with multiple accounts.
 
-                                    await _update_job(
-                                        job_id=job_id,
-                                        status="SUCCESS",
-                                        completed=True,
-                                        duration_ms=ms,
-                                        worker_hostname=worker_hostname,
-                                        result=result,
-                                    )
+                                        if ad.get("ok", False):
+                                            break
+                                    else:
+                                        await insert_app_backend_tracking(
+                                            database=database,
+                                            route=route,
+                                            information={
+                                                "event": "device_discovery.start_device_discovery.finished_ssh.failed_autodiscovery",
+                                                "result": scrub_secrets(result),
+                                                "meta": scrub_secrets(meta),
+                                                "device_profile": {profile_name: scrub_secrets(p)},
+                                                "autodiscover": ad
+                                            },
+                                        )
 
-                                    # Add to a device discovery table / devices table
-                                    # from here get the device type and add some device specific command to use for discovery
+                                        result = {
+                                            "ping_ok": ok,
+                                            "target_ip": target_ip,
+                                            "job_id": job_id,
+                                            "celery_task_id": task_id,
+                                            "requested_by": meta.get("requested_by"),
+                                            "azp": meta.get("azp"),
+                                            "roles": meta.get("roles") or [],
+                                            "device_profiles_error": device_profiles_error,
+                                            "device_profiles": scrub_secrets(pretty_json_any(device_profiles)),
+                                            "autodiscover": ad,
+                                        }
 
-                                    # Break out upon successful autodiscover.
-                                    # This prevents logging in with multiple accounts.
-
-                                    if ad.get("ok", False):
-                                        break
-
+                                        await _update_job(
+                                            job_id=job_id,
+                                            status="FAILURE",
+                                            completed=False,
+                                            duration_ms=ms,
+                                            worker_hostname=worker_hostname,
+                                            result=result,
+                                        )
                                 else:
                                     await insert_app_backend_tracking(
                                         database=database,
@@ -448,7 +583,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             "event": "device_discovery.start_device_discovery.starting_ssh.failed.unable_to_proceed",
                                             "result": scrub_secrets(result),
                                             "meta": scrub_secrets(meta),
-                                            "device_profile": scrub_secrets(p)
+                                            "device_profile": {profile_name: scrub_secrets(p)},
                                         },
                                     )
                                     break
@@ -460,7 +595,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         "event": "device_discovery.start_device_discovery.starting_ssh.failed.invalid_target_ip",
                                         "result": scrub_secrets(result),
                                         "meta": scrub_secrets(meta),
-                                        "device_profile": scrub_secrets(p)
+                                        "device_profile": {profile_name: scrub_secrets(p)},
                                     },
                                 )
                                 break
