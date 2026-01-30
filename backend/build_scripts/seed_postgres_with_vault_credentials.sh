@@ -8,7 +8,7 @@ set -euo pipefail
 # - Vault paths are HARD-CODED (as requested), with one added for FastAPI:
 #     - /v1/app_network_tools_secrets/data/postgres
 #     - /v1/app_network_tools_secrets/data/keycloak_postgres
-#     - /v1/app_network_tools_secrets/data/fastapi_runtime   (default; override via --fastapi-secret-path)
+#     - /v1/app_network_tools_secrets/data/fastapi_secrets   (default; override via --fastapi-secret-path)
 #
 # - This script:
 #     1) Reads master Postgres credentials from Vault (POSTGRES_USER/POSTGRES_PASSWORD).
@@ -26,7 +26,7 @@ set -euo pipefail
 #     --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
 #
 # Optional:
-#   --fastapi-secret-path fastapi_runtime|fastapi_postgres|...  (default: fastapi_runtime)
+#   --fastapi-secret-path fastapi_secrets|fastapi_postgres|...  (default: fastapi_secrets)
 #
 # Exit codes
 #   0  success
@@ -44,7 +44,7 @@ DEFAULT_VAULT_MOUNT="app_network_tools_secrets"
 
 KEYCLOAK_SECRET_PATH="keycloak_postgres"
 POSTGRES_SECRET_PATH="postgres"
-FASTAPI_SECRET_PATH_DEFAULT="fastapi_runtime"
+FASTAPI_SECRET_PATH_DEFAULT="fastapi_secrets"
 
 DEFAULT_BOOTSTRAP_DIR="${HOME}/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap"
 DEFAULT_TOKEN_FILE="${DEFAULT_BOOTSTRAP_DIR}/root_token"
@@ -84,7 +84,7 @@ Optional:
   --token-file PATH             Default: $HOME/NETWORK_TOOLS/.../bootstrap/root_token (prompts if missing)
   --postgres-container NAME     Default: postgres_primary
   --pg-port PORT                Default: 5432
-  --fastapi-secret-path NAME    Default: fastapi_runtime
+  --fastapi-secret-path NAME    Default: fastapi_secrets
   --insecure                    Skip TLS verification for Vault curl (dev-only)
   -h, --help                    Show this help.
 

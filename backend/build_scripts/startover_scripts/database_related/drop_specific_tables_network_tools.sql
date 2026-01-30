@@ -1,7 +1,7 @@
 -- drop_network_tools_tables_and_indexes_explicit.sql
 --
 -- Purpose:
---   Explicitly drop constraints, indexes, and tables defined by 20_network_tools_schema.sql
+--   Explicitly drop constraints, indexes, and tables defined by initial_reference_network_tools_schema.sql
 --   for the *network_tools* database ONLY.
 --
 -- How to run (Docker):
