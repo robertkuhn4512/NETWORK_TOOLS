@@ -1,0 +1,5 @@
+{
+  "os": "asa",
+  "version": "9.16.1",
+  "product": "Cisco NX-OS Software 4.2(1)SV1(4) (only used when os=by_product_id)"
+}

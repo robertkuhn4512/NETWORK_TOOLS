@@ -1941,7 +1941,7 @@ SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L;', :'role_name', :'role_pass
 SQL
 
   # Schema grants within target DB
-  psql_admin --dbname="${dbname}"     --set=schema_name="${schema}" --set=role_name="${username}" --set=owner_role="${owner_role}" <<'SQL'
+  psql_admin --dbname="${dbname}"     --set=db_name="${dbname}" --set=schema_name="${schema}" --set=role_name="${username}" --set=owner_role="${owner_role}" <<'SQL'
 -- Ensure schema exists (do not change owner here)
 SELECT format('CREATE SCHEMA %I;', :'schema_name')
 WHERE NOT EXISTS (
@@ -1951,16 +1951,62 @@ WHERE NOT EXISTS (
 )
 \gexec
 
--- Current objects
+
+-- Current objects (converge to non-destructive DML-only privileges)
+
+-- Database-level: ensure role can connect, but nothing else
+SELECT format('REVOKE ALL ON DATABASE %I FROM %I;', :'db_name', :'role_name')
+\gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO %I;', :'db_name', :'role_name')
+\gexec
+
+-- Schema-level: USAGE only (no CREATE)
+SELECT format('REVOKE ALL ON SCHEMA %I FROM %I;', :'schema_name', :'role_name')
+\gexec
 SELECT format('GRANT USAGE ON SCHEMA %I TO %I;', :'schema_name', :'role_name')
 \gexec
-SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I;', :'schema_name', :'role_name')
+
+-- Tables: strip everything, then grant SELECT/INSERT/UPDATE
+SELECT format('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I FROM %I;', :'schema_name', :'role_name')
+\gexec
+SELECT format('GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA %I TO %I;', :'schema_name', :'role_name')
+\gexec
+
+-- Sequences: strip everything, then grant USAGE/SELECT/UPDATE (identity/serial inserts need this)
+SELECT format('REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %I FROM %I;', :'schema_name', :'role_name')
 \gexec
 SELECT format('GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA %I TO %I;', :'schema_name', :'role_name')
 \gexec
 
+-- Explicit grants for known identity/sequence-backed tables (no-op if objects don't exist)
+SELECT format('GRANT SELECT, INSERT, UPDATE ON TABLE %I.%I TO %I;', :'schema_name', 'reporting_cisco_api_cve_software', :'role_name')
+WHERE EXISTS (
+  SELECT 1
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = :'schema_name'
+    AND c.relname = 'reporting_cisco_api_cve_software'
+    AND c.relkind IN ('r','p','v','m','f')
+)
+\gexec
+
+SELECT format('GRANT USAGE, SELECT, UPDATE ON SEQUENCE %I.%I TO %I;', :'schema_name', 'reporting_cisco_api_cve_software_id_seq', :'role_name')
+WHERE EXISTS (
+  SELECT 1
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = :'schema_name'
+    AND c.relname = 'reporting_cisco_api_cve_software_id_seq'
+    AND c.relkind = 'S'
+)
+\gexec
+
 -- Future objects created by the owner role
-SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I;', :'owner_role', :'schema_name', :'role_name')
+SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I REVOKE ALL ON TABLES FROM %I;', :'owner_role', :'schema_name', :'role_name')
+\gexec
+SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT, INSERT, UPDATE ON TABLES TO %I;', :'owner_role', :'schema_name', :'role_name')
+\gexec
+SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I REVOKE ALL ON SEQUENCES FROM %I;', :'owner_role', :'schema_name', :'role_name')
 \gexec
 SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I;', :'owner_role', :'schema_name', :'role_name')
 \gexec

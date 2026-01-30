@@ -179,6 +179,7 @@ async def start_device_discovery(
             )
             skipped.append({"target_ip": target_ip, "job_id": reserve["job_id"], "error": "enqueue_failed"})
             continue
+
     await insert_app_backend_tracking(
         database=database,
         route=request.url.path,

@@ -53,7 +53,7 @@ def _vault_verify() -> Any:
       - True/False
       - path to a CA bundle / CA cert file
     """
-    cacert = (os.getenv("VAULT_CACERT") or "").strip()
+    cacert = ("/run/certs/networktools_ca.crt" or os.getenv("VAULT_CACERT") or "").strip()
     return cacert if cacert else True
 
 
@@ -64,6 +64,19 @@ def _vault_headers() -> Dict[str, str]:
         headers["X-Vault-Namespace"] = ns
     return headers
 
+def _normalize_vault_kv_keys(secret: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize by stripping leading/trailing whitespace.
+    """
+    out: Dict[str, Any] = {}
+    for k, v in (secret or {}).items():
+        out[str(k).strip()] = v
+    return out
+
+def _coerce_str(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 async def vault_kv2_read(*, mount: str, secret_path: str) -> Dict[str, Any]:
     """
@@ -159,3 +172,62 @@ async def vault_kv2_read_all_under_prefix(*, mount: str, prefix: str) -> Dict[st
             items[key] = data
 
     return {"items": items, "errors": errors}
+
+async def vault_get_cisco_api_console_config(*, include_meta: bool = False) -> Dict[str, Any]:
+    """
+    Reads and validates Cisco API Console configuration from Vault KVv2.
+
+    Vault endpoint:
+      GET /v1/app_network_tools_secrets/data/cisco_api_console
+
+    Returns:
+      - On success: dict with all required Cisco values (strings)
+      - On failure: {"error": "...", ...}
+
+    NOTE: This function relies on the Vault Agent sink token file for it's access token
+    reads per-call via VAULT_TOKEN_FILE (default /run/vault/token).
+    """
+
+    CISCO_API_CONSOLE_MOUNT = "app_network_tools_secrets"
+    CISCO_API_CONSOLE_SECRET_PATH = "cisco_api_console"
+
+    raw = await vault_kv2_read(mount=CISCO_API_CONSOLE_MOUNT, secret_path=CISCO_API_CONSOLE_SECRET_PATH)
+
+    if isinstance(raw, dict) and "error" in raw:
+        return raw
+
+    cfg = _normalize_vault_kv_keys(raw)
+
+    required = [
+        "advisories_key",
+        "advisories_client_secret",
+        "cve_api_advisories_url",
+        "eox_key",
+        "eox_client_secret",
+        "url_CVEAdvisoriesBaseURL",
+        "url_CVEAdvisoriesByProductURL",
+        "url_CVEAdvisoriesCiscoIOSXR",
+        "url_EOXByProductID",
+    ]
+
+    missing = [k for k in required if not _coerce_str(cfg.get(k))]
+    if missing:
+        return {
+            "error": "missing_vault_keys",
+            "mount": CISCO_API_CONSOLE_MOUNT,
+            "path": CISCO_API_CONSOLE_SECRET_PATH,
+            "missing": missing,
+            "present_keys": sorted(cfg.keys()),
+        }
+
+    out: Dict[str, Any] = {k: _coerce_str(cfg.get(k)) for k in required}
+
+    if include_meta:
+        # Set to true to return metadata from vault minus the secrets for debugging.
+        out["_meta"] = {
+            "mount": CISCO_API_CONSOLE_MOUNT,
+            "path": CISCO_API_CONSOLE_SECRET_PATH,
+            "present_keys": sorted(cfg.keys()),
+        }
+
+    return out
