@@ -52,92 +52,262 @@ Legacy / not in use (kept for reference):
 >NOTE: This build is going off my one domain setup. This can be set / changed in the .env file.
 
 ---
-1. `./backend/build_scripts/generate_local_networkengineertools_certs.sh`
-2. `./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*
-3. `./backend/build_scripts/generate_bootstrap_creds_and_seed.sh`
-4. `./backend/build_scripts/postgress_approle_setup.sh` *(Step 2 must create the AppRole auth method or this will fail.)*
-5. `./backend/build_scripts/keycloak_approle_setup.sh` *(Step 2 must create the AppRole auth method or this will fail.)*
+1. `bash ./backend/build_scripts/generate_local_networkengineertools_certs.sh`
+
+```bash
+If you are using self generated scripts your output should look like the following.
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ bash ./backend/build_scripts/generate_local_networkengineertools_certs.sh
+==> Output directory: /home/developer_network_tools/NETWORK_TOOLS/backend/app/nginx/certs
+==> CN: networkengineertools.com
+==> SANs (DNS):
+    - networkengineertools.com
+    - *.networkengineertools.com
+    - auth.networkengineertools.com
+    - api.networkengineertools.com
+    - pgadmin.networkengineertools.com
+    - flower.networkengineertools.com
+    - vault.networkengineertools.com
+    - localhost
+==> SANs (IP):
+    - 127.0.0.1
+==> Creating CA (with proper v3 CA extensions)
+==> Creating server key and CSR
+==> Signing leaf certificate
+Certificate request self-signature ok
+subject=CN = networkengineertools.com
+==> Syncing certs into Vault cert dir: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs
+==> Syncing CA into FastAPI build context: /home/developer_network_tools/NETWORK_TOOLS/backend/app/fastapi/certs
+==> Done. Files:
+total 36K
+drwx------ 2 developer_network_tools developer_network_tools 4.0K Jan 30 21:27 .
+drwxr-xr-x 4 developer_network_tools developer_network_tools 4.0K Jan  6 21:41 ..
+-rw-r--r-- 1 developer_network_tools developer_network_tools 1.9K Jan 30 21:27 ca.crt
+-rw------- 1 developer_network_tools developer_network_tools 3.2K Jan 30 21:27 ca.key
+-rw------- 1 developer_network_tools developer_network_tools   41 Jan 30 21:27 ca.srl
+-rw-r--r-- 1 developer_network_tools developer_network_tools 4.1K Jan 30 21:27 cert.crt
+-rw------- 1 developer_network_tools developer_network_tools 3.2K Jan 30 21:27 cert.key
+-rw-r--r-- 1 developer_network_tools developer_network_tools 2.2K Jan 30 21:27 cert.leaf.crt
+
+Next step: trust the CA (ca.crt) on your client machine for clean browser UX.
+```
+2. `bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh` *(first-time Vault only)*
+
+```bash
+Your output should look similar to below
+
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ bash ./backend/build_scripts/vault_first_time_init_only_rootless.sh
+INFO: Loading env defaults from: /home/developer_network_tools/NETWORK_TOOLS/.env
+INFO: Starting Vault container: docker compose -p network_tools -f /home/developer_network_tools/NETWORK_TOOLS/docker-compose.prod.yml up -d vault_production_node
+[+] up 10/10
+ ✔ Image hashicorp/vault:1.21.1     Pulled                                                                                                                                                                                                                69.8s 
+ ✔ Network network_tools_public_net Created                                                                                                                                                                                                                0.0s 
+ ✔ Container vault_production_node  Created                                                                                                                                                                                                                0.1s 
+INFO: Waiting for Vault endpoint: https://vault.networkengineertools.com:8200
+INFO: WARN: public GET /v1/sys/health curl failed (rc=35, http=000): curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to vault.networkengineertools.com:8200 
+INFO: WARN: TLS verification failed using system trust store (no --ca-cert provided).
+INFO: WARN: curl error: curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to vault.networkengineertools.com:8200 
+INFO: WARN: Retrying with -k (insecure). For proper TLS verification, provide --ca-cert <path-to-ca.crt>.
+INFO: Vault not initialized; initializing (shares=5, threshold=3)…
+INFO: Init complete. Wrote (0600):
+INFO:   Unseal keys JSON     : /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json
+INFO:   Root token (plain)   : /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token
+INFO:   Root token (JSON)    : /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json
+INFO: Unsealing Vault using 3 key(s)…
+INFO: Vault unsealed.
+INFO: Enabling file audit device at path 'file/' -> /vault/logs/audit.log
+INFO: Audit device enabled successfully.
+./backend/build_scripts/vault_first_time_init_only_rootless.sh: line 814: vault: command not found
+INFO: Ensured ACL policy: postgres_pgadmin_read
+INFO: Enabled auth method: approle/
+INFO: Ensured AppRole role: postgres_pgadmin_agent (policy: postgres_pgadmin_read)
+./backend/build_scripts/vault_first_time_init_only_rootless.sh: line 927: vault: command not found
+INFO: Ensured ACL policy: keycloak_read
+INFO: Auth method already enabled: approle/
+INFO: Ensured AppRole role: keycloak_agent (policy: keycloak_read)
+INFO: Ensured ACL policy: fastapi_read
+INFO: Auth method already enabled: approle/
+INFO: Ensured AppRole role: fastapi_agent (policy: fastapi_read)
+
+============================================================
+VAULT BOOTSTRAP ARTIFACTS (SENSITIVE) - DOWNLOAD THEN REMOVE
+============================================================
+Bootstrap directory:
+  /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap
+
+Files written/used by this script:
+  - /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json  (exists; perms/owner: 600 developer_network_tools:developer_network_tools)
+  - /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token  (exists; perms/owner: 600 developer_network_tools:developer_network_tools)
+  - /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json  (exists; perms/owner: 600 developer_network_tools:developer_network_tools)
+
+IMPORTANT:
+  - This script is configured to print key/token JSON contents to the terminal by default.
+    Use --no-print-artifact-contents to suppress that output.
+  1) Download these files to a secure location (password manager / offline vault / secure storage).
+  2) Do NOT commit these files to Git.
+  3) After you have securely stored them, delete them from this server.
+
+Example download (from your workstation):
+  scp -p <user>@<server>:'/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json' .
+  scp -p <user>@<server>:'/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token' .
+  scp -p <user>@<server>:'/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json' .
+
+Example removal (run on this server AFTER downloading):
+  rm -f '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json' '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token' '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json'
+
+If you want a stronger delete (optional; not always effective on all storage):
+  shred -u '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json' '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token' '/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json'
+
+
+============================================================
+BOOTSTRAP FILE CONTENTS (HIGHLY SENSITIVE) - TERMINAL OUTPUT
+============================================================
+WARNING: The contents below include unseal keys and root token.
+Do NOT paste this output into tickets, chat, or logs.
+============================================================
+
+----- /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json -----
+{
+  "keys": [
+    "7fda417808b008aa1847d6fdf1e90aad17929c25249f4f66da6b170f954ed22e4f",
+    "2b698adcad5931f7a1b44fb60c852ba91b7c47b96bfdddf12793cfa0a48ecfb0f6",
+    "3bf139186e1d914f8ec72dfa0c203fad26adcb94156beae553005a0e934c81cdeb",
+    "d48b333ffd8048ef972d4ffa89cfb472827ab2b47d53fac29aabca57d4eea2dac3",
+    "cc1da92bf9cbca714feea45f31feb5a385f95007df459047047d0fc47f98ed6b8e"
+  ],
+  "keys_base64": [
+    "f9pBeAiwCKoYR9b98ekKrReSnCUkn09m2msXD5VO0i5P",
+    "K2mK3K1ZMfehtE+2DIUrqRt8R7lr/d3xJ5PPoKSOz7D2",
+    "O/E5GG4dkU+Oxy36DCA/rSaty5QVa+rlUwBaDpNMgc3r",
+    "1IszP/2ASO+XLU/6ic+0coJ6srR9U/rCmqvKV9TuotrD",
+    "zB2pK/nLynFP7qRfMf61o4X5UAffRZBHBH0PxH+Y7WuO"
+  ],
+  "root_token": "hvs.0k2BGarvgQvQyz7hA1Z93Lpw"
+}
+
+----- /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json -----
+{
+  "root_token": "hvs.0k2BGarvgQvQyz7hA1Z93Lpw"
+}
+
+{
+  "vault_addr": "https://vault.networkengineertools.com:8200",
+  "compose": {
+    "project": "network_tools",
+    "file": "/home/developer_network_tools/NETWORK_TOOLS/docker-compose.prod.yml",
+    "service": "vault_production_node"
+  },
+  "bootstrap_dir": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap",
+  "files": {
+    "unseal_keys_json": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json",
+    "root_token": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token",
+    "root_token_json": "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json"
+  },
+  "pretty_output": true,
+  "postgres_pgadmin_approle_bootstrap": {
+    "enabled": true,
+    "force": false,
+    "setup_done": true,
+    "role_name": "postgres_pgadmin_agent",
+    "policy_name": "postgres_pgadmin_read"
+  },
+  "keycloak_approle_bootstrap": {
+    "enabled": true,
+    "force": false,
+    "setup_done": true,
+    "role_name": "keycloak_agent",
+    "policy_name": "keycloak_read"
+  },
+  "fastapi_approle_bootstrap": {
+    "enabled": true,
+    "force": false,
+    "setup_done": true,
+    "role_name": "fastapi_agent",
+    "policy_name": "fastapi_read"
+  },
+  "print_artifact_contents": true,
+  "audit": {
+    "enabled": true,
+    "path": "file",
+    "file_path": "/vault/logs/audit.log"
+  },
+  "initialized": true,
+  "unsealed": true
+}
+
+```
+3. `bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --unseal-required 3`
+
+```bash
+Your output should look like below
+
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ bash ./backend/build_scripts/generate_bootstrap_creds_and_seed.sh \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt" \
+  --unseal-required 3
+INFO: Loading env defaults from: /home/developer_network_tools/NETWORK_TOOLS/.env
+INFO: Using existing local bootstrap artifacts: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/bootstrap_creds.env
+INFO: Wrote credential artifacts:
+INFO:   ENV:  /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/bootstrap_creds.env
+INFO:   JSON: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/bootstrap_credentials.json
+INFO:   SPEC: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seed_kv_spec.bootstrap_creds.json
+INFO: 
+INFO: Seeding Vault from generated spec...
+INFO:   VAULT_ADDR: https://vault.networkengineertools.com:8200
+INFO:   Seed script: /home/developer_network_tools/NETWORK_TOOLS/backend/build_scripts/vault_unseal_multi_kv_seed_bootstrap_rootless.sh
+INFO:   CA cert:    /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt
+INFO: Vault address: https://vault.networkengineertools.com:8200
+INFO: Bootstrap dir: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap
+INFO: Spec file: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seed_kv_spec.bootstrap_creds.json
+INFO: Unseal keys file: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json
+INFO: CA cert: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt
+INFO: Vault is already unsealed. Skipping unseal.
+INFO: Spec mounts: 1
+INFO: --- Mount [0]: app_network_tools_secrets (version=2) ---
+INFO: Enabled KV v2 at app_network_tools_secrets/
+INFO: wrote -> app_network_tools_secrets/postgres
+INFO: wrote -> app_network_tools_secrets/pgadmin
+INFO: wrote -> app_network_tools_secrets/device_login_profiles
+INFO: wrote -> app_network_tools_secrets/fastapi_secrets
+INFO: wrote -> app_network_tools_secrets/keycloak_postgres
+INFO: wrote -> app_network_tools_secrets/keycloak_bootstrap
+INFO: wrote -> app_network_tools_secrets/keycloak_runtime
+INFO: Mount app_network_tools_secrets: seed complete. success=7 failed=0
+INFO: Wrote consolidated secrets artifact:
+      /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_all.json
+INFO: (Not printing secrets; use --print-secrets to print.)
+INFO: Recommended next steps:
+  1) Securely download required artifacts (examples):
+     scp -p <user>@<server>:"/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_all.json" .
+     scp -p <user>@<server>:"/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" .
+     scp -p <user>@<server>:"/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token" .
+     scp -p <user>@<server>:"/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json" .
+  2) After verifying downloads, remove sensitive files from the server:
+     rm -f "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/seeded_secrets_all.json" "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/unseal_keys.json" "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token" "/home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token.json"
+INFO: Done.
+INFO: Vault seeding completed.
+INFO: Done.
+
+
+NOTE:
+There are other credentials that must be seeded manually if you wish to enable certain features like 
+ciscos apix reporting, or file encryption for device backups. See the file backend/build_scripts/documentation/fastapi/example_vault_data/fastapi_secrets.json for the examples
+```
+
+*(Step 2 must create the AppRole auth method or these will fail.)*
+
+4. `chmod +x ./backend/build_scripts/keycloak_approle_setup.sh
+ROLE_NAME=keycloak_agent ./backend/build_scripts/keycloak_approle_setup.sh`
+5. `chmod +x ./backend/build_scripts/postgress_approle_setup.sh
+ROLE_NAME=postgres_pgadmin_agent ./backend/build_scripts/postgress_approle_setup.sh` 
+6. `chmod +x ./backend/build_scripts/fastapi_approle_setup.sh
+ROLE_NAME=fastapi_agent ./backend/build_scripts/fastapi_approle_setup.sh`
 ---
 
 ### 1.0 Initial BASE File system structure
 ```bash
 developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
-.
-|-- backend
-|   |-- app
-|   |   |-- fastapi
-|   |   |   `-- vault_agent
-|   |   |       |-- agent.hcl
-|   |   |       `-- templates
-|   |   |           `-- fastapi_secrets.json.ctmpl
-|   |   |-- keycloak
-|   |   |   |-- bin
-|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
-|   |   |   `-- vault_agent
-|   |   |       |-- agent.hcl
-|   |   |       |-- keycloak_agent_policy.hcl
-|   |   |       `-- templates
-|   |   |           |-- keycloak.env.ctmpl
-|   |   |           |-- keycloak_tls.crt.ctmpl
-|   |   |           `-- keycloak_tls.key.ctmpl
-|   |   |-- nginx
-|   |   |   |-- certs
-|   |   |   `-- templates
-|   |   |       |-- networktools.conf.template
-|   |   |       `-- vault.conf.template
-|   |   |-- pgadmin
-|   |   |   `-- certs
-|   |   |-- postgres
-|   |   |   |-- certs
-|   |   |   |-- config
-|   |   |   |   |-- pg_hba.conf
-|   |   |   |   `-- postgres.conf
-|   |   |   `-- vault_agent
-|   |   |       |-- agent.hcl
-|   |   |       `-- templates
-|   |   |           |-- pgadmin_password.ctmpl
-|   |   |           |-- postgres_db.ctmpl
-|   |   |           |-- postgres_password.ctmpl
-|   |   |           |-- postgres_user.ctmpl
-|   |   |           `-- servers.json.ctmpl
-|   |   |-- routers
-|   |   `-- security
-|   |       `-- configuration_files
-|   |           `-- vault
-|   |               |-- config
-|   |               |   |-- certs
-|   |               |   |-- keycloak_kv_read.hcl
-|   |               |   |-- postgres_pgadmin_kv_read.hcl
-|   |               |   `-- vault_configuration_primary_node.hcl
-|   |               `-- Dockerfile
-|   |-- build_scripts
-|   |   |-- generate_local_keycloak_certs.sh
-|   |   |-- generate_local_networkengineertools_certs.sh
-|   |   |-- generate_local_pgadmin_certs.sh
-|   |   |-- generate_local_postgres_certs.sh
-|   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_bootstrap_creds_and_seed.sh
-|   |   |-- guides
-|   |   |   |-- seed_kv_spec.example.json
-|   |   |   `-- seed_kv_spec.GUIDE.md
-|   |   |-- keycloak_approle_setup.sh
-|   |   |-- postgress_approle_setup.sh
-|   |   |-- seed_postgres_with_vault_credentials.sh
-|   |   |-- startover_scripts
-|   |   |   `-- reset_network_tools_docker.sh
-|   |   |-- validation_scripts
-|   |   |   |-- check_approle_presence_and_ids_in_vault.sh
-|   |   |   |-- postgres_inventory.sh
-|   |   |   `-- read_postgres_pgadmin_approle.sh
-|   |   |-- vault_first_time_init_only_rootless.sh
-|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
-|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
-|   `-- nginx
-|-- docker-compose.prod.yml
-|-- frontend
-|-- LICENSE
-|-- README.full.md
-`-- README.md
+
 ```
 
 ### 1.2 Build Scripts - Generate Local Certificates
@@ -151,99 +321,8 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 bash $HOME/NETWORK_TOOLS/backend/build_scripts/generate_local_networkengineertools_certs.sh
 ```
 
->NOTE: The new directory structure below<br>
-> Walkthrough video [can be found here](https://youtu.be/w5MW_b8s0Rc)
-```bash
-developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
-.
-|-- backend
-|   |-- app
-|   |   |-- fastapi
-|   |   |   `-- vault_agent
-|   |   |       |-- agent.hcl
-|   |   |       `-- templates
-|   |   |           `-- fastapi_secrets.json.ctmpl
-|   |   |-- keycloak
-|   |   |   |-- bin
-|   |   |   |   `-- keycloak_entrypoint_from_vault.sh
-|   |   |   `-- vault_agent
-|   |   |       |-- agent.hcl
-|   |   |       |-- keycloak_agent_policy.hcl
-|   |   |       `-- templates
-|   |   |           |-- keycloak.env.ctmpl
-|   |   |           |-- keycloak_tls.crt.ctmpl
-|   |   |           `-- keycloak_tls.key.ctmpl
-|   |   |-- nginx
-|   |   |   |-- certs
-|   |   |   |   |-- ca.crt          (NEW: CA public certificate (public key + CA identity))
-|   |   |   |   |-- ca.key          (NEW: CA private key)
-|   |   |   |   |-- ca.srl          (NEW: OpenSSL serial number tracking file for the CA, Remove from runtime after issuance, Keep only with the CA signing material (with ca.key) in a secure PKI workspace if you will continue issuing certs.)
-|   |   |   |   |-- cert.crt        (NEW: private key corresponding to the certificate Nginx presents)
-|   |   |   |   |-- cert.key        (NEW: Keep, but treat as sensitive, chmod 600, owned by root (or the Nginx runtime user), readable only by Nginx.)
-|   |   |   |   `-- cert.leaf.crt   (NEW: The leaf/server certificate only (no chain), Keep only if your Nginx config or your tooling explicitly uses it. Remove and keep safe wih the others.)
-|   |   |   `-- templates
-|   |   |       |-- networktools.conf.template
-|   |   |       `-- vault.conf.template
-|   |   |-- pgadmin
-|   |   |   `-- certs
-|   |   |-- postgres
-|   |   |   |-- certs
-|   |   |   |-- config
-|   |   |   |   |-- pg_hba.conf
-|   |   |   |   `-- postgres.conf
-|   |   |   `-- vault_agent
-|   |   |       |-- agent.hcl
-|   |   |       `-- templates
-|   |   |           |-- pgadmin_password.ctmpl
-|   |   |           |-- postgres_db.ctmpl
-|   |   |           |-- postgres_password.ctmpl
-|   |   |           |-- postgres_user.ctmpl
-|   |   |           `-- servers.json.ctmpl
-|   |   |-- routers
-|   |   `-- security
-|   |       `-- configuration_files
-|   |           `-- vault
-|   |               |-- certs
-|   |               |   |-- ca.crt      (NEW: CA public certificate (public key + CA identity))
-|   |               |   |-- cert.crt    (NEW: CA private key - Remove from the production runtime host/container path immediately after issuance.)
-|   |               |   `-- cert.key    (NEW)
-|   |               |-- config
-|   |               |   |-- certs
-|   |               |   |-- keycloak_kv_read.hcl
-|   |               |   |-- postgres_pgadmin_kv_read.hcl
-|   |               |   `-- vault_configuration_primary_node.hcl
-|   |               `-- Dockerfile
-|   |-- build_scripts
-|   |   |-- generate_local_keycloak_certs.sh
-|   |   |-- generate_local_networkengineertools_certs.sh
-|   |   |-- generate_local_pgadmin_certs.sh
-|   |   |-- generate_local_postgres_certs.sh
-|   |   |-- generate_local_vault_certs.sh
-|   |   |-- generate_bootstrap_creds_and_seed.sh
-|   |   |-- guides
-|   |   |   |-- seed_kv_spec.example.json
-|   |   |   `-- seed_kv_spec.GUIDE.md
-|   |   |-- keycloak_approle_setup.sh
-|   |   |-- postgress_approle_setup.sh
-|   |   |-- seed_postgres_with_vault_credentials.sh
-|   |   |-- startover_scripts
-|   |   |   `-- reset_network_tools_docker.sh
-|   |   |-- validation_scripts
-|   |   |   |-- check_approle_presence_and_ids_in_vault.sh
-|   |   |   |-- postgres_inventory.sh
-|   |   |   `-- read_postgres_pgadmin_approle.sh
-|   |   |-- vault_first_time_init_only_rootless.sh
-|   |   |-- vault_unseal_kv_seed_bootstrap_rootless.sh
-|   |   `-- vault_unseal_multi_kv_seed_bootstrap_rootless.sh
-|   `-- nginx
-|-- docker-compose.prod.yml
-|-- frontend
-|-- LICENSE
-|-- README.full.md
-`-- README.md
 
-33 directories, 53 files
-```
+> Walkthrough video [can be found here](https://youtu.be/w5MW_b8s0Rc)
 
 # First-time Vault only (creates root_token + init json artifacts)
 >NOTE:<br>init-shares -> How many password shards you want to generate<br> init-threshold -> How many of those shards are required to unseal the vault
@@ -294,6 +373,7 @@ ROLE_NAME=fastapi_agent ./backend/build_scripts/fastapi_approle_setup.sh
 >NOTE: There is a helper script that will query vault and show you the values stored there as well as the local copies.
 > This helps ensure vault is ready to bring up the vault_agent containers
 
+TODO - Update this script to check for the fastapi one as well 
 ```bash
 bash ./backend/build_scripts/validation_scripts/check_approle_presence_and_ids_in_vault.sh
 ```
@@ -389,6 +469,7 @@ docker compose -f docker-compose.prod.yml ps
 
 docker logs --tail 200 -f vault_agent_postgres_pgadmin
 docker logs --tail 200 -f vault_agent_keycloak
+docker logs --tail 200 -f vault_agent_fastapi
 
 # Confirm the rendered files exist for fastapi
 docker exec -it vault_agent_fastapi sh -lc 'ls -lah /vault/rendered && echo && sed -n "1,80p" /vault/rendered/redis.conf'
@@ -403,14 +484,72 @@ docker compose -f docker-compose.prod.yml ps
 docker logs --tail 200 -f postgres_primary
 ```
 
-When postgres is started and confirmed up and running, You will need to configure it with the generated credentials so 
-keycloak / fastapi and any future containers can connect to it.
-This will seed any configured logins destined for postgres as well as create any needed databases in postgres
+Seed any postgres user information and permissions
 
 ```bash
 chmod +x ./backend/build_scripts/seed_postgres_with_vault_credentials.sh
 ./backend/build_scripts/seed_postgres_with_vault_credentials.sh \
   --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+```
+
+Your output should resemble below
+
+```bash
+developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ chmod +x ./backend/build_scripts/seed_postgres_with_vault_credentials.sh
+./backend/build_scripts/seed_postgres_with_vault_credentials.sh \
+  --ca-cert "$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/certs/ca.crt"
+INFO: Loaded PRIMARY_SERVER_FQDN from env file: /home/developer_network_tools/NETWORK_TOOLS/.env
+INFO: Using Vault host from PRIMARY_SERVER_FQDN: networkengineertools.com
+INFO: Using Vault token from: /home/developer_network_tools/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token
+INFO: Reading Keycloak Postgres secret from Vault: /v1/app_network_tools_secrets/data/keycloak_postgres
+INFO: Reading Postgres master secret from Vault: /v1/app_network_tools_secrets/data/postgres
+INFO: Reading FastAPI Postgres secret from Vault: /v1/app_network_tools_secrets/data/fastapi_secrets
+INFO: Vault values loaded:
+INFO:   Keycloak DB:     keycloak
+INFO:   Keycloak Role:   keycloak
+INFO:   Keycloak Schema: keycloak
+INFO:   FastAPI DB:      network_tools
+INFO:   FastAPI Role:    network_tools_fastapi
+INFO:   FastAPI Schema:  public
+INFO:   Postgres Master: network_tools_user
+INFO:   Vault addr:      https://networkengineertools.com:8200
+INFO:   Vault mount:     app_network_tools_secrets
+INFO:   PG container:    postgres_primary
+INFO:   PG port:         5432
+INFO: Waiting for Postgres readiness (up to 180s)...
+INFO: Testing master login against catalog DB 'postgres'...
+INFO: Master login OK.
+INFO: Sanity check: wrong-password login must fail (proves password auth is enforced)...
+INFO: Wrong-password login failed as expected.
+INFO: Ensuring Keycloak role exists...
+INFO: Creating role 'keycloak'...
+CREATE ROLE
+INFO: Setting Keycloak role password to match Vault...
+ALTER ROLE
+INFO: Checking whether Keycloak database exists...
+INFO: Creating database 'keycloak' owned by 'keycloak'...
+CREATE DATABASE
+INFO: Ensuring database owner is 'keycloak'...
+INFO: Granting CONNECT and TEMPORARY on Keycloak DB...
+INFO: Ensuring schema 'keycloak' exists and privileges are set...
+CREATE SCHEMA
+GRANT
+INFO: Ensuring FastAPI role exists...
+INFO: Creating role 'network_tools_fastapi'...
+CREATE ROLE
+INFO: Setting FastAPI role password to match Vault...
+ALTER ROLE
+INFO: Checking whether FastAPI database exists...
+INFO: Database 'network_tools' already exists.
+INFO: Granting CONNECT on FastAPI DB (no TEMP granted)...
+INFO: Ensuring schema 'public' exists and granting least-privilege...
+INFO: Granting non-destructive DML privileges to FastAPI role (existing objects)...
+INFO: Setting default privileges for future tables/sequences created by 'network_tools_user' in schema 'public'...
+INFO: Verifying Keycloak role can log in to 'keycloak'...
+INFO: SUCCESS: Keycloak verified login.
+INFO: Verifying FastAPI role can log in to 'network_tools'...
+INFO: SUCCESS: FastAPI verified login and least-privilege grants applied.
+INFO: DONE: Postgres seeded to match Vault for Keycloak + FastAPI.
 ```
 
 ### 2.5 Start pgAdmin
@@ -438,24 +577,17 @@ docker logs --tail 200 -f keycloak
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate redis
+docker logs --tail 200 -f redis
+```
+
+### 2.8 Start FastAPI and Celery
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api celery_worker flower
 docker logs --tail 200 -f fastapi_api
+docker logs --tail 200 -f celery_worker
 ```
 
-### 2.8 Start FastAPI
-```bash
-docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api
-docker logs --tail 200 -f redis
-```
-
-### 2.9 Start Celery
-```bash
-docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api
-docker logs --tail 200 -f redis
-```
-
-
-
-### 2.10 Start NGINX
+### 2.9 Start NGINX
 >NOTE: NGINX is dependent on the primary containers it proxys in order for it to come up.
 > Those are
 > -Vault

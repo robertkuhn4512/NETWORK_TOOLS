@@ -68,8 +68,6 @@ services:
        - vault_production_node
        - fastapi_api
        - pgadmin
-       - celery_worker
-       - flower
     networks:
       public_net:
     ports:
