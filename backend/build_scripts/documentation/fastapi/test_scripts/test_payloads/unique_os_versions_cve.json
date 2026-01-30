@@ -1,0 +1,7 @@
+{
+  "batch_size": 20,
+  "concurrency": 1,
+  "sleep_s_between_batches": 0,
+  "include_raw": false,
+  "os_allowlist": ["ios", "iosxe", "nxos", "asa", "ftd"]
+}

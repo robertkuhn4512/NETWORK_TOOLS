@@ -394,6 +394,7 @@ services:
       PGDATA: "${PGDATA:-/var/lib/postgres/data/pgdata}"
     volumes:
       - postgres_data:/var/lib/postgres/data
+
       #- postgres_certs:/etc/postgres/certs:ro
       - ./backend/app/postgres/config/postgres.conf:/etc/postgres/postgres.conf:ro
       - ./backend/app/postgres/config/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
@@ -402,7 +403,8 @@ services:
       - postgres_vault_rendered:/run/vault:ro
 
       # Initial build for network_tools tables
-      - ./backend/app/postgres/init/20_network_tools_schema.sql:/docker-entrypoint-initdb.d/20_network_tools_schema.sql:ro
+      # Schemas
+      - ./backend/app/postgres/init/01_network_tools_schema_dump.sql:/docker-entrypoint-initdb.d/01_network_tools_schema_dump.sql:ro
 
       - ./container_data/postgres_primary:/var/lib/postgresql/data
       - ./container_data/postgres_backups:/backups
@@ -538,8 +540,11 @@ services:
       BIND_PORT: "8000"
       WEB_CONCURRENCY: "2"
       PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN}"
-      SSL_CERT_FILE: /run/certs/networktools_ca.crt
-      FASTAPI_OIDC_CA_BUNDLE: /run/certs/networktools_ca.crt
+      SSL_CERT_FILE: "/run/certs/combined-ca.crt"
+      REQUESTS_CA_BUNDLE: "/run/certs/combined-ca.crt"
+      CURL_CA_BUNDLE: "/run/certs/combined-ca.crt"
+      HTTPX_CA_BUNDLE: "/run/certs/combined-ca.crt"
+      FASTAPI_OIDC_CA_BUNDLE: "/run/certs/combined-ca.crt"
     command: [ "python", "/app/run_server.py" ]
     healthcheck:
       test: [ "CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\", timeout=2).read()'" ]
@@ -599,13 +604,18 @@ services:
     environment:
       VAULT_ENV_OVERRIDE: "0"
       VAULT_TOKEN_FILE: "/run/vault/.vault-token"
-      VAULT_CACERT: "/run/certs/networktools_ca.crt"
+      VAULT_CACERT: "/run/certs/combined-ca.crt"
       VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
       LOG_DIR: "/var/log/network_tools/celery"
       LOG_FILE: "network_tools_celery.log"
       LOG_LEVEL: "DEBUG"
       LOG_TO_STDOUT: "1"
+      SSL_CERT_FILE: "/run/certs/combined-ca.crt"
+      REQUESTS_CA_BUNDLE: "/run/certs/combined-ca.crt"
+      CURL_CA_BUNDLE: "/run/certs/combined-ca.crt"
+      HTTPX_CA_BUNDLE: "/run/certs/combined-ca.crt"
+      FASTAPI_OIDC_CA_BUNDLE: "/run/certs/combined-ca.crt"
     command:
       - "python"
       - "/app/vault_env_exec.py"

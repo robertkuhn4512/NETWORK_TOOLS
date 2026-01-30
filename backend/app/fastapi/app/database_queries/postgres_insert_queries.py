@@ -23,10 +23,41 @@ from __future__ import annotations
 import logging
 import json
 from typing import Any
+from datetime import date
 
 from app.shared_functions.helpers.helpers_generic import pretty_json_any
 
 logger = logging.getLogger("app.db.insert_queries")
+
+def _as_date(v) -> date | None:
+    """
+    Convert Cisco EOX date shapes to datetime.date.
+
+    Accepts:
+      - {"value": "YYYY-MM-DD", ...}
+      - "YYYY-MM-DD"
+      - datetime.date
+      - None / "" -> None
+    """
+    if v is None:
+        return None
+
+    if isinstance(v, date):
+        return v
+
+    if isinstance(v, dict):
+        return _as_date(v.get("value"))
+
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        try:
+            return date.fromisoformat(s[:10])
+        except Exception:
+            return None
+
+    return None
 
 def _jsonb_dump(value: Any) -> Optional[str]:
     """
@@ -432,3 +463,343 @@ async def upsert_device_with_archive(
     except Exception as e:
         logger.exception("upsert_device_with_archive: update failed id=%r", existing_d.get("id"))
         return {"error": f"devices_update_failed: {e}", "archived_id": archived_id, "diffs": diffs}
+
+async def upsert_reporting_cisco_api_cve_software(
+    *,
+    database,
+    os_name: str,
+    version: str,
+    information: dict,
+) -> dict:
+    sql = """
+    INSERT INTO public.reporting_cisco_api_cve_software (os_name, version, information, datetimestamp)
+    VALUES (:os_name, :version, CAST(:information AS jsonb), NOW())
+    ON CONFLICT ON CONSTRAINT reporting_cisco_api_cve_software__os_version__uq DO UPDATE
+      SET information   = EXCLUDED.information,
+          datetimestamp = NOW()
+    RETURNING id
+    """
+    try:
+        params = {
+            "os_name": os_name,
+            "version": version,
+            "information": _jsonb_dump(information) or "{}",
+        }
+        row = await database.fetch_one(sql, params)
+        return {"ok": True, "id": int(row[0]) if row else None}
+    except Exception as e:
+        logger.exception("upsert_reporting_cisco_api_cve_software failed os_name=%r version=%r", os_name, version)
+        return {"ok": False, "error": "db_upsert_failed", "detail": {"message": str(e)}}
+
+
+async def upsert_reporting_cisco_api_cve_software_from_payload(
+    *,
+    database,
+    payload: Dict[str, Any],
+    default_os: str = "all",
+    version_key: str = "advisoryId",
+) -> Dict[str, Any]:
+    """
+    Takes the FastAPI payload from get_cisco_cve and inserts each advisory as one row.
+
+    Keying:
+      os      = advisory.get("osType") or default_os
+      version = advisory.get(version_key) or advisory.get("cveId") or advisory.get("cve") or sha256(advisory)
+    """
+    try:
+        resp = payload.get("cisco_response") or {}
+        j = resp.get("json")
+
+        if isinstance(j, dict) and isinstance(j.get("advisories"), list):
+            items = j["advisories"]
+        elif isinstance(j, list):
+            items = j
+        elif isinstance(j, dict):
+            # fallback: treat as single item
+            items = [j]
+        else:
+            return {"ok": False, "error": "no_json_to_insert", "detail": {"have_keys": sorted(list(resp.keys()))}}
+
+        meta = {
+            "route": payload.get("route"),
+            "client": payload.get("client"),
+            "vault_meta": payload.get("vault_meta"),
+            "cisco_request": payload.get("cisco_request"),
+            "cisco_response_meta": {"ok": resp.get("ok"), "status_code": resp.get("status_code")},
+        }
+
+        results: list[dict] = []
+        import hashlib, json as _json
+
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+
+            os_val = str(it.get("osType") or it.get("os_name") or it.get("os") or default_os).strip().lower() or default_os
+
+            ver_val = str(
+                it.get(version_key)
+                or it.get("advisory_id")
+                or it.get("advisoryId")
+                or it.get("cveId")
+                or it.get("cve")
+                or it.get("id")
+                or ""
+            ).strip()
+
+            if not ver_val:
+                ver_val = hashlib.sha256(_json.dumps(it, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:32]
+
+            info = {"meta": meta, "entry": it}
+            results.append(
+                await upsert_reporting_cisco_api_cve_software(
+                    database=database,
+                    os_name=os_val,
+                    version=ver_val,
+                    information=info,
+                )
+            )
+
+        ok_n = sum(1 for r in results if r.get("ok"))
+        fail_n = len(results) - ok_n
+        return {"ok": fail_n == 0, "rows_total": len(results), "rows_ok": ok_n, "rows_fail": fail_n, "results": results}
+
+    except Exception as e:
+        logger.exception("upsert_reporting_cisco_api_cve_software_from_payload failed")
+        return {"ok": False, "error": "db_insert_failed", "detail": {"message": str(e)}}
+
+async def upsert_reporting_cisco_api_eox(
+    *,
+    database,
+    product_id: str,
+    information: dict,
+    product_id_description: str | None = None,
+    product_bulletin_number: str | None = None,
+    product_bulletin_url: str | None = None,
+    eox_external_announcement_date: str | None = None,
+    end_of_sale_date: str | None = None,
+    end_of_sw_maintenance_releases: str | None = None,
+    end_of_security_vul_support_date: str | None = None,
+    end_of_routine_failure_analysis_date: str | None = None,
+    end_of_service_contract_renewal: str | None = None,
+    end_of_svc_attach_date: str | None = None,
+    last_date_of_support: str | None = None,
+    updated_timestamp: str | None = None,
+    request_page_index: int | None = None,
+    request_product_query: str | None = None,
+    record_hash: str | None = None,
+) -> dict:
+    sql = """
+    INSERT INTO public.reporting_cisco_api_eox (
+        product_id,
+        datetimestamp,
+        created_at,
+        product_id_description,
+        product_bulletin_number,
+        product_bulletin_url,
+        eox_external_announcement_date,
+        end_of_sale_date,
+        end_of_sw_maintenance_releases,
+        end_of_security_vul_support_date,
+        end_of_routine_failure_analysis_date,
+        end_of_service_contract_renewal,
+        end_of_svc_attach_date,
+        last_date_of_support,
+        updated_timestamp,
+        request_page_index,
+        request_product_query,
+        record_hash,
+        information
+    )
+    VALUES (
+        :product_id,
+        NOW(),
+        NOW(),
+        :product_id_description,
+        :product_bulletin_number,
+        :product_bulletin_url,
+        :eox_external_announcement_date,
+        :end_of_sale_date,
+        :end_of_sw_maintenance_releases,
+        :end_of_security_vul_support_date,
+        :end_of_routine_failure_analysis_date,
+        :end_of_service_contract_renewal,
+        :end_of_svc_attach_date,
+        :last_date_of_support,
+        :updated_timestamp,
+        :request_page_index,
+        :request_product_query,
+        :record_hash,
+        CAST(:information AS jsonb)
+    )
+    ON CONFLICT ON CONSTRAINT reporting_cisco_api_eox__product_id__uq DO UPDATE
+      SET information = EXCLUDED.information,
+          datetimestamp = NOW(),
+          product_id_description = EXCLUDED.product_id_description,
+          product_bulletin_number = EXCLUDED.product_bulletin_number,
+          product_bulletin_url = EXCLUDED.product_bulletin_url,
+          eox_external_announcement_date = EXCLUDED.eox_external_announcement_date,
+          end_of_sale_date = EXCLUDED.end_of_sale_date,
+          end_of_sw_maintenance_releases = EXCLUDED.end_of_sw_maintenance_releases,
+          end_of_security_vul_support_date = EXCLUDED.end_of_security_vul_support_date,
+          end_of_routine_failure_analysis_date = EXCLUDED.end_of_routine_failure_analysis_date,
+          end_of_service_contract_renewal = EXCLUDED.end_of_service_contract_renewal,
+          end_of_svc_attach_date = EXCLUDED.end_of_svc_attach_date,
+          last_date_of_support = EXCLUDED.last_date_of_support,
+          updated_timestamp = EXCLUDED.updated_timestamp,
+          request_page_index = EXCLUDED.request_page_index,
+          request_product_query = EXCLUDED.request_product_query,
+          record_hash = EXCLUDED.record_hash
+    RETURNING id
+    """
+    try:
+        pid = (product_id or "").strip()
+        if not pid:
+            return {"ok": False, "error": "missing_product_id", "detail": {"message": "product_id is required"}}
+
+        params = {
+            "product_id": pid,
+            "product_id_description": (product_id_description or None),
+            "product_bulletin_number": (product_bulletin_number or None),
+            "product_bulletin_url": (product_bulletin_url or None),
+
+            "eox_external_announcement_date": _as_date(eox_external_announcement_date),
+            "end_of_sale_date": _as_date(end_of_sale_date),
+            "end_of_sw_maintenance_releases": _as_date(end_of_sw_maintenance_releases),
+            "end_of_security_vul_support_date": _as_date(end_of_security_vul_support_date),
+            "end_of_routine_failure_analysis_date": _as_date(end_of_routine_failure_analysis_date),
+            "end_of_service_contract_renewal": _as_date(end_of_service_contract_renewal),
+            "end_of_svc_attach_date": _as_date(end_of_svc_attach_date),
+            "last_date_of_support": _as_date(last_date_of_support),
+            "updated_timestamp": _as_date(updated_timestamp),
+
+            "request_page_index": request_page_index,
+            "request_product_query": (request_product_query or None),
+            "record_hash": (record_hash or None),
+            "information": _jsonb_dump(information) or "{}",
+        }
+
+        row = await database.fetch_one(sql, params)
+        return {"ok": True, "id": int(row[0]) if row else None}
+    except Exception as e:
+        logger.exception("upsert_reporting_cisco_api_eox failed product_id=%r", product_id)
+        return {"ok": False, "error": "db_upsert_failed", "detail": {"message": str(e)}}
+
+
+def _eox_date_val(obj) -> str | None:
+    """
+    Cisco EOX date fields look like:
+      {"value":"2009-04-25","dateFormat":"YYYY-MM-DD"}
+    Return 'YYYY-MM-DD' or None.
+    """
+    try:
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            v = obj.get("value")
+        else:
+            v = obj
+        s = str(v or "").strip()
+        if not s:
+            return None
+        # Basic ISO date sanity
+        if len(s) >= 10:
+            s10 = s[:10]
+            # cheap validation; avoids throwing on junk
+            import datetime as _dt
+            _dt.date.fromisoformat(s10)
+            return s10
+        return None
+    except Exception:
+        return None
+
+
+async def upsert_reporting_cisco_api_eox_from_payload(
+    *,
+    database,
+    payload: dict,
+) -> dict:
+    """
+    Takes the FastAPI payload from get_cisco_eox and inserts each EOXRecord entry as one row.
+
+    Keying:
+      product_id = record["EOLProductID"] (Cisco uses this field name in the response)
+    """
+    try:
+        resp = payload.get("cisco_response") or {}
+        j = resp.get("json")
+
+        if not isinstance(j, dict):
+            return {"ok": False, "error": "no_json_to_insert", "detail": {"message": "cisco_response.json is not an object"}}
+
+        items = j.get("EOXRecord")
+        if not isinstance(items, list):
+            return {"ok": False, "error": "no_eoxrecord_list", "detail": {"have_keys": sorted(list(j.keys()))}}
+
+        in_obj = payload.get("input") or {}
+        page_index_raw = in_obj.get("page_index")
+        req_pid = in_obj.get("product_id")
+
+        page_index_int = None
+        try:
+            page_index_int = int(str(page_index_raw).strip())
+        except Exception:
+            page_index_int = None
+
+        meta = {
+            "route": payload.get("route"),
+            "client": payload.get("client"),
+            "vault_meta": payload.get("vault_meta"),
+            "input": in_obj,
+            "cisco_request": payload.get("cisco_request"),
+            "cisco_response_meta": {"ok": resp.get("ok"), "status_code": resp.get("status_code")},
+            "pagination": j.get("PaginationResponseRecord"),
+        }
+
+        results: list[dict] = []
+        import hashlib, json as _json
+
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+
+            pid = str(it.get("EOLProductID") or "").strip()
+            if not pid:
+                continue
+
+            # full 64-char sha256 hex for change detection
+            rh = hashlib.sha256(_json.dumps(it, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+            info = {"meta": meta, "entry": it}
+
+            results.append(
+                await upsert_reporting_cisco_api_eox(
+                    database=database,
+                    product_id=pid,
+                    information=info,
+                    product_id_description=(it.get("ProductIDDescription") or None),
+                    product_bulletin_number=(it.get("ProductBulletinNumber") or None),
+                    product_bulletin_url=(it.get("LinkToProductBulletinURL") or None),
+                    eox_external_announcement_date=_eox_date_val(it.get("EOXExternalAnnouncementDate")),
+                    end_of_sale_date=_eox_date_val(it.get("EndOfSaleDate")),
+                    end_of_sw_maintenance_releases=_eox_date_val(it.get("EndOfSWMaintenanceReleases")),
+                    end_of_security_vul_support_date=_eox_date_val(it.get("EndOfSecurityVulSupportDate")),
+                    end_of_routine_failure_analysis_date=_eox_date_val(it.get("EndOfRoutineFailureAnalysisDate")),
+                    end_of_service_contract_renewal=_eox_date_val(it.get("EndOfServiceContractRenewal")),
+                    end_of_svc_attach_date=_eox_date_val(it.get("EndOfSvcAttachDate")),
+                    last_date_of_support=_eox_date_val(it.get("LastDateOfSupport")),
+                    updated_timestamp=_eox_date_val(it.get("UpdatedTimeStamp")),
+                    request_page_index=page_index_int,
+                    request_product_query=(str(req_pid).strip() if req_pid is not None else None),
+                    record_hash=rh,
+                )
+            )
+
+        ok_n = sum(1 for r in results if r.get("ok"))
+        fail_n = len(results) - ok_n
+        return {"ok": fail_n == 0, "rows_total": len(results), "rows_ok": ok_n, "rows_fail": fail_n, "results": results}
+
+    except Exception as e:
+        logger.exception("upsert_reporting_cisco_api_eox_from_payload failed")
+        return {"ok": False, "error": "db_insert_failed", "detail": {"message": str(e)}}
+

@@ -1028,22 +1028,33 @@ setup_fastapi_approle_if_needed() {
   local policy_hcl
   policy_hcl="$(cat <<HCL
 # Read secrets (KV v1 or KV v2 data paths)
-path "${kv_prefix}/fastapi*" {
+path "app_network_tools_secrets/data/fastapi*" {
   capabilities = ["read"]
 }
 
-# If KV v2, allow listing metadata (helps `vault kv list`/UI and some tooling)
-path "${FASTAPI_KV_MOUNT}/metadata/fastapi*" {
+# If KV v2, allow listing metadata (helps /UI and some tooling)
+path "app_network_tools_secrets/metadata/fastapi*" {
   capabilities = ["list"]
 }
 
 # Allow read access to the 'device_login_profiles' secret
-path "${FASTAPI_KV_MOUNT}/data/device_login_profiles" {
+path "app_network_tools_secrets/data/device_login_profiles" {
     capabilities = ["read"]
 }
 
 # Allow listing of secrets within the 'app_network_tools_secrets' mount for UI/CLI navigation
-path "${FASTAPI_KV_MOUNT}/metadata/device_login_profiles/*" {
+path "app_network_tools_secrets/metadata/device_login_profiles/*" {
+    capabilities = ["list"]
+}
+
+
+# Allow read access to the 'cisco_api_console' secret
+path "app_network_tools_secrets/data/cisco_api_console" {
+    capabilities = ["read"]
+}
+
+# Allow listing of secrets within the 'app_network_tools_secrets' mount for UI/CLI navigation
+path "app_network_tools_secrets/metadata/cisco_api_console/*" {
     capabilities = ["list"]
 }
 
