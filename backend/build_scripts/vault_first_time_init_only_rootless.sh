@@ -15,7 +15,7 @@
 #       --init-shares 5 --init-threshold 3
 #
 #     # If you want to force a specific address:
-#     #   --vault-addr "https://vault.networkengineertools.com:8200"
+#     #   --vault-addr "https://vault.<PRIMARY_SERVER_FQDN>:8200"
 #
 #     # If your .env is not in the compose directory:
 #     #   --env-file "/path/to/.env"
@@ -55,7 +55,7 @@
 #
 #     This script still intentionally does NOT:
 #       - Enable secrets engines (KV, etc.)
-#       - Seed/overwrite KV secrets (use the KV seed/bootstrap scripts)
+#       - Seed/overwrite KV secrets (this script can optionally seed baseline secrets; see --no-seed-app-secrets)
 #       - Export role_id / secret_id files to the host (use export_approle_from_vault_container.sh)
 #
 #     Optional (recommended hardening):
@@ -108,13 +108,25 @@ dbg()  { [[ "${DEBUG:-0}" == "1" ]] && echo "DEBUG: $*" >&2 || true; }
 
 set -Eeuo pipefail
 
+
+# -----------------------------
+# Repo root resolution
+# -----------------------------
+# This script lives under backend/build_scripts/, while .env and docker-compose.prod.yml
+# live at the repository root. Resolve repo root relative to this script location so
+# the script works no matter what your current working directory is.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT_DEFAULT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+: "${REPO_ROOT:=${REPO_ROOT_DEFAULT}}"
+
+
 usage() {
   cat <<'EOF'
 Usage:
   vault_first_time_init_only_rootless.sh [--vault-addr URL] [options]
 
 Vault address:
-  --vault-addr URL                Vault address (e.g., https://vault.networkengineertools.com:8200)
+  --vault-addr URL                Vault address (e.g., https://vault.<PRIMARY_SERVER_FQDN>:8200)
                                  If omitted, the script will try .env (VAULT_ADDR, PRIMARY_VAULT_SERVER_FQDN_FULL,
                                  PRIMARY_SERVER_FQDN) and finally fall back to https://vault_production_node:8200.
 
@@ -194,6 +206,13 @@ Debug:
   --debug                         Verbose flow logging
   --debug-http                    curl -v
 
+
+KV seed bootstrap (first-time convenience):
+  --no-seed-app-secrets              Skip enabling KV + seeding baseline app secrets
+  --force-seed-app-secrets           Overwrite existing seeded secrets (DANGEROUS)
+  --seed-kv-mount NAME               Default: ${SEED_KV_MOUNT}
+  --seed-kv-version 1|2              Default: ${SEED_KV_VERSION}
+
 EOF
 }
 
@@ -205,7 +224,7 @@ VAULT_ADDR=""
 VAULT_NAMESPACE="${VAULT_NAMESPACE:-}"
 CA_CERT=""
 
-ENV_FILE=""
+ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env}"
 LOAD_ENV_FILE=1
 ENV_OVERRIDE=0
 
@@ -221,13 +240,13 @@ LAST_CURL_RC=0
 INIT_SHARES=5
 INIT_THRESHOLD=3
 
-BOOTSTRAP_DIR="${BOOTSTRAP_DIR:-$HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap}"
+BOOTSTRAP_DIR="${BOOTSTRAP_DIR:-${REPO_ROOT}/backend/app/security/configuration_files/vault/bootstrap}"
 UNSEAL_KEYS_FILE=""
 ROOT_TOKEN_FILE=""
 ROOT_TOKEN_JSON_FILE=""
 
 COMPOSE_PROJECT="network_tools"
-COMPOSE_FILE_DEFAULT="$HOME/NETWORK_TOOLS/docker-compose.prod.yml"
+COMPOSE_FILE_DEFAULT="${REPO_ROOT}/docker-compose.prod.yml"
 COMPOSE_FILE=""
 SERVICE_NAME="vault_production_node"
 COMPOSE_BUILD=0
@@ -282,6 +301,13 @@ FASTAPI_TOKEN_MAX_TTL="4h"
 FASTAPI_SECRET_ID_TTL="24h"
 FASTAPI_SECRET_ID_NUM_USES="0"
 FASTAPI_SETUP_DONE=0
+
+# KV seed bootstrap (optional; first-time convenience)
+SEED_APP_SECRETS=0
+FORCE_SEED_APP_SECRETS=0
+SEED_KV_MOUNT="app_network_tools_secrets"
+SEED_KV_VERSION="2"
+
 
 
 # -------------------- Parser helpers --------------------
@@ -354,6 +380,10 @@ while [[ $# -gt 0 ]]; do
     --namespace|--namespace=*)             if _set_opt --namespace "$1" "${2-}" VAULT_NAMESPACE; then shift 1; else shift 2; fi ;;
     --ca-cert|--ca-cert=*)                 if _set_opt --ca-cert "$1" "${2-}" CA_CERT; then shift 1; else shift 2; fi ;;
 
+
+    --env-file|--env-file=*)              if _set_opt --env-file "$1" "${2-}" ENV_FILE; then shift 1; else shift 2; fi ;;
+    --no-env-file)                        LOAD_ENV_FILE=0; shift ;;
+
     --init-shares|--init-shares=*)         if _set_opt --init-shares "$1" "${2-}" INIT_SHARES; then shift 1; else shift 2; fi ;;
     --init-threshold|--init-threshold=*)   if _set_opt --init-threshold "$1" "${2-}" INIT_THRESHOLD; then shift 1; else shift 2; fi ;;
 
@@ -406,14 +436,20 @@ COMPOSE_FILE="${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
 
 # Load .env defaults so PRIMARY_SERVER_FQDN / VAULT_ADDR are available when this script is run from the host.
 if (( LOAD_ENV_FILE )); then
-  if [[ -z "$ENV_FILE" ]]; then
-    ENV_FILE="$(dirname -- "$COMPOSE_FILE")/.env"
-  fi
-  if [[ -r "$ENV_FILE" ]]; then
-    echo "INFO: Loading env defaults from: $ENV_FILE" >&2
-    load_env_file "$ENV_FILE" "$ENV_OVERRIDE"
+  # Primary env file (default: <repo_root>/.env)
+  _env_primary="${ENV_FILE}"
+
+  # Fallback: env in same directory as compose file
+  _env_fallback="$(dirname -- "${COMPOSE_FILE}")/.env"
+
+  if [[ -r "${_env_primary}" ]]; then
+    echo "INFO: Loading env defaults from: ${_env_primary}" >&2
+    load_env_file "${_env_primary}" "${ENV_OVERRIDE}"
+  elif [[ -r "${_env_fallback}" ]]; then
+    echo "INFO: Env file not readable at ${_env_primary}; falling back to: ${_env_fallback}" >&2
+    load_env_file "${_env_fallback}" "${ENV_OVERRIDE}"
   else
-    echo "INFO: Env file not found/readable (skipping): $ENV_FILE" >&2
+    echo "INFO: Env file not found/readable (skipping): ${_env_primary} (and no fallback at ${_env_fallback})" >&2
   fi
 fi
 
@@ -695,6 +731,203 @@ request_authed() {
   fi
 
   rm -f "$stderr_tmp" 2>/dev/null || true
+}
+
+
+# -------------------- KV seed helpers --------------------
+_trim() { printf '%s' "$1" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+
+load_root_token_or_prompt() {
+  # Return token on stdout. If files missing/empty, prompt on tty.
+  local token=""
+  if [[ -f "$ROOT_TOKEN_FILE" ]]; then
+    token="$(_trim "$(cat "$ROOT_TOKEN_FILE" 2>/dev/null || true)")"
+  fi
+  if [[ -z "$token" && -f "$ROOT_TOKEN_JSON_FILE" ]]; then
+    token="$(_trim "$(jq -r '.root_token // empty' "$ROOT_TOKEN_JSON_FILE" 2>/dev/null || true)")"
+  fi
+  if [[ -z "$token" && -f "$UNSEAL_KEYS_FILE" ]]; then
+    token="$(_trim "$(jq -r '.root_token // empty' "$UNSEAL_KEYS_FILE" 2>/dev/null || true)")"
+  fi
+  if [[ -z "$token" ]]; then
+    if [[ -t 0 ]]; then
+      read -r -s -p "Enter Vault root token (input hidden): " token
+      echo ""
+      token="$(_trim "$token")"
+    fi
+  fi
+  [[ -n "$token" ]] || return 1
+  printf '%s' "$token"
+}
+
+rand_urlsafe() {
+  # URL-safe random string (default 48 chars). Uses /dev/urandom + base64.
+  local n="${1:-48}"
+  local s
+  s="$(head -c 64 /dev/urandom | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=' )"
+  printf '%s' "${s:0:n}"
+}
+rand_b64_32() {
+  # 32 bytes base64 (for symmetric keys)
+  head -c 32 /dev/urandom | base64 | tr -d '\n'
+}
+
+ensure_kv_mount_enabled() {
+  local token="$1" mount="$2" version="$3"
+  [[ -n "$mount" ]] || die "ensure_kv_mount_enabled: empty mount"
+  [[ "$version" == "2" || "$version" == "1" ]] || die "ensure_kv_mount_enabled: invalid version '$version'"
+
+  request_authed "$token" GET "/v1/sys/mounts"
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "sys/mounts read failed (${HTTP_CODE}): ${RESP_JSON}"
+
+  local key="${mount%/}/"
+  if jq -e --arg k "$key" '.data[$k] // empty' <<<"$RESP_JSON" >/dev/null 2>&1; then
+    log "KV mount already enabled: ${mount}/"
+    return 0
+  fi
+
+  local body
+  if [[ "$version" == "2" ]]; then
+    body="$(jq -n --arg t "kv" --arg v "2" --arg d "NETWORK_TOOLS app secrets" '{type:$t, description:$d, options:{version:$v}}')"
+  else
+    body="$(jq -n --arg t "kv" --arg d "NETWORK_TOOLS app secrets" '{type:$t, description:$d}')"
+  fi
+
+  request_authed "$token" POST "/v1/sys/mounts/${mount}" "$body"
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "enable kv mount '${mount}' failed (${HTTP_CODE}): ${RESP_JSON}"
+  log "Enabled KV mount: ${mount}/ (v${version})"
+}
+
+kv_v2_read() {
+  local token="$1" mount="$2" name="$3"
+  request_authed "$token" GET "/v1/${mount}/data/${name}"
+  return 0
+}
+kv_v2_write() {
+  local token="$1" mount="$2" name="$3" data_json="$4"
+  local body
+  body="$(jq -n --argjson d "$data_json" '{data:$d}')"
+  request_authed "$token" POST "/v1/${mount}/data/${name}" "$body"
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "kv write ${mount}/data/${name} failed (${HTTP_CODE}): ${RESP_JSON}"
+}
+
+seed_app_secrets_if_needed() {
+  (( SEED_APP_SECRETS )) || { log "KV seeding disabled (--no-seed-app-secrets)."; return 0; }
+  [[ "$SEED_KV_VERSION" == "2" ]] || die "This seeder currently supports KV v2 only (SEED_KV_VERSION=${SEED_KV_VERSION})"
+
+  local token
+  if ! token="$(load_root_token_or_prompt)"; then
+    log "WARN: Root token not available; skipping KV seeding."
+    return 0
+  fi
+
+  ensure_kv_mount_enabled "$token" "$SEED_KV_MOUNT" "$SEED_KV_VERSION"
+
+  # ---- 1) Cisco API console config ----
+  local cisco_name="cisco_api_console"
+  kv_v2_read "$token" "$SEED_KV_MOUNT" "$cisco_name"
+  if [[ "$HTTP_CODE" == "404" || "$FORCE_SEED_APP_SECRETS" == "1" ]]; then
+    local cisco_data
+    cisco_data="$(jq -n       --arg advisories_client_secret "secret"       --arg advisories_key "secret"       --arg cve_api_advisories_url "https://apix.cisco.com/security/advisories/v2/product?product=Cisco"       --arg eox_client_secret "secret"       --arg eox_key "secret"       --arg url_CVEAdvisoriesBaseURL "https://apix.cisco.com/security/advisories/v2/OSType/"       --arg url_CVEAdvisoriesByProductURL "https://apix.cisco.com/security/advisories/v2/product?product="       --arg url_CVEAdvisoriesCiscoIOSXR "https://apix.cisco.com/security/advisories/v2/product?product=Cisco%20IOS%20XR"       --arg url_EOXByProductID "https://apix.cisco.com/supporttools/eox/rest/5/EOXByProductID/"       '{
+        advisories_client_secret:$advisories_client_secret,
+        advisories_key:$advisories_key,
+        cve_api_advisories_url:$cve_api_advisories_url,
+        eox_client_secret:$eox_client_secret,
+        eox_key:$eox_key,
+        url_CVEAdvisoriesBaseURL:$url_CVEAdvisoriesBaseURL,
+        url_CVEAdvisoriesByProductURL:$url_CVEAdvisoriesByProductURL,
+        url_CVEAdvisoriesCiscoIOSXR:$url_CVEAdvisoriesCiscoIOSXR,
+        url_EOXByProductID:$url_EOXByProductID
+      }')"
+    kv_v2_write "$token" "$SEED_KV_MOUNT" "$cisco_name" "$cisco_data"
+    log "Seeded: /v1/${SEED_KV_MOUNT}/data/${cisco_name} (placeholders set to 'secret')"
+  else
+    log "Seed exists; skipping: /v1/${SEED_KV_MOUNT}/data/${cisco_name}"
+  fi
+
+  # ---- 2) device_login_profiles ----
+  local profiles_name="device_login_profiles"
+  kv_v2_read "$token" "$SEED_KV_MOUNT" "$profiles_name"
+  if [[ "$HTTP_CODE" == "404" || "$FORCE_SEED_APP_SECRETS" == "1" ]]; then
+    # NOTE: value is intentionally a JSON *string* per your request.
+    local profile_one='{"username": "my_username", "password": "my_password", "enable_password": "my_enable_password", "ssh_port": 22}'
+    local profiles_data
+    profiles_data="$(jq -n --arg p1 "$profile_one" '{profile_one:$p1}')"
+    kv_v2_write "$token" "$SEED_KV_MOUNT" "$profiles_name" "$profiles_data"
+    log "Seeded: /v1/${SEED_KV_MOUNT}/data/${profiles_name}"
+  else
+    log "Seed exists; skipping: /v1/${SEED_KV_MOUNT}/data/${profiles_name}"
+  fi
+
+  # ---- 3) fastapi_secrets ----
+  local fastapi_name="fastapi_secrets"
+  kv_v2_read "$token" "$SEED_KV_MOUNT" "$fastapi_name"
+  if [[ "$HTTP_CODE" == "404" || "$FORCE_SEED_APP_SECRETS" == "1" ]]; then
+    local redis_pw fastapi_db_pw master_key_b64 pepper
+    redis_pw="$(rand_urlsafe 48)"
+    fastapi_db_pw="$(rand_urlsafe 48)"
+    master_key_b64="$(rand_b64_32)"
+    pepper="PepperMe"
+
+    local broker_url result_backend
+    broker_url="redis://:${redis_pw}@redis:6379/0"
+    result_backend="redis://:${redis_pw}@redis:6379/1"
+
+    local fqdn fqdn_re cors_allow_origins cors_allow_origin_regex keycloak_base_url trusted_hosts vault_addr_seeded
+    # Prefer PRIMARY_SERVER_FQDN from environment/.env; fall back only if not set.
+    fqdn="${PRIMARY_SERVER_FQDN:-networkengineertools.com}"
+    fqdn="${fqdn#https://}"; fqdn="${fqdn#http://}"; fqdn="${fqdn%/}"
+    [[ -n "$fqdn" ]] || fqdn="networkengineertools.com"
+
+    fqdn_re="${fqdn//./\\.}"
+    cors_allow_origins="https://${fqdn},https://www.${fqdn}"
+    cors_allow_origin_regex="^https://([a-z0-9-]+\\.)?${fqdn_re}(:\\d+)?$"
+    keycloak_base_url="https://auth.${fqdn}:8443"
+    trusted_hosts="${fqdn},*.${fqdn},localhost,127.0.0.1"
+    vault_addr_seeded="https://vault.${fqdn}:8200"
+
+    local secrets_data
+    secrets_data="$(jq -n       --arg APP_ENV "prod"       --arg CELERY_BROKER_DB "0"       --arg CELERY_BROKER_URL "$broker_url"       --arg CELERY_RESULT_BACKEND "$result_backend"       --arg CELERY_RESULT_DB "1"       --arg CELERY_WORKER_DEVICE_BACKUP_FILE_LOCATION "/backups/device_configuration_backups"       --arg CORS_ALLOW_CREDENTIALS "0"       --arg CORS_ALLOW_ORIGINS "$cors_allow_origins"       --arg CORS_ALLOW_ORIGIN_REGEX "$cors_allow_origin_regex"       --arg DEVICE_BACKUP_KDF_PEPPER "$pepper"       --arg DEVICE_BACKUP_MASTER_KEY_B64 "$master_key_b64"       --arg DEVICE_BACKUP_MAX_DECOMPRESSED_BYTES "52428800"       --arg ENABLE_FILE_ENCRYPTION "true"       --arg FASTAPI_ALLOWED_AZP "networktools-web,networktools-cli,networktools-automation,fastapi-client"       --arg FASTAPI_DB_PASSWORD "$fastapi_db_pw"       --arg FASTAPI_DB_SCHEMA "public"       --arg FASTAPI_DB_URL_DATABASE "network_tools"       --arg FASTAPI_DB_URL_HOST "postgres_primary"       --arg FASTAPI_DB_URL_PORT "5432"       --arg FASTAPI_DB_USERNAME "network_tools_fastapi"       --arg FASTAPI_VERIFY_AUDIENCE "false"       --arg KEYCLOAK_BASE_URL "$keycloak_base_url"       --arg KEYCLOAK_INTROSPECTION_CLIENT_ID "Is this needed?"       --arg KEYCLOAK_INTROSPECTION_CLIENT_SECRET "Is this needed?"       --arg KEYCLOAK_REALM "network_tools"       --arg LOG_DIR "/var/log/network_tools/fastapi"       --arg LOG_FILE "network_tools_fastapi.log"       --arg LOG_LEVEL "DEBUG"       --arg LOG_TO_STDOUT "1"       --arg REDIS_HOST "redis"       --arg REDIS_PASSWORD "$redis_pw"       --arg REDIS_PORT "6379"       --arg TRUSTED_HOSTS "$trusted_hosts"       --arg VAULT_ADDR "$vault_addr_seeded"       '{
+        APP_ENV:$APP_ENV,
+        CELERY_BROKER_DB:$CELERY_BROKER_DB,
+        CELERY_BROKER_URL:$CELERY_BROKER_URL,
+        CELERY_RESULT_BACKEND:$CELERY_RESULT_BACKEND,
+        CELERY_RESULT_DB:$CELERY_RESULT_DB,
+        CELERY_WORKER_DEVICE_BACKUP_FILE_LOCATION:$CELERY_WORKER_DEVICE_BACKUP_FILE_LOCATION,
+        CORS_ALLOW_CREDENTIALS:$CORS_ALLOW_CREDENTIALS,
+        CORS_ALLOW_ORIGINS:$CORS_ALLOW_ORIGINS,
+        CORS_ALLOW_ORIGIN_REGEX:$CORS_ALLOW_ORIGIN_REGEX,
+        DEVICE_BACKUP_KDF_PEPPER:$DEVICE_BACKUP_KDF_PEPPER,
+        DEVICE_BACKUP_MASTER_KEY_B64:$DEVICE_BACKUP_MASTER_KEY_B64,
+        DEVICE_BACKUP_MAX_DECOMPRESSED_BYTES:$DEVICE_BACKUP_MAX_DECOMPRESSED_BYTES,
+        ENABLE_FILE_ENCRYPTION:$ENABLE_FILE_ENCRYPTION,
+        FASTAPI_ALLOWED_AZP:$FASTAPI_ALLOWED_AZP,
+        FASTAPI_DB_PASSWORD:$FASTAPI_DB_PASSWORD,
+        FASTAPI_DB_SCHEMA:$FASTAPI_DB_SCHEMA,
+        FASTAPI_DB_URL_DATABASE:$FASTAPI_DB_URL_DATABASE,
+        FASTAPI_DB_URL_HOST:$FASTAPI_DB_URL_HOST,
+        FASTAPI_DB_URL_PORT:$FASTAPI_DB_URL_PORT,
+        FASTAPI_DB_USERNAME:$FASTAPI_DB_USERNAME,
+        FASTAPI_VERIFY_AUDIENCE:$FASTAPI_VERIFY_AUDIENCE,
+        KEYCLOAK_BASE_URL:$KEYCLOAK_BASE_URL,
+        KEYCLOAK_INTROSPECTION_CLIENT_ID:$KEYCLOAK_INTROSPECTION_CLIENT_ID,
+        KEYCLOAK_INTROSPECTION_CLIENT_SECRET:$KEYCLOAK_INTROSPECTION_CLIENT_SECRET,
+        KEYCLOAK_REALM:$KEYCLOAK_REALM,
+        LOG_DIR:$LOG_DIR,
+        LOG_FILE:$LOG_FILE,
+        LOG_LEVEL:$LOG_LEVEL,
+        LOG_TO_STDOUT:$LOG_TO_STDOUT,
+        REDIS_HOST:$REDIS_HOST,
+        REDIS_PASSWORD:$REDIS_PASSWORD,
+        REDIS_PORT:$REDIS_PORT,
+        TRUSTED_HOSTS:$TRUSTED_HOSTS,
+        VAULT_ADDR:$VAULT_ADDR
+      }')"
+    kv_v2_write "$token" "$SEED_KV_MOUNT" "$fastapi_name" "$secrets_data"
+    log "Seeded: /v1/${SEED_KV_MOUNT}/data/${fastapi_name} (generated redis/db secrets)"
+  else
+    log "Seed exists; skipping: /v1/${SEED_KV_MOUNT}/data/${fastapi_name}"
+  fi
 }
 
 enable_file_audit_if_needed() {
@@ -1347,6 +1580,7 @@ main() {
   setup_postgres_pgadmin_approle_if_needed
   setup_keycloak_approle_if_needed
   setup_fastapi_approle_if_needed
+  seed_app_secrets_if_needed
   print_bootstrap_artifacts_instructions
   print_bootstrap_artifacts_contents
 

@@ -3,9 +3,9 @@
 # generate_local_networkengineertools_certs.sh
 #
 # Generates a local CA + a single TLS server certificate/key for:
-#   - networkengineertools.com
-#   - *.networkengineertools.com
-#   - (optionally) auth.networkengineertools.com, api.networkengineertools.com, etc.
+#   - ${PRIMARY_SERVER_FQDN} (from repo root .env PRIMARY_SERVER_FQDN)
+#   - *.${PRIMARY_SERVER_FQDN}
+#   - (optionally) auth.${PRIMARY_SERVER_FQDN}, api.${PRIMARY_SERVER_FQDN}, etc.
 #
 # NOTES / HOW TO RUN
 #   1) Place this script at:
@@ -32,7 +32,7 @@
 #
 # Tip (local name resolution):
 #   Add these to /etc/hosts on your client machine (or equivalent):
-#     <server-ip> networkengineertools.com auth.networkengineertools.com api.networkengineertools.com
+#     <server-ip> ${PRIMARY_SERVER_FQDN} auth.${PRIMARY_SERVER_FQDN} api.${PRIMARY_SERVER_FQDN}
 #
 set -Eeuo pipefail
 umask 077
@@ -45,25 +45,119 @@ FASTAPI_CERT_DIR_DEFAULT="$PROJECT_ROOT_DEFAULT/backend/app/fastapi/certs"
 SYNC_FASTAPI_CERTS_DEFAULT="1"
 VALUES_FILE_DEFAULT="$PROJECT_ROOT_DEFAULT/backend/build_scripts/networkengineertools_cert_values.env"
 
+ENV_FILE_DEFAULT="$PROJECT_ROOT_DEFAULT/.env"
+PRIMARY_SERVER_FQDN_FALLBACK="networkengineertools.com"
+
+# Load PRIMARY_SERVER_FQDN from the repo root .env (preferred), falling back to a safe default.
+# This lets you rebrand / migrate FQDNs without editing scripts.
+find_repo_env_file() {
+  local script_dir repo_dir i
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  repo_dir="$script_dir"
+
+  # Walk up a few levels looking for ".env"
+  for i in {1..8}; do
+    if [[ -f "$repo_dir/.env" ]]; then
+      printf '%s\n' "$repo_dir/.env"
+      return 0
+    fi
+    repo_dir="$(dirname "$repo_dir")"
+  done
+
+  # Fall back to the configured default location if it exists.
+  if [[ -f "$ENV_FILE_DEFAULT" ]]; then
+    printf '%s\n' "$ENV_FILE_DEFAULT"
+    return 0
+  fi
+
+  return 1
+}
+
+read_env_kv() {
+  # Read a KEY=VALUE from an env file, ignoring comments/whitespace.
+  # Prints value to stdout if found; returns 0 if found and non-empty.
+  local file="$1"
+  local key="$2"
+  local val
+  [[ -f "$file" ]] || return 1
+
+  val="$(
+    awk -F= -v k="$key" '
+      BEGIN { found=0; val="" }
+      /^[[:space:]]*#/ { next }
+      /^[[:space:]]*$/ { next }
+      {
+        gsub(/\r$/, "", $0)
+        # match KEY=... with optional spaces around '='
+        if ($0 ~ "^[[:space:]]*" k "[[:space:]]*=") {
+          sub("^[[:space:]]*" k "[[:space:]]*=[[:space:]]*", "", $0)
+          val=$0
+          found=1
+        }
+      }
+      END {
+        if (found==1) {
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+          # strip single/double quotes
+          if (val ~ /^".*"$/) { sub(/^"/, "", val); sub(/"$/, "", val) }
+          if (val ~ /^'\''.*'\''$/) { sub(/^'\''/, "", val); sub(/'\''$/, "", val) }
+          print val
+        }
+      }
+    ' "$file" | tail -n 1
+  )"
+
+  val="$(printf '%s' "$val" | tr -d '\r')"
+  [[ -n "$val" ]] || return 1
+  printf '%s\n' "$val"
+  return 0
+}
+
+load_primary_server_fqdn() {
+  local env_file fqdn
+  env_file="$(find_repo_env_file || true)"
+  if [[ -n "${env_file:-}" ]]; then
+    fqdn="$(read_env_kv "$env_file" "PRIMARY_SERVER_FQDN" || true)"
+    if [[ -n "${fqdn:-}" ]]; then
+      PRIMARY_SERVER_FQDN="$fqdn"
+      log "INFO: Loaded PRIMARY_SERVER_FQDN from env file: $env_file"
+      return 0
+    fi
+    log "INFO: Env file found but PRIMARY_SERVER_FQDN missing/empty: $env_file"
+  else
+    log "INFO: Env file not found; using fallback domain: ${PRIMARY_SERVER_FQDN_FALLBACK}"
+  fi
+
+  PRIMARY_SERVER_FQDN="${PRIMARY_SERVER_FQDN_FALLBACK}"
+  return 0
+}
+
+# Derive default CN + SANs from PRIMARY_SERVER_FQDN; can be overridden by values file or flags.
+set_domain_defaults() {
+  CN_DEFAULT="${PRIMARY_SERVER_FQDN}"
+  DEFAULT_DNS_SANS=(
+    "${PRIMARY_SERVER_FQDN}"
+    "*.${PRIMARY_SERVER_FQDN}"
+    "auth.${PRIMARY_SERVER_FQDN}"
+    "api.${PRIMARY_SERVER_FQDN}"
+    "pgadmin.${PRIMARY_SERVER_FQDN}"
+    "flower.${PRIMARY_SERVER_FQDN}"
+    "vault.${PRIMARY_SERVER_FQDN}"
+    "localhost"
+  )
+}
+
 FORCE="0"
 SKIP_VALUES_FILE="0"
 
-CN_DEFAULT="networkengineertools.com"
+CN_DEFAULT="networkengineertools.com"  # overridden by PRIMARY_SERVER_FQDN if present
 CA_CN_DEFAULT="NETWORK_TOOLS Local Dev CA"
 CA_DAYS_DEFAULT="3650"
 LEAF_DAYS_DEFAULT="825"
 
-# Hardcoded SAN defaults (NO autodetect)
-DEFAULT_DNS_SANS=(
-  "networkengineertools.com"
-  "*.networkengineertools.com"
-  "auth.networkengineertools.com"
-  "api.networkengineertools.com"
-  "pgadmin.networkengineertools.com"
-  "flower.networkengineertools.com"
-  "vault.networkengineertools.com"
-  "localhost"
-)
+# Default SANs are derived from PRIMARY_SERVER_FQDN (loaded from repo root .env).
+# You can still add/override SANs via --dns/--ip or the values file.
+DEFAULT_DNS_SANS=()
 DEFAULT_IP_SANS=(
   "127.0.0.1"
 )
@@ -94,7 +188,7 @@ Options:
 Examples:
   $0
   $0 --force
-  $0 --dns vault.networkengineertools.com
+  $0 --dns "vault.${PRIMARY_SERVER_FQDN}"
 EOF
 }
 
@@ -102,6 +196,11 @@ log() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
+
+
+# Load domain defaults from repo root .env (PRIMARY_SERVER_FQDN) with fallback.
+load_primary_server_fqdn
+set_domain_defaults
 
 trim() {
   local s="${1-}"
