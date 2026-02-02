@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# check_approle_presence_and_ids_in_vault.sh (env + seamless FQDN fallback v4)
+# check_approle_presence_and_ids_in_vault.sh (env + seamless FQDN fallback v5)
 #
 # -------------------------------------------------------------------
 # Notes / How to run
@@ -299,20 +299,44 @@ get_role_id_from_vault() {
 check_role_id() {
   local role_name="$1"
   local role_dir="${ROLE_BASE_DIR}/${role_name}"
+
   local host_role_id_file="${role_dir}/role_id"
+  local host_secret_id_file="${role_dir}/secret_id"
 
   [[ -r "$host_role_id_file" ]] || die "Host role_id file not found/readable: ${host_role_id_file}"
 
   local role_id_host
-  role_id_host="$(cat "$host_role_id_file")"
+  role_id_host="$(tr -d '
+' < "$host_role_id_file")"
+
+  local secret_status="missing"
+  if [[ -r "$host_secret_id_file" ]]; then
+    # Do NOT print the secret_id itself; just confirm the file exists and is non-empty.
+    local nbytes
+    nbytes="$(wc -c < "$host_secret_id_file" | tr -d '[:space:]')"
+    if [[ "${nbytes:-0}" =~ ^[0-9]+$ ]] && (( nbytes > 0 )); then
+      secret_status="present (${nbytes} bytes)"
+    else
+      secret_status="present (empty?)"
+      warn "${role_name}: host secret_id file exists but appears empty: ${host_secret_id_file}"
+    fi
+  else
+    warn "${role_name}: host secret_id file not found/readable: ${host_secret_id_file}"
+  fi
 
   local role_id_vault
   role_id_vault="$(get_role_id_from_vault "$role_name")"
 
   echo
-  echo "${role_name} role_id (host):  ${role_id_host}"
-  echo "${role_name} role_id (vault): ${role_id_vault}"
+  echo "${role_name} role_id (host):         ${role_id_host}"
+  echo "${role_name} role_id (vault):        ${role_id_vault}"
+  echo "${role_name} secret_id (host file):  ${secret_status}"
+
+  if [[ -n "$role_id_host" && -n "$role_id_vault" && "$role_id_host" != "$role_id_vault" ]]; then
+    warn "${role_name}: role_id mismatch (host vs vault)"
+  fi
 }
 
 check_role_id "postgres_pgadmin_agent"
 check_role_id "keycloak_agent"
+check_role_id "fastapi_agent"
