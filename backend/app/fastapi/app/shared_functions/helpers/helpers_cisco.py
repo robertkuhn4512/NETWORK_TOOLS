@@ -1620,7 +1620,7 @@ def cisco_nexus_parse_show_ip_arp_matches(output):
                 'ipv4_address': a.groupdict()['ipv4_address'],
                 'age': a.groupdict()['age'],
                 'mac_address': a.groupdict()['mac_address'],
-                'mac_address_condensed': a.groupdict()['mac_address'].replace(".", "")
+                'mac_address_condensed': a.groupdict()['mac_address'].replace(".", ""),
                 'interface': a.groupdict()['interface']
             }
             count = count + 1
