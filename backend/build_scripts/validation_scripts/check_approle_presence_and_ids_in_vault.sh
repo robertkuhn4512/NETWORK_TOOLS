@@ -340,3 +340,4 @@ check_role_id() {
 check_role_id "postgres_pgadmin_agent"
 check_role_id "keycloak_agent"
 check_role_id "fastapi_agent"
+check_role_id "frontend_agent"

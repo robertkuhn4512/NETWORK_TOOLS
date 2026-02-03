@@ -53,6 +53,13 @@
 #         - Create a baseline ACL policy (default: fastapi_read)
 #         - Create a baseline AppRole role bound to that policy (default: fastapi_agent)
 #
+#
+#       Symfony Frontend Vault Agent (nginx + php-fpm):
+#         - Enable AppRole auth (if not already enabled) unless --no-setup-frontend-approle
+#         - Create a baseline ACL policy (default: frontend_read)
+#         - Create a baseline AppRole role bound to that policy (default: frontend_agent)
+#         - Policy grants read/list access to: app_network_tools_secrets/data/frontend_secrets
+#
 #     This script still intentionally does NOT:
 #       - Enable secrets engines (KV, etc.)
 #       - Seed/overwrite KV secrets (this script can optionally seed baseline secrets; see --no-seed-app-secrets)
@@ -198,6 +205,15 @@ AppRole + ACL bootstrap (first-time convenience; FastAPI Vault Agent):
   --fastapi-kv-version 1|2               Default: 2
 
 
+AppRole + ACL bootstrap (first-time convenience; Symfony Frontend Vault Agent):
+  --no-setup-frontend-approle            Skip enabling AppRole + creating the frontend policy/role
+  --force-frontend-approle               Re-write the policy/role even if they already exist
+  --frontend-role-name NAME              Default: frontend_agent
+  --frontend-policy-name NAME            Default: frontend_read
+  --frontend-kv-mount NAME               Default: app_network_tools_secrets
+  --frontend-kv-version 1|2              Default: 2
+
+
 Pretty output:
   --no-pretty-output              Disable pretty JSON formatting (writes unseal_keys.json compact)
   --no-print-artifact-contents    Do NOT print the contents of the key/token JSON files to the terminal
@@ -208,6 +224,7 @@ Debug:
 
 
 KV seed bootstrap (first-time convenience):
+  --seed-app-secrets                 Enable enabling KV + seeding baseline app secrets
   --no-seed-app-secrets              Skip enabling KV + seeding baseline app secrets
   --force-seed-app-secrets           Overwrite existing seeded secrets (DANGEROUS)
   --seed-kv-mount NAME               Default: ${SEED_KV_MOUNT}
@@ -302,6 +319,20 @@ FASTAPI_SECRET_ID_TTL="24h"
 FASTAPI_SECRET_ID_NUM_USES="1"
 FASTAPI_SETUP_DONE=0
 
+
+# AppRole + ACL bootstrap (Symfony Frontend Vault Agent)
+SETUP_FRONTEND_APPROLE=1
+FORCE_FRONTEND_APPROLE=0
+FRONTEND_ROLE_NAME="frontend_agent"
+FRONTEND_POLICY_NAME="frontend_read"
+FRONTEND_KV_MOUNT="app_network_tools_secrets"
+FRONTEND_KV_VERSION="2"
+FRONTEND_TOKEN_TTL="1h"
+FRONTEND_TOKEN_MAX_TTL="4h"
+FRONTEND_SECRET_ID_TTL="24h"
+FRONTEND_SECRET_ID_NUM_USES="1"
+FRONTEND_SETUP_DONE=0
+
 # KV seed bootstrap (optional; first-time convenience)
 SEED_APP_SECRETS=0
 FORCE_SEED_APP_SECRETS=0
@@ -383,6 +414,13 @@ while [[ $# -gt 0 ]]; do
 
     --env-file|--env-file=*)              if _set_opt --env-file "$1" "${2-}" ENV_FILE; then shift 1; else shift 2; fi ;;
     --no-env-file)                        LOAD_ENV_FILE=0; shift ;;
+    --env-override)                       ENV_OVERRIDE=1; shift ;;
+
+    --primary-server-fqdn|--primary-server-fqdn=*) if _set_opt --primary-server-fqdn "$1" "${2-}" PRIMARY_SERVER_FQDN_ARG; then shift 1; else shift 2; fi ;;
+    --vault-public-host|--vault-public-host=*)     if _set_opt --vault-public-host "$1" "${2-}" VAULT_PUBLIC_HOST; then shift 1; else shift 2; fi ;;
+    --resolve-ip|--resolve-ip=*)                   if _set_opt --resolve-ip "$1" "${2-}" RESOLVE_IP; then shift 1; else shift 2; fi ;;
+    --no-auto-resolve-public-host)                 AUTO_RESOLVE_PUBLIC_HOST=0; shift ;;
+
 
     --init-shares|--init-shares=*)         if _set_opt --init-shares "$1" "${2-}" INIT_SHARES; then shift 1; else shift 2; fi ;;
     --init-threshold|--init-threshold=*)   if _set_opt --init-threshold "$1" "${2-}" INIT_THRESHOLD; then shift 1; else shift 2; fi ;;
@@ -420,6 +458,45 @@ while [[ $# -gt 0 ]]; do
                                              if _set_opt --postgres-pgadmin-kv-mount "$1" "${2-}" POSTGRES_PGADMIN_KV_MOUNT; then shift 1; else shift 2; fi ;;
     --postgres-pgadmin-kv-version|--postgres-pgadmin-kv-version=*)
                                              if _set_opt --postgres-pgadmin-kv-version "$1" "${2-}" POSTGRES_PGADMIN_KV_VERSION; then shift 1; else shift 2; fi ;;
+    --no-setup-keycloak-approle)               SETUP_KEYCLOAK_APPROLE=0; shift ;;
+    --force-keycloak-approle)                  FORCE_KEYCLOAK_APPROLE=1; shift ;;
+    --keycloak-role-name|--keycloak-role-name=*)
+                                             if _set_opt --keycloak-role-name "$1" "${2-}" KEYCLOAK_ROLE_NAME; then shift 1; else shift 2; fi ;;
+    --keycloak-policy-name|--keycloak-policy-name=*)
+                                             if _set_opt --keycloak-policy-name "$1" "${2-}" KEYCLOAK_POLICY_NAME; then shift 1; else shift 2; fi ;;
+    --keycloak-kv-mount|--keycloak-kv-mount=*)
+                                             if _set_opt --keycloak-kv-mount "$1" "${2-}" KEYCLOAK_KV_MOUNT; then shift 1; else shift 2; fi ;;
+    --keycloak-kv-version|--keycloak-kv-version=*)
+                                             if _set_opt --keycloak-kv-version "$1" "${2-}" KEYCLOAK_KV_VERSION; then shift 1; else shift 2; fi ;;
+
+    --no-setup-fastapi-approle)                SETUP_FASTAPI_APPROLE=0; shift ;;
+    --force-fastapi-approle)                   FORCE_FASTAPI_APPROLE=1; shift ;;
+    --fastapi-role-name|--fastapi-role-name=*)
+                                             if _set_opt --fastapi-role-name "$1" "${2-}" FASTAPI_ROLE_NAME; then shift 1; else shift 2; fi ;;
+    --fastapi-policy-name|--fastapi-policy-name=*)
+                                             if _set_opt --fastapi-policy-name "$1" "${2-}" FASTAPI_POLICY_NAME; then shift 1; else shift 2; fi ;;
+    --fastapi-kv-mount|--fastapi-kv-mount=*)
+                                             if _set_opt --fastapi-kv-mount "$1" "${2-}" FASTAPI_KV_MOUNT; then shift 1; else shift 2; fi ;;
+    --fastapi-kv-version|--fastapi-kv-version=*)
+                                             if _set_opt --fastapi-kv-version "$1" "${2-}" FASTAPI_KV_VERSION; then shift 1; else shift 2; fi ;;
+
+    --no-setup-frontend-approle)               SETUP_FRONTEND_APPROLE=0; shift ;;
+    --force-frontend-approle)                  FORCE_FRONTEND_APPROLE=1; shift ;;
+    --frontend-role-name|--frontend-role-name=*)
+                                             if _set_opt --frontend-role-name "$1" "${2-}" FRONTEND_ROLE_NAME; then shift 1; else shift 2; fi ;;
+    --frontend-policy-name|--frontend-policy-name=*)
+                                             if _set_opt --frontend-policy-name "$1" "${2-}" FRONTEND_POLICY_NAME; then shift 1; else shift 2; fi ;;
+    --frontend-kv-mount|--frontend-kv-mount=*)
+                                             if _set_opt --frontend-kv-mount "$1" "${2-}" FRONTEND_KV_MOUNT; then shift 1; else shift 2; fi ;;
+    --frontend-kv-version|--frontend-kv-version=*)
+                                             if _set_opt --frontend-kv-version "$1" "${2-}" FRONTEND_KV_VERSION; then shift 1; else shift 2; fi ;;
+
+    --seed-app-secrets)                        SEED_APP_SECRETS=1; shift ;;
+    --no-seed-app-secrets)                     SEED_APP_SECRETS=0; shift ;;
+    --force-seed-app-secrets)                  FORCE_SEED_APP_SECRETS=1; shift ;;
+    --seed-kv-mount|--seed-kv-mount=*)         if _set_opt --seed-kv-mount "$1" "${2-}" SEED_KV_MOUNT; then shift 1; else shift 2; fi ;;
+    --seed-kv-version|--seed-kv-version=*)     if _set_opt --seed-kv-version "$1" "${2-}" SEED_KV_VERSION; then shift 1; else shift 2; fi ;;
+
     --no-pretty-output)                    PRETTY_OUTPUT=0; shift ;;
     --no-print-artifact-contents)         PRINT_ARTIFACT_CONTENTS=0; shift ;;
 
@@ -1222,7 +1299,120 @@ HCL
     log "AppRole role already exists: ${KEYCLOAK_ROLE_NAME}"
   fi
 
-  KEYCLOAK_SETUP_DONE=1
+  setup_frontend_approle_if_needed() {
+  (( SETUP_FRONTEND_APPROLE )) || { log "Frontend AppRole + ACL bootstrap disabled (--no-setup-frontend-approle)."; return 0; }
+
+  # Root token is required for sys/auth + sys/policy + AppRole role management.
+  if [[ ! -f "$ROOT_TOKEN_FILE" ]]; then
+    log "WARN: Root token file not found ($ROOT_TOKEN_FILE). Skipping Frontend AppRole bootstrap."
+    return 0
+  fi
+
+  local token=""
+  token="$(cat "$ROOT_TOKEN_FILE" 2>/dev/null || true)"
+  token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+  # Fallbacks (in case the plain file was written but read failed for any reason)
+  if [[ -z "$token" && -f "$ROOT_TOKEN_JSON_FILE" ]]; then
+    token="$(jq -r '.root_token // empty' "$ROOT_TOKEN_JSON_FILE" 2>/dev/null || true)"
+    token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  fi
+  if [[ -z "$token" && -f "$UNSEAL_KEYS_FILE" ]]; then
+    token="$(jq -r '.root_token // empty' "$UNSEAL_KEYS_FILE" 2>/dev/null || true)"
+    token="$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  fi
+
+  [[ -n "$token" ]] || { log "WARN: Root token not available; skipping Frontend AppRole bootstrap."; return 0; }
+
+  # Determine KV prefix for policy. KV v2 uses <mount>/data/<path>.
+  local kv_prefix
+  if [[ "${FRONTEND_KV_VERSION}" == "2" ]]; then
+    kv_prefix="${FRONTEND_KV_MOUNT}/data"
+  else
+    kv_prefix="${FRONTEND_KV_MOUNT}"
+  fi
+
+  local policy_hcl
+  policy_hcl="$(cat <<HCL
+# Read frontend secrets (KV v1 or KV v2 data paths)
+path "${kv_prefix}/frontend_secrets" {
+  capabilities = ["read"]
+}
+
+# If KV v2, allow listing metadata (helps `vault kv list`/UI and some tooling)
+path "${FRONTEND_KV_MOUNT}/metadata/frontend_secrets*" {
+  capabilities = ["list"]
+}
+HCL
+)"
+
+  # 1) Ensure ACL policy exists (or force re-write).
+  local need_policy=0
+  request_authed "$token" GET "/v1/sys/policy/${FRONTEND_POLICY_NAME}"
+  if [[ "$HTTP_CODE" == "404" ]]; then
+    need_policy=1
+  elif [[ "$HTTP_CODE" =~ ^2 ]]; then
+    need_policy=0
+  else
+    die "policy read failed (${HTTP_CODE}): ${RESP_JSON}"
+  fi
+
+  if (( FORCE_FRONTEND_APPROLE )) || (( need_policy )); then
+    local policy_body
+    policy_body="$(jq -n --arg pol "$policy_hcl" '{policy:$pol}')"
+    request_authed "$token" PUT "/v1/sys/policy/${FRONTEND_POLICY_NAME}" "$policy_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "policy write failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Ensured ACL policy: ${FRONTEND_POLICY_NAME}"
+  else
+    log "ACL policy already exists: ${FRONTEND_POLICY_NAME}"
+  fi
+
+  # 2) Ensure AppRole auth method is enabled at approle/.
+  request_authed "$token" GET "/v1/sys/auth"
+  [[ "$HTTP_CODE" =~ ^2 ]] || die "sys/auth read failed (${HTTP_CODE}): ${RESP_JSON}"
+
+  if jq -e '.data["approle/"]? // empty' <<<"$RESP_JSON" >/dev/null 2>&1; then
+    log "Auth method already enabled: approle/"
+  else
+    local auth_body
+    auth_body="$(jq -n --arg t "approle" --arg d "AppRole auth (bootstrap)" '{type:$t, description:$d}')"
+    request_authed "$token" POST "/v1/sys/auth/approle" "$auth_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "auth enable approle failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Enabled auth method: approle/"
+  fi
+
+  # 3) Ensure the AppRole role exists (or force re-write).
+  local need_role=0
+  request_authed "$token" GET "/v1/auth/approle/role/${FRONTEND_ROLE_NAME}/role-id"
+  if [[ "$HTTP_CODE" == "404" ]]; then
+    need_role=1
+  elif [[ "$HTTP_CODE" =~ ^2 ]]; then
+    need_role=0
+  else
+    die "approle role-id read failed (${HTTP_CODE}): ${RESP_JSON}"
+  fi
+
+  if (( FORCE_FRONTEND_APPROLE )) || (( need_role )); then
+    local role_body
+    role_body="$(jq -n \
+      --arg pol "${FRONTEND_POLICY_NAME}" \
+      --arg token_ttl "${FRONTEND_TOKEN_TTL}" \
+      --arg token_max_ttl "${FRONTEND_TOKEN_MAX_TTL}" \
+      --arg secret_id_ttl "${FRONTEND_SECRET_ID_TTL}" \
+      --argjson secret_id_num_uses "${FRONTEND_SECRET_ID_NUM_USES}" \
+      '{token_policies:[$pol], token_ttl:$token_ttl, token_max_ttl:$token_max_ttl, secret_id_ttl:$secret_id_ttl, secret_id_num_uses:$secret_id_num_uses}')"
+
+    request_authed "$token" POST "/v1/auth/approle/role/${FRONTEND_ROLE_NAME}" "$role_body"
+    [[ "$HTTP_CODE" =~ ^2 ]] || die "approle role write failed (${HTTP_CODE}): ${RESP_JSON}"
+    log "Ensured AppRole role: ${FRONTEND_ROLE_NAME} (policy: ${FRONTEND_POLICY_NAME})"
+  else
+    log "AppRole role already exists: ${FRONTEND_ROLE_NAME}"
+  fi
+
+  FRONTEND_SETUP_DONE=1
+}
+
+KEYCLOAK_SETUP_DONE=1
 }
 
 setup_fastapi_approle_if_needed() {
@@ -1291,6 +1481,35 @@ path "app_network_tools_secrets/metadata/cisco_api_console/*" {
     capabilities = ["list"]
 }
 
+# Allow read access to the 'snmp_v2' secret
+path "app_network_tools_secrets/data/snmp_v2" {
+    capabilities = ["read"]
+}
+
+# Allow listing of secrets within the 'app_network_tools_secrets' mount for UI/CLI navigation
+path "app_network_tools_secrets/metadata/snmp_v2/*" {
+    capabilities = ["list"]
+}
+
+# Allow read access to the 'snmp_v3' secret
+path "app_network_tools_secrets/data/snmp_v3" {
+    capabilities = ["read"]
+}
+
+# Allow listing of secrets within the 'app_network_tools_secrets' mount for UI/CLI navigation
+path "app_network_tools_secrets/metadata/snmp_v3/*" {
+    capabilities = ["list"]
+}
+
+# Allow read access to the 'frontend_secrets' secret
+path "app_network_tools_secrets/data/frontend_secrets" {
+    capabilities = ["read"]
+}
+
+# Allow listing of secrets within the 'app_network_tools_secrets' mount for UI/CLI navigation
+path "app_network_tools_secrets/metadata/frontend_secrets/*" {
+    capabilities = ["list"]
+}
 HCL
 )"
 
@@ -1579,6 +1798,7 @@ main() {
   enable_file_audit_if_needed
   setup_postgres_pgadmin_approle_if_needed
   setup_keycloak_approle_if_needed
+  setup_frontend_approle_if_needed
   setup_fastapi_approle_if_needed
   seed_app_secrets_if_needed
   print_bootstrap_artifacts_instructions
@@ -1606,12 +1826,17 @@ main() {
     --arg keycloak_policy_name "$KEYCLOAK_POLICY_NAME" \
     --arg fastapi_role_name "$FASTAPI_ROLE_NAME" \
     --arg fastapi_policy_name "$FASTAPI_POLICY_NAME" \
+    --arg frontend_role_name "$FRONTEND_ROLE_NAME" \
+    --arg frontend_policy_name "$FRONTEND_POLICY_NAME" \
+    --argjson frontend_setup_done "$FRONTEND_SETUP_DONE" \
     --argjson keycloak_setup_done "$KEYCLOAK_SETUP_DONE" \
     --argjson fastapi_setup_done "$FASTAPI_SETUP_DONE" \
     --argjson keycloak_setup_enabled "$SETUP_KEYCLOAK_APPROLE" \
     --argjson keycloak_setup_force "$FORCE_KEYCLOAK_APPROLE" \
     --argjson fastapi_setup_enabled "$SETUP_FASTAPI_APPROLE" \
     --argjson fastapi_setup_force "$FORCE_FASTAPI_APPROLE" \
+    --argjson frontend_setup_enabled "$SETUP_FRONTEND_APPROLE" \
+    --argjson frontend_setup_force "$FORCE_FRONTEND_APPROLE" \
     --argjson postgres_pgadmin_setup_enabled "$SETUP_POSTGRES_PGADMIN_APPROLE" \
     --argjson postgres_pgadmin_setup_force "$FORCE_POSTGRES_PGADMIN_APPROLE" \
     '{
@@ -1644,6 +1869,13 @@ main() {
         setup_done: ($fastapi_setup_done == 1),
         role_name: $fastapi_role_name,
         policy_name: $fastapi_policy_name
+      },
+      frontend_approle_bootstrap: {
+        enabled: ($frontend_setup_enabled == 1),
+        force: ($frontend_setup_force == 1),
+        setup_done: ($frontend_setup_done == 1),
+        role_name: $frontend_role_name,
+        policy_name: $frontend_policy_name
       },
       print_artifact_contents: ($print_artifact_contents == 1),
       audit: { enabled: ($enable_audit == 1), path: $audit_path, file_path: $audit_file_path },

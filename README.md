@@ -220,6 +220,13 @@ Do NOT paste this output into tickets, chat, or logs.
     "role_name": "fastapi_agent",
     "policy_name": "fastapi_read"
   },
+  "frontend_approle_bootstrap": {
+    "enabled": true,
+    "force": false,
+    "setup_done": true,
+    "role_name": "frontend_agent",
+    "policy_name": "frontend_read"
+  },
   "print_artifact_contents": true,
   "audit": {
     "enabled": true,
@@ -314,9 +321,14 @@ ROLE_NAME=postgres_pgadmin_agent ./backend/build_scripts/postgress_approle_setup
 chmod +x ./backend/build_scripts/fastapi_approle_setup.sh
 ROLE_NAME=fastapi_agent ./backend/build_scripts/fastapi_approle_setup.sh
 ```
+7. 
+```bash
+chmod +x ./backend/build_scripts/frontend_approle_setup.sh
+ROLE_NAME=frontend_agent ./backend/build_scripts/frontend_approle_setup.sh
+```
 
 # Generate and Seed Postgres/pgAdmin/Keycloak bootstrap credentials + KV spec artifacts
-7.
+8
 
 >NOTE: --unseal-required should match --init-threshold.<br> 
 > This tells the script how many keys are required to unseal vault if it's sealed.
@@ -575,17 +587,21 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ bash ./backend/build_scr
 INFO: Loading env defaults from: /home/developer_network_tools/NETWORK_TOOLS/.env
 INFO: WARN: VAULT_CACERT_IN_CONTAINER '/vault/certs/ca.crt' not found in container; using /vault/certs/cert.crt
 
-postgres_pgadmin_agent role_id (host):         27102c48-27cf-6811-561e-8721623cd745
-postgres_pgadmin_agent role_id (vault):        27102c48-27cf-6811-561e-8721623cd745
+postgres_pgadmin_agent role_id (host):         54ccfb7e-0093-4510-ef4f-796dbc7b01f1
+postgres_pgadmin_agent role_id (vault):        54ccfb7e-0093-4510-ef4f-796dbc7b01f1
 postgres_pgadmin_agent secret_id (host file):  present (36 bytes)
 
-keycloak_agent role_id (host):         01d77b50-9956-1665-a20b-59f5ab6ceb48
-keycloak_agent role_id (vault):        01d77b50-9956-1665-a20b-59f5ab6ceb48
+keycloak_agent role_id (host):         e9a30576-7208-966a-1cef-b81857a5b95b
+keycloak_agent role_id (vault):        e9a30576-7208-966a-1cef-b81857a5b95b
 keycloak_agent secret_id (host file):  present (36 bytes)
 
-fastapi_agent role_id (host):         9448a114-1f31-d4f4-944f-1d5eb5ab0cc3
-fastapi_agent role_id (vault):        9448a114-1f31-d4f4-944f-1d5eb5ab0cc3
+fastapi_agent role_id (host):         400804e8-c448-86ec-e7e3-98f562770f4e
+fastapi_agent role_id (vault):        400804e8-c448-86ec-e7e3-98f562770f4e
 fastapi_agent secret_id (host file):  present (36 bytes)
+
+frontend_agent role_id (host):         1b886aa9-09d0-0781-e08b-1f954972e760
+frontend_agent role_id (vault):        1b886aa9-09d0-0781-e08b-1f954972e760
+frontend_agent secret_id (host file):  present (36 bytes)
 ```
 
 >NOTE: A few points on the approle scripts
@@ -628,11 +644,12 @@ Vault Agents authenticate using **AppRole**. They require host-side artifacts mo
 ### 2.1 Start Vault Agents (must authenticate before dependent services)
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin vault_agent_keycloak vault_agent_fastapi
+docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin vault_agent_keycloak vault_agent_fastapi vault_agent_frontend
 
 docker logs --tail 200 -f vault_agent_postgres_pgadmin
 docker logs --tail 200 -f vault_agent_keycloak
 docker logs --tail 200 -f vault_agent_fastapi
+docker logs --tail 200 -f vault_agent_frontend
 
 # Confirm the rendered files exist for fastapi
 docker exec -it vault_agent_fastapi sh -lc 'ls -lah /vault/rendered && echo && sed -n "1,80p" /vault/rendered/redis.conf'
@@ -773,6 +790,13 @@ docker logs --tail 200 -f flower
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate nginx_gateway
 docker logs --tail 200 -f nginx_gateway
+```
+
+### 2.8 Start PHP, Symfony, Nginx entrypoint for symfony
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_nginx frontend_php_fpm
+docker logs --tail 200 -f frontend_nginx
+docker logs --tail 200 -f frontend_php_fpm
 ```
 
 ---
