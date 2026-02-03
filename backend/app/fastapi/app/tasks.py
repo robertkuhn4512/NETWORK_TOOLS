@@ -53,7 +53,7 @@ from app.shared_functions.helpers.helpers_netmiko import (
 from app.shared_functions.helpers.helpers_cisco import (
     cisco_allowed_show_version_commands,
     cisco_allowed_show_mac_address_table_commands,
-    cisco_show_version_parse,
+    parse_cisco_show_version,
     cisco_allowed_backup_commands,
     cisco_hostname,
     cisco_map_device_type_os_type
@@ -377,7 +377,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             )
 
                                             if 'cisco' in ad.get("device_type"):
-                                                show_version_parsed = cisco_show_version_parse(show_version_command_output.get('output', ''))
+                                                show_version_parsed = parse_cisco_show_version(show_version_command_output.get('output', ''))
 
                                         # Perform a backup of the device
 
@@ -503,6 +503,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 "encryption_task": encryption_task,
                                                 "decrypt_task": ({**decrypt_task, "content": "Redacted - This was a test to see if the file could be decrypted"} if isinstance(decrypt_task, dict) and "content" in decrypt_task else decrypt_task),
                                                 "show_mac_address_table_output": show_mac_address_table_output #Temporary
+                                                "show_mac_address_table_output_parsed"
                                             },
                                             information_detail={}
                                         )

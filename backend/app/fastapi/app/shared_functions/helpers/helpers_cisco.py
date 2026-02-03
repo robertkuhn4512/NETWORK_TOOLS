@@ -116,7 +116,7 @@ def cisco_allowed_show_mac_address_table_commands(device_type) -> Dict[str, str]
 
     return _SHOW_VERSION_CMD_BY_DEVICE.get(device_type)
 
-def cisco_show_version_parse(output: str) -> Dict[str, str]:
+def parse_cisco_show_version(output: str) -> Dict[str, str]:
     """
     Parse key bits out of Cisco 'show version' output (IOS-XE + older IOS/3x/4xx).
 
