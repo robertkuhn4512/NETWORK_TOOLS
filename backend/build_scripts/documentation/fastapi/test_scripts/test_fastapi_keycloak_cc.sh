@@ -79,7 +79,7 @@ set -euo pipefail
 KC_BASE_DEFAULT="https://auth.networkengineertools.com:8443"
 REALM_DEFAULT="network_tools"
 CLIENT_ID_DEFAULT="fastapi-client"
-CLIENT_SECRET_DEFAULT='FVfBZYmFKhZvUz1Aone1H4FyIZlo0hTP'
+CLIENT_SECRET_DEFAULT='1AY0iadJnCFpypSveoX1wpfsRwEKJXGN'
 
 API_BASE=""
 API_PATH="/"
