@@ -220,6 +220,13 @@ Do NOT paste this output into tickets, chat, or logs.
     "role_name": "fastapi_agent",
     "policy_name": "fastapi_read"
   },
+  "frontend_approle_bootstrap": {
+    "enabled": true,
+    "force": false,
+    "setup_done": true,
+    "role_name": "frontend_agent",
+    "policy_name": "frontend_read"
+  },
   "print_artifact_contents": true,
   "audit": {
     "enabled": true,
@@ -314,9 +321,14 @@ ROLE_NAME=postgres_pgadmin_agent ./backend/build_scripts/postgress_approle_setup
 chmod +x ./backend/build_scripts/fastapi_approle_setup.sh
 ROLE_NAME=fastapi_agent ./backend/build_scripts/fastapi_approle_setup.sh
 ```
+7. 
+```bash
+chmod +x ./backend/build_scripts/frontend_approle_setup.sh
+ROLE_NAME=frontend_agent ./backend/build_scripts/frontend_approle_setup.sh
+```
 
 # Generate and Seed Postgres/pgAdmin/Keycloak bootstrap credentials + KV spec artifacts
-7.
+8
 
 >NOTE: --unseal-required should match --init-threshold.<br> 
 > This tells the script how many keys are required to unseal vault if it's sealed.
@@ -575,17 +587,21 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ bash ./backend/build_scr
 INFO: Loading env defaults from: /home/developer_network_tools/NETWORK_TOOLS/.env
 INFO: WARN: VAULT_CACERT_IN_CONTAINER '/vault/certs/ca.crt' not found in container; using /vault/certs/cert.crt
 
-postgres_pgadmin_agent role_id (host):         27102c48-27cf-6811-561e-8721623cd745
-postgres_pgadmin_agent role_id (vault):        27102c48-27cf-6811-561e-8721623cd745
+postgres_pgadmin_agent role_id (host):         54ccfb7e-0093-4510-ef4f-796dbc7b01f1
+postgres_pgadmin_agent role_id (vault):        54ccfb7e-0093-4510-ef4f-796dbc7b01f1
 postgres_pgadmin_agent secret_id (host file):  present (36 bytes)
 
-keycloak_agent role_id (host):         01d77b50-9956-1665-a20b-59f5ab6ceb48
-keycloak_agent role_id (vault):        01d77b50-9956-1665-a20b-59f5ab6ceb48
+keycloak_agent role_id (host):         e9a30576-7208-966a-1cef-b81857a5b95b
+keycloak_agent role_id (vault):        e9a30576-7208-966a-1cef-b81857a5b95b
 keycloak_agent secret_id (host file):  present (36 bytes)
 
-fastapi_agent role_id (host):         9448a114-1f31-d4f4-944f-1d5eb5ab0cc3
-fastapi_agent role_id (vault):        9448a114-1f31-d4f4-944f-1d5eb5ab0cc3
+fastapi_agent role_id (host):         400804e8-c448-86ec-e7e3-98f562770f4e
+fastapi_agent role_id (vault):        400804e8-c448-86ec-e7e3-98f562770f4e
 fastapi_agent secret_id (host file):  present (36 bytes)
+
+frontend_agent role_id (host):         1b886aa9-09d0-0781-e08b-1f954972e760
+frontend_agent role_id (vault):        1b886aa9-09d0-0781-e08b-1f954972e760
+frontend_agent secret_id (host file):  present (36 bytes)
 ```
 
 >NOTE: A few points on the approle scripts
@@ -628,21 +644,32 @@ Vault Agents authenticate using **AppRole**. They require host-side artifacts mo
 ### 2.1 Start Vault Agents (must authenticate before dependent services)
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin vault_agent_keycloak vault_agent_fastapi
-
+docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin vault_agent_keycloak vault_agent_fastapi vault_agent_frontend
+```
+```bash
 docker logs --tail 200 -f vault_agent_postgres_pgadmin
+```
+```bash
 docker logs --tail 200 -f vault_agent_keycloak
+```
+```bash
 docker logs --tail 200 -f vault_agent_fastapi
+```
+```bash
+docker logs --tail 200 -f vault_agent_frontend
+```
 
 # Confirm the rendered files exist for fastapi
+```bash
 docker exec -it vault_agent_fastapi sh -lc 'ls -lah /vault/rendered && echo && sed -n "1,80p" /vault/rendered/redis.conf'
-
 ```
 
 ### 2.2 Start Postgres
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d postgres_primary
+```
+```bash
 docker logs --tail 200 -f postgres_primary
 ```
 
@@ -737,8 +764,12 @@ docker logs --tail 200 -f pgadmin
 > TODO: Build walkthrough's on creating accounts with proper roles assigned.
 > TODO: Build this files creation into the init scripts and tie it into the chosen fqdn
 > https://auth.networkengineertools.com:8443
+
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate keycloak
+```
+
+```bash
 docker logs --tail 200 -f keycloak
 ```
 
@@ -746,6 +777,9 @@ docker logs --tail 200 -f keycloak
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate redis
+```
+
+```bash
 docker logs --tail 200 -f redis
 ```
 
@@ -757,8 +791,17 @@ docker logs --tail 200 -f redis
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api celery_worker flower
+```
+
+```bash
 docker logs --tail 200 -f fastapi_api
+```
+
+```bash
 docker logs --tail 200 -f celery_worker
+```
+
+```bash
 docker logs --tail 200 -f flower
 ```
 
@@ -772,8 +815,70 @@ docker logs --tail 200 -f flower
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate nginx_gateway
+```
+```bash
 docker logs --tail 200 -f nginx_gateway
 ```
+
+### 2.8 Start PHP, Symfony, Nginx entrypoint for symfony
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_nginx frontend_php_fpm
+```
+
+```bash
+docker logs --tail 200 -f frontend_nginx
+```
+
+```bash
+docker logs --tail 200 -f frontend_php_fpm
+```
+
+### 2.9 If any changes to the frontend Symfony side has been made, A cache clear / warmup must be done before changes take effect.
+This should be baked into the rebuild, but in case it flakes out then the manual command is listed below for reference. 
+
+```bash
+docker exec -u 82:82 -it frontend_php_fpm sh -lc \
+  'php bin/console cache:clear --env=prod && php bin/console cache:warmup --env=prod'
+```
+
+>NOTE: Here for reference in case you ever need to teardown and rebuild the frontend container set. 
+> Sometimes it may flake or have issues with file permissions which cause the cache folders to not be 
+> created correctly and with the wrong permisssions. 
+ 
+### 2.9.1 Remove and recreate all frontend containers and volumes and rebuild
+Run commands 2.9.1.1-.5
+### 2.9.1.1
+```bash
+docker stop frontend_php_fpm vault_agent_frontend
+```
+### 2.9.1.2
+```bash
+docker rm frontend_php_fpm vault_agent_frontend frontend_var_init
+```
+### 2.9.1.3
+```bash
+docker volume rm network_tools_frontend_vault_rendered
+```
+### 2.9.1.4
+```bash
+chmod +x ./backend/build_scripts/frontend_approle_setup.sh
+ROLE_NAME=frontend_agent ./backend/build_scripts/frontend_approle_setup.sh
+```
+### 2.9.1.5 (Production mode)
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate vault_agent_frontend frontend_php_fpm
+```
+
+### 2.9.1.5.1 (Development mode - Enable symfony debugging tools / packages for developing locally)
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate vault_agent_frontend
+```
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.dev up -d --no-deps --build --force-recreate frontend_php_fpm
+```
+
 
 ---
 
@@ -1048,6 +1153,37 @@ back through the API without writing anything to disk.
     "username": "",
     "notes": "Optional notes describing this login credential"
   }
+}
+```
+
+#### Example `frontend_secrets.json` (BASE Vault-rendered)
+
+>NOTE: APP_DEBUG and APP_ENV are optional. 
+> If they are not configured in vault (You need to set these manually) the container will default to production mode
+> See notes below from the docker compose file.
+
+```text
+  # These need to be set to toggle your container from prod <-> dev
+  # dev: target=dev, APP_ENV=dev, APP_DEBUG=1
+  # prod: target=prod, APP_ENV=prod, APP_DEBUG=0
+  #
+  # Compose command to turn up a development container. Defaults to production
+  # docker compose -f docker-compose.prod.yml up -d --env-file .env.dev --no-deps --build --force-recreate frontend_php_fpm
+  #
+  # If production is chosen, Default to the normal command in the readme.md file. See below as well.
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_php_fpm
+```
+
+```json
+{
+  "APP_DEBUG": "1",
+  "APP_ENV": "dev",
+  "APP_SECRET": "clkKk_Uows26uP51U1kk8CNwGCQa1LZT8KkmatwlrbW1PjoTah8gIx4-74DLU5XOJWaYAzFGvNHQkF2ia3y4XA",
+  "FASTAPI_OIDC_CLIENT_ID": "networktools-automation",
+  "FASTAPI_OIDC_CLIENT_SECRET": "",
+  "KEYCLOAK_CLIENT_ID": "networktools-web",
+  "KEYCLOAK_CLIENT_SECRET": "",
+  "KEYCLOAK_REALM": "network_tools"
 }
 ```
 

@@ -20,6 +20,9 @@ test/
 test*.py
 **/test/
 
+var/
+vendor/
+
 # Cert Directory
 backend/app/security/configuration_files/vault/certs/
 
@@ -50,3 +53,43 @@ backend/app/security/configuration_files/vault/certs/
 #Ignore local how to videos
 how_to_videos/*
 
+# containerlab qcow2/vmdk/etc (DO NOT COMMIT)
+containerlab/images/
+
+# (recommended) containerlab runtime artifacts (created on deploy)
+containerlab/state/
+
+# =========================
+# Symfony frontend ignores
+# =========================
+
+# Local env (Vault injects runtime env; never commit local overrides)
+ /frontend/.env.local
+ /frontend/.env.*.local
+ /frontend/.env.local.php
+
+# Dependencies (Composer)
+ /frontend/vendor/
+
+# Runtime/cache/logs
+ /frontend/var/
+
+# PHPUnit / phpunit cache
+ /frontend/.phpunit.result.cache
+ /frontend/phpunit.xml
+ /frontend/phpunit.xml.dist
+
+# Symfony CLI local data (if you use symfony binary)
+ /frontend/.symfony/
+
+# If you use Node tooling (Encore / Vite / etc.)
+ /frontend/node_modules/
+ /frontend/public/build/
+ /frontend/public/.vite/
+
+# Common tooling noise
+ /frontend/.DS_Store
+ /frontend/npm-debug.log*
+ /frontend/yarn-debug.log*
+ /frontend/yarn-error.log*
+ /frontend/pnpm-debug.log*
