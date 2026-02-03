@@ -401,10 +401,19 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
 
                                                 # Fetch the mac address table snapshot
 
-                                                show_mac_address_table_command = cisco_allowed_show_mac_address_table_commands(ad.get['device_type'])
+                                                show_mac_address_table_command = cisco_allowed_show_mac_address_table_commands(ad.get("device_type"))
+                                                logger.info(f"show_mac_address_table_command: {show_mac_address_table_command}")
                                                 if show_mac_address_table_command is not None:
-                                                    show_mac_address_table_output = netmiko_fetch_command_output(show_mac_address_table_command)
-
+                                                    show_mac_address_table_output = await netmiko_fetch_command_output(
+                                                        host=target_ip,
+                                                        username=p.get("username", ""),
+                                                        password=p.get("password", ""),
+                                                        port=int(p.get("ssh_port", 22)),
+                                                        enable_secret=p.get("enable_password"),
+                                                        device_type=ad.get("device_type"),
+                                                        command=show_mac_address_table_command
+                                                    )
+                                                    logger.info(f"show_mac_address_table_output: {show_mac_address_table_output}")
 
                                             # Save the raw configuration backup
                                             now = datetime.now()

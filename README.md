@@ -645,21 +645,31 @@ Vault Agents authenticate using **AppRole**. They require host-side artifacts mo
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d vault_agent_postgres_pgadmin vault_agent_keycloak vault_agent_fastapi vault_agent_frontend
-
+```
+```bash
 docker logs --tail 200 -f vault_agent_postgres_pgadmin
+```
+```bash
 docker logs --tail 200 -f vault_agent_keycloak
+```
+```bash
 docker logs --tail 200 -f vault_agent_fastapi
+```
+```bash
 docker logs --tail 200 -f vault_agent_frontend
+```
 
 # Confirm the rendered files exist for fastapi
+```bash
 docker exec -it vault_agent_fastapi sh -lc 'ls -lah /vault/rendered && echo && sed -n "1,80p" /vault/rendered/redis.conf'
-
 ```
 
 ### 2.2 Start Postgres
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d postgres_primary
+```
+```bash
 docker logs --tail 200 -f postgres_primary
 ```
 
@@ -754,8 +764,12 @@ docker logs --tail 200 -f pgadmin
 > TODO: Build walkthrough's on creating accounts with proper roles assigned.
 > TODO: Build this files creation into the init scripts and tie it into the chosen fqdn
 > https://auth.networkengineertools.com:8443
+
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate keycloak
+```
+
+```bash
 docker logs --tail 200 -f keycloak
 ```
 
@@ -763,6 +777,9 @@ docker logs --tail 200 -f keycloak
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate redis
+```
+
+```bash
 docker logs --tail 200 -f redis
 ```
 
@@ -774,8 +791,17 @@ docker logs --tail 200 -f redis
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api celery_worker flower
+```
+
+```bash
 docker logs --tail 200 -f fastapi_api
+```
+
+```bash
 docker logs --tail 200 -f celery_worker
+```
+
+```bash
 docker logs --tail 200 -f flower
 ```
 
@@ -789,15 +815,70 @@ docker logs --tail 200 -f flower
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate nginx_gateway
+```
+```bash
 docker logs --tail 200 -f nginx_gateway
 ```
 
 ### 2.8 Start PHP, Symfony, Nginx entrypoint for symfony
+
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_nginx frontend_php_fpm
+```
+
+```bash
 docker logs --tail 200 -f frontend_nginx
+```
+
+```bash
 docker logs --tail 200 -f frontend_php_fpm
 ```
+
+### 2.9 If any changes to the frontend Symfony side has been made, A cache clear / warmup must be done before changes take effect.
+This should be baked into the rebuild, but in case it flakes out then the manual command is listed below for reference. 
+
+```bash
+docker exec -u 82:82 -it frontend_php_fpm sh -lc \
+  'php bin/console cache:clear --env=prod && php bin/console cache:warmup --env=prod'
+```
+
+>NOTE: Here for reference in case you ever need to teardown and rebuild the frontend container set. 
+> Sometimes it may flake or have issues with file permissions which cause the cache folders to not be 
+> created correctly and with the wrong permisssions. 
+ 
+### 2.9.1 Remove and recreate all frontend containers and volumes and rebuild
+Run commands 2.9.1.1-.5
+### 2.9.1.1
+```bash
+docker stop frontend_php_fpm vault_agent_frontend
+```
+### 2.9.1.2
+```bash
+docker rm frontend_php_fpm vault_agent_frontend frontend_var_init
+```
+### 2.9.1.3
+```bash
+docker volume rm network_tools_frontend_vault_rendered
+```
+### 2.9.1.4
+```bash
+chmod +x ./backend/build_scripts/frontend_approle_setup.sh
+ROLE_NAME=frontend_agent ./backend/build_scripts/frontend_approle_setup.sh
+```
+### 2.9.1.5 (Production mode)
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate vault_agent_frontend frontend_php_fpm
+```
+
+### 2.9.1.5.1 (Development mode - Enable symfony debugging tools / packages for developing locally)
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate vault_agent_frontend
+```
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.dev up -d --no-deps --build --force-recreate frontend_php_fpm
+```
+
 
 ---
 
@@ -1072,6 +1153,37 @@ back through the API without writing anything to disk.
     "username": "",
     "notes": "Optional notes describing this login credential"
   }
+}
+```
+
+#### Example `frontend_secrets.json` (BASE Vault-rendered)
+
+>NOTE: APP_DEBUG and APP_ENV are optional. 
+> If they are not configured in vault (You need to set these manually) the container will default to production mode
+> See notes below from the docker compose file.
+
+```text
+  # These need to be set to toggle your container from prod <-> dev
+  # dev: target=dev, APP_ENV=dev, APP_DEBUG=1
+  # prod: target=prod, APP_ENV=prod, APP_DEBUG=0
+  #
+  # Compose command to turn up a development container. Defaults to production
+  # docker compose -f docker-compose.prod.yml up -d --env-file .env.dev --no-deps --build --force-recreate frontend_php_fpm
+  #
+  # If production is chosen, Default to the normal command in the readme.md file. See below as well.
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_php_fpm
+```
+
+```json
+{
+  "APP_DEBUG": "1",
+  "APP_ENV": "dev",
+  "APP_SECRET": "clkKk_Uows26uP51U1kk8CNwGCQa1LZT8KkmatwlrbW1PjoTah8gIx4-74DLU5XOJWaYAzFGvNHQkF2ia3y4XA",
+  "FASTAPI_OIDC_CLIENT_ID": "networktools-automation",
+  "FASTAPI_OIDC_CLIENT_SECRET": "",
+  "KEYCLOAK_CLIENT_ID": "networktools-web",
+  "KEYCLOAK_CLIENT_SECRET": "",
+  "KEYCLOAK_REALM": "network_tools"
 }
 ```
 

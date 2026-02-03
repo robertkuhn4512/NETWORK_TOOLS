@@ -59,11 +59,37 @@ containerlab/images/
 # (recommended) containerlab runtime artifacts (created on deploy)
 containerlab/state/
 
-# --- Frontend (Symfony) env files ---
-/frontend/.env.local
-/frontend/.env.*.local
-/frontend/.env.local.php
+# =========================
+# Symfony frontend ignores
+# =========================
 
-# --- Frontend build/runtime directories ---
-/frontend/vendor/
-/frontend/var/
+# Local env (Vault injects runtime env; never commit local overrides)
+ /frontend/.env.local
+ /frontend/.env.*.local
+ /frontend/.env.local.php
+
+# Dependencies (Composer)
+ /frontend/vendor/
+
+# Runtime/cache/logs
+ /frontend/var/
+
+# PHPUnit / phpunit cache
+ /frontend/.phpunit.result.cache
+ /frontend/phpunit.xml
+ /frontend/phpunit.xml.dist
+
+# Symfony CLI local data (if you use symfony binary)
+ /frontend/.symfony/
+
+# If you use Node tooling (Encore / Vite / etc.)
+ /frontend/node_modules/
+ /frontend/public/build/
+ /frontend/public/.vite/
+
+# Common tooling noise
+ /frontend/.DS_Store
+ /frontend/npm-debug.log*
+ /frontend/yarn-debug.log*
+ /frontend/yarn-error.log*
+ /frontend/pnpm-debug.log*

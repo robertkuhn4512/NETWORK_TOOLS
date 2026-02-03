@@ -21,5 +21,5 @@ auto_auth {
 template {
   source      = "/vault/templates/frontend.env.ctmpl"
   destination = "/vault/rendered/frontend.env"
-  perms       = "0400"
+  perms       = "0440"
 }

@@ -72,6 +72,7 @@ services:
        - vault_production_node
        - fastapi_api
        - pgadmin
+       - frontend_nginx
     networks:
       public_net:
     ports:
@@ -98,6 +99,7 @@ services:
       - ./backend/app/nginx/templates:/etc/nginx/templates:ro
       - ./backend/app/nginx/certs:/etc/nginx/certs:ro
     environment:
+      ENABLE_FLOWER: "1" # Enable flowers frontend. 1=enable 0=disable. Only enable if you're running flower
       PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN}"
       PUBLIC_HTTPS_PORT: "${PUBLIC_HTTPS_PORT}"
       NGINX_ENVSUBST_OUTPUT_DIR: "/etc/nginx/conf.d" # Explicitly tell it where to write
@@ -693,6 +695,7 @@ services:
       VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200"
       VAULT_CACERT: "/vault/ca/ca.crt"
     read_only: true
+    user: "0:0"
     tmpfs:
       - /tmp
       - /run
@@ -713,23 +716,71 @@ services:
       timeout: 3s
       retries: 30
 
+  # Rebuild the frontend_var_init along with frontend_php_fpm
+  # docker compose -f docker-compose.prod.yml up -d --build --force-recreate frontend_php_fpm
+
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_php_fpm
 
+  frontend_var_init:
+    image: alpine:3.21
+    container_name: frontend_var_init
+    user: "0:0"
+    restart: "no"
+    volumes:
+      - type: volume
+        source: frontend_var
+        target: /var/www/html/var
+        volume:
+          nocopy: true
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -eux
+        umask 0002
+
+        mkdir -p /var/www/html/var/cache/prod /var/www/html/var/log
+
+        # Take ownership every startup (repairs root-owned dirs)
+        chown -R 82:0 /var/www/html/var
+
+        # Owner/group writable; no "other" access
+        chmod -R u+rwX,g+rwX /var/www/html/var
+        find /var/www/html/var -type d -exec chmod 2770 {} +
+        find /var/www/html/var -type f -exec chmod 0660 {} + || true
+
+        # Log the important bits so we can see it worked
+        ls -ld /var/www/html/var /var/www/html/var/cache /var/www/html/var/cache/prod
+
+
+  # These need to be set to toggle your container from prod <-> dev
+  # dev: target=dev, APP_ENV=dev, APP_DEBUG=1
+  # prod: target=prod, APP_ENV=prod, APP_DEBUG=0
+  #
+  # Compose command to turn up a development container. Defaults to production
+  # docker compose -f docker-compose.prod.yml --env-file .env.dev up -d --no-deps --build --force-recreate frontend_php_fpm
+  #
+  # If production is chosen, Default to the normal command in the readme.md file. See below as well.
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_php_fpm
+  #
   frontend_php_fpm:
     image: php:8.5-fpm-alpine
     build:
       context: ./frontend
       dockerfile: docker/php-fpm/Dockerfile
+      target: ${FRONTEND_PHP_FPM_TARGET:-prod}
     container_name: frontend_php_fpm
     restart: unless-stopped
     depends_on:
       vault_agent_frontend:
         condition: service_healthy
+      frontend_var_init:
+        condition: service_completed_successfully
     networks:
       db_net:
         ipv4_address: 172.30.20.71
     read_only: true
-    user: "0:0"
+    user: "82:0"
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,mode=1777
       - /run:rw,nosuid,nodev,noexec,mode=0755
@@ -743,7 +794,11 @@ services:
       - SETGID
       - SETUID
     volumes:
-      - frontend_var:/var/www/html/var:rw
+      - type: volume
+        source: frontend_var
+        target: /var/www/html/var
+        volume:
+          nocopy: true
       - frontend_vault_rendered:/run/vault:ro
       - ./backend/app/nginx/certs/ca.crt:/run/certs/ca.crt:ro
     environment:
@@ -751,6 +806,14 @@ services:
       SSL_CERT_FILE: "/run/certs/ca.crt"
       CURL_CA_BUNDLE: "/run/certs/ca.crt"
       REQUESTS_CA_BUNDLE: "/run/certs/ca.crt"
+      SYMFONY_RESET_ALWAYS: "1"
+      SYMFONY_CACHE_WARMUP_ALWAYS: "${SYMFONY_CACHE_WARMUP_ALWAYS:-0}" # For dev / lab work set to 1, prod should be 0
+      SYMFONY_CACHE_WARMUP: "${SYMFONY_CACHE_WARMUP:-1}"               # As it should only need to rebuild once per push.
+                                                                       # You can still manually clear / warmup the cache when needed with
+                                                                       # the below command.
+                                                                       # docker exec -u 82:82 -it frontend_php_fpm sh -lc 'php bin/console cache:clear --env=prod && php bin/console cache:warmup --env=prod'
+      APP_ENV: ${SYMFONY_APP_ENV:-prod}
+      APP_DEBUG: ${SYMFONY_APP_DEBUG:-0}
 
   # ------------------------------------------------------------
   # Symfony Frontend (PHP 8.5 + Symfony 8.x)
