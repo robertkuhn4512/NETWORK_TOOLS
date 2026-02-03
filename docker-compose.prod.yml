@@ -27,6 +27,10 @@ volumes:
     name: network_tools_redis_data
   flower_data:
     name: network_tools_flower_data
+  frontend_vault_rendered:
+    name: network_tools_frontend_vault_rendered
+  frontend_var:
+    name: network_tools_frontend_var
 
 networks:
   db_net:
@@ -502,7 +506,7 @@ services:
   # docker compose -f docker-compose.prod.yml up -d fastapi_api --build
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api
   fastapi_api:
-    image: network_tools_fastapi:latest
+    image: python:3.14-slim
     build:
       context: ./backend/app/fastapi
       dockerfile: Dockerfile
@@ -580,7 +584,7 @@ services:
   # docker compose -f docker-compose.prod.yml up -d celery_worker --build
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate celery_worker
   celery_worker:
-    image: network_tools_fastapi:latest
+    image: python:3.14-slim
     container_name: celery_worker
     restart: unless-stopped
     networks:
@@ -631,7 +635,7 @@ services:
   # docker compose -f docker-compose.prod.yml up -d flower --build
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate flower
   flower:
-    image: network_tools_fastapi:latest
+    image: python:3.14-slim
     container_name: flower
     restart: unless-stopped
     depends_on:
@@ -671,3 +675,117 @@ services:
       timeout: 3s
       retries: 10
       start_period: 15s
+
+  # ------------------------------------------------------------
+  # Vault Agent for Symfony Frontend
+  # Renders: /vault/rendered/frontend.env
+  # ------------------------------------------------------------
+  vault_agent_frontend:
+    image: hashicorp/vault:1.21.1
+    container_name: vault_agent_frontend
+    restart: unless-stopped
+    depends_on:
+      - vault_production_node
+    entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
+    environment:
+      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN:-vault_production_node}"
+      PUBLIC_HTTPS_PORT: "${PUBLIC_HTTPS_PORT:-8443}"
+      VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200"
+      VAULT_CACERT: "/vault/ca/ca.crt"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    volumes:
+      - ./backend/app/security/configuration_files/vault/certs/ca.crt:/vault/ca/ca.crt:ro
+      - ./frontend/vault_agent/agent.hcl:/vault/agent/agent.hcl:ro
+      - ./frontend/vault_agent/templates:/vault/templates:ro
+      - ./container_data/vault/approle/frontend_agent:/vault/approle:ro
+      - frontend_vault_rendered:/vault/rendered
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: [ "CMD-SHELL", "test -s /vault/rendered/frontend.env" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_php_fpm
+
+  frontend_php_fpm:
+    image: php:8.5-fpm-alpine
+    build:
+      context: ./frontend
+      dockerfile: docker/php-fpm/Dockerfile
+    container_name: frontend_php_fpm
+    restart: unless-stopped
+    depends_on:
+      vault_agent_frontend:
+        condition: service_healthy
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.71
+    read_only: true
+    user: "0:0"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+      - /run:rw,nosuid,nodev,noexec,mode=0755
+      - /var/lib/php/sessions:rw,nosuid,nodev,noexec,mode=1733
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    volumes:
+      - frontend_var:/var/www/html/var:rw
+      - frontend_vault_rendered:/run/vault:ro
+      - ./backend/app/nginx/certs/ca.crt:/run/certs/ca.crt:ro
+    environment:
+      VAULT_SECRETS_ENV: "/run/vault/frontend.env"
+      SSL_CERT_FILE: "/run/certs/ca.crt"
+      CURL_CA_BUNDLE: "/run/certs/ca.crt"
+      REQUESTS_CA_BUNDLE: "/run/certs/ca.crt"
+
+  # ------------------------------------------------------------
+  # Symfony Frontend (PHP 8.5 + Symfony 8.x)
+  # ------------------------------------------------------------
+  #
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_nginx
+  frontend_nginx:
+    image: nginx:1.27-alpine
+    build:
+      context: ./frontend
+      dockerfile: docker/nginx/Dockerfile
+    container_name: frontend_nginx
+    restart: unless-stopped
+    depends_on:
+      - frontend_php_fpm
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.70
+      public_net:
+    read_only: true
+    user: "0:0"
+    tmpfs:
+      - /var/cache/nginx:rw,nosuid,nodev,noexec,mode=0755,uid=0,gid=0
+      - /var/run:rw,nosuid,nodev,noexec,mode=0755,uid=0,gid=0
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777,uid=0,gid=0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10

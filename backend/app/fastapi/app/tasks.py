@@ -52,6 +52,7 @@ from app.shared_functions.helpers.helpers_netmiko import (
 
 from app.shared_functions.helpers.helpers_cisco import (
     cisco_allowed_show_version_commands,
+    cisco_allowed_show_mac_address_table_commands,
     cisco_show_version_parse,
     cisco_allowed_backup_commands,
     cisco_hostname,
@@ -324,7 +325,9 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         port=int(p.get("ssh_port", 22)),
                                         enable_secret=p.get("enable_password"),
                                     )
+
                                     logger.info(ad)
+
                                     # Auto discover has the following info in the ad dict
                                     # "autodiscover": {
                                     #     "ok": true,
@@ -360,6 +363,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             show_version_command_output = ''
                                             device_backup_location = ''
                                             show_version_parsed = {}
+                                            show_mac_address_table_output = {}
 
                                         if show_version_command is not None:
                                             show_version_command_output = await netmiko_fetch_command_output(
@@ -394,6 +398,12 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
 
                                             if 'cisco' in ad.get("device_type"):
                                                 hostname = cisco_hostname(backup_commands_output.get('output', '')).get('hostname', 'Unable to determine hostname')
+
+                                                # Fetch the mac address table snapshot
+
+                                                show_mac_address_table_command = cisco_allowed_show_mac_address_table_commands(ad.get['device_type'])
+                                                if show_mac_address_table_command is not None:
+                                                    show_mac_address_table_output = netmiko_fetch_command_output(show_mac_address_table_command)
 
 
                                             # Save the raw configuration backup
@@ -483,6 +493,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 "encryption_warning_message": encryption_warning_message,
                                                 "encryption_task": encryption_task,
                                                 "decrypt_task": ({**decrypt_task, "content": "Redacted - This was a test to see if the file could be decrypted"} if isinstance(decrypt_task, dict) and "content" in decrypt_task else decrypt_task),
+                                                "show_mac_address_table_output": show_mac_address_table_output #Temporary
                                             },
                                             information_detail={}
                                         )

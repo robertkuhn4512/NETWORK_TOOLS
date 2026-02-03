@@ -95,6 +95,26 @@ def cisco_allowed_show_version_commands(device_type) -> Dict[str, str]:
 
     return _SHOW_VERSION_CMD_BY_DEVICE.get(device_type)
 
+def cisco_allowed_show_mac_address_table_commands(device_type) -> Dict[str, str]:
+    """
+
+    :param device_type (cisco_ios | cisco_xe | cisco_xr) etc:
+    :return: allowed commands that can be sent to a device for mac address table reporting
+
+    Device types are based off what netmiko uses to describe a device using the autodiscover process
+    The list can be found here
+    https://ktbyers.github.io/netmiko/PLATFORMS.html
+
+    """
+
+    _SHOW_VERSION_CMD_BY_DEVICE: Mapping[str, str] = {
+        "cisco_ios": "show mac address-table",
+        "cisco_xe":  "show mac address-table",
+        "cisco_xr":  "show mac address-table",
+        "cisco_nxos":  "show mac address-table",
+    }
+
+    return _SHOW_VERSION_CMD_BY_DEVICE.get(device_type)
 
 def cisco_show_version_parse(output: str) -> Dict[str, str]:
     """

@@ -388,6 +388,16 @@ FastAPI (Postgres-backed; limited DML user for network_tools DB):
   --fastapi-password <value>
   --fastapi-schema <name>
 
+Frontend (Symfony) (Vault: frontend_secrets):
+  --no-frontend
+  --frontend-app-secret <value>
+  --frontend-keycloak-realm <value>
+  --frontend-keycloak-client-id <value>
+  --frontend-keycloak-client-secret <value>
+  --frontend-fastapi-oidc-client-id <value>
+  --frontend-fastapi-oidc-client-secret <value>
+
+
 Redis / Celery (stored under fastapi_secrets):
   --no-redis
   --redis-host <host>
@@ -485,6 +495,14 @@ while [[ $# -gt 0 ]]; do
     --postgres-password) POSTGRES_PASSWORD="${2:-}"; shift 2;;
 
     --no-fastapi) INCLUDE_FASTAPI=0; shift 1;;
+    --no-frontend) INCLUDE_FRONTEND=0; shift 1;;
+    --frontend-app-secret) FRONTEND_APP_SECRET="${2:-}"; shift 2;;
+    --frontend-keycloak-realm) FRONTEND_KEYCLOAK_REALM="${2:-}"; shift 2;;
+    --frontend-keycloak-client-id) FRONTEND_KEYCLOAK_CLIENT_ID="${2:-}"; shift 2;;
+    --frontend-keycloak-client-secret) FRONTEND_KEYCLOAK_CLIENT_SECRET="${2:-}"; shift 2;;
+    --frontend-fastapi-oidc-client-id) FRONTEND_FASTAPI_OIDC_CLIENT_ID="${2:-}"; shift 2;;
+    --frontend-fastapi-oidc-client-secret) FRONTEND_FASTAPI_OIDC_CLIENT_SECRET="${2:-}"; shift 2;;
+
     --fastapi-db-host) FASTAPI_DB_URL_HOST="${2:-}"; shift 2;;
     --fastapi-db-port) FASTAPI_DB_URL_PORT="${2:-}"; shift 2;;
     --fastapi-db) FASTAPI_DB_URL_DATABASE="${2:-}"; shift 2;;
@@ -733,7 +751,16 @@ load_from_local_env_if_present() {
     [[ -n "${fa_schema}" ]] && FASTAPI_DB_SCHEMA="${fa_schema}"
   fi
 
-  # Redis / Celery (optional)
+  # Frontend (Symfony) — stored in Vault at: frontend_secrets (KV v2 path)
+INCLUDE_FRONTEND="${INCLUDE_FRONTEND:-1}"
+FRONTEND_APP_SECRET="${FRONTEND_APP_SECRET:-}"
+FRONTEND_KEYCLOAK_REALM="${FRONTEND_KEYCLOAK_REALM:-network_tools}"
+FRONTEND_KEYCLOAK_CLIENT_ID="${FRONTEND_KEYCLOAK_CLIENT_ID:-networktools-web}"
+FRONTEND_KEYCLOAK_CLIENT_SECRET="${FRONTEND_KEYCLOAK_CLIENT_SECRET:-}"
+FRONTEND_FASTAPI_OIDC_CLIENT_ID="${FRONTEND_FASTAPI_OIDC_CLIENT_ID:-networktools-automation}"
+FRONTEND_FASTAPI_OIDC_CLIENT_SECRET="${FRONTEND_FASTAPI_OIDC_CLIENT_SECRET:-}"
+
+# Redis / Celery (optional)
   local r_inc r_host r_port r_pass c_inc c_broker_db c_result_db c_broker_url c_backend
   r_inc="$(load_env_value "${src}" "INCLUDE_REDIS")"
   [[ "${r_inc}" == "0" || "${r_inc}" == "1" ]] && INCLUDE_REDIS="${r_inc}"
@@ -961,7 +988,28 @@ vault_try_load_from_vault() {
         log "Using existing Vault secret for FastAPI DB credentials: ${VAULT_MOUNT}/${fastapi_path}"
       fi
 
-      # Redis / Celery (optional; also stored under fastapi_secrets)
+      # Frontend (optional)
+  local fe_inc fe_app_secret fe_kc_realm fe_kc_cid fe_kc_cs fe_fa_cid fe_fa_cs
+  fe_inc="$(load_env_value "${src}" "INCLUDE_FRONTEND")"
+  if [[ -n "${fe_inc}" ]]; then
+    INCLUDE_FRONTEND="${fe_inc}"
+  fi
+
+  fe_app_secret="$(load_env_value "${src}" "FRONTEND_APP_SECRET")"
+  fe_kc_realm="$(load_env_value "${src}" "FRONTEND_KEYCLOAK_REALM")"
+  fe_kc_cid="$(load_env_value "${src}" "FRONTEND_KEYCLOAK_CLIENT_ID")"
+  fe_kc_cs="$(load_env_value "${src}" "FRONTEND_KEYCLOAK_CLIENT_SECRET")"
+  fe_fa_cid="$(load_env_value "${src}" "FRONTEND_FASTAPI_OIDC_CLIENT_ID")"
+  fe_fa_cs="$(load_env_value "${src}" "FRONTEND_FASTAPI_OIDC_CLIENT_SECRET")"
+
+  [[ -n "${fe_app_secret}" ]] && FRONTEND_APP_SECRET="${fe_app_secret}"
+  [[ -n "${fe_kc_realm}" ]] && FRONTEND_KEYCLOAK_REALM="${fe_kc_realm}"
+  [[ -n "${fe_kc_cid}" ]] && FRONTEND_KEYCLOAK_CLIENT_ID="${fe_kc_cid}"
+  [[ -n "${fe_kc_cs}" ]] && FRONTEND_KEYCLOAK_CLIENT_SECRET="${fe_kc_cs}"
+  [[ -n "${fe_fa_cid}" ]] && FRONTEND_FASTAPI_OIDC_CLIENT_ID="${fe_fa_cid}"
+  [[ -n "${fe_fa_cs}" ]] && FRONTEND_FASTAPI_OIDC_CLIENT_SECRET="${fe_fa_cs}"
+
+  # Redis / Celery (optional; also stored under fastapi_secrets)
       local v
       v="$(echo "${data}" | jq -r '.REDIS_PASSWORD // ""')"
       [[ -n "${REDIS_PASSWORD}" ]] || REDIS_PASSWORD="${v}"
@@ -990,6 +1038,35 @@ vault_try_load_from_vault() {
     fi
   fi
 
+
+  # Frontend secrets (optional)
+  if [[ "${INCLUDE_FRONTEND}" -eq 1 ]]; then
+    local frontend_path data
+    frontend_path="$(prefixed_path "frontend_secrets")"
+    data="$(vault_kv2_get_data_json "${VAULT_MOUNT}" "${frontend_path}" 2>/dev/null || true)"
+    if [[ -n "${data}" && "${data}" != "null" ]]; then
+      local v
+      v="$(echo "${data}" | jq -r '.APP_SECRET // empty')"
+      [[ -n "${v}" ]] && FRONTEND_APP_SECRET="${v}"
+
+      v="$(echo "${data}" | jq -r '.KEYCLOAK_REALM // empty')"
+      [[ -n "${v}" ]] && FRONTEND_KEYCLOAK_REALM="${v}"
+
+      v="$(echo "${data}" | jq -r '.KEYCLOAK_CLIENT_ID // empty')"
+      [[ -n "${v}" ]] && FRONTEND_KEYCLOAK_CLIENT_ID="${v}"
+
+      v="$(echo "${data}" | jq -r '.KEYCLOAK_CLIENT_SECRET // empty')"
+      [[ -n "${v}" ]] && FRONTEND_KEYCLOAK_CLIENT_SECRET="${v}"
+
+      v="$(echo "${data}" | jq -r '.FASTAPI_OIDC_CLIENT_ID // empty')"
+      [[ -n "${v}" ]] && FRONTEND_FASTAPI_OIDC_CLIENT_ID="${v}"
+
+      v="$(echo "${data}" | jq -r '.FASTAPI_OIDC_CLIENT_SECRET // empty')"
+      [[ -n "${v}" ]] && FRONTEND_FASTAPI_OIDC_CLIENT_SECRET="${v}"
+
+      log "Using existing Vault secret for Frontend: ${VAULT_MOUNT}/${frontend_path}"
+    fi
+  fi
 
   # Keycloak
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
@@ -1112,6 +1189,13 @@ if [[ "${MODE}" == "rotate" ]]; then
   if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
     FASTAPI_DB_PASSWORD="${FASTAPI_DB_PASSWORD:-$(gen_urlsafe 32)}"
   fi
+  if [[ "${INCLUDE_FRONTEND}" -eq 1 ]]; then
+    FRONTEND_APP_SECRET="${FRONTEND_APP_SECRET:-$(gen_urlsafe 64)}"
+    FRONTEND_KEYCLOAK_REALM="${FRONTEND_KEYCLOAK_REALM:-network_tools}"
+    FRONTEND_KEYCLOAK_CLIENT_ID="${FRONTEND_KEYCLOAK_CLIENT_ID:-networktools-web}"
+    FRONTEND_FASTAPI_OIDC_CLIENT_ID="${FRONTEND_FASTAPI_OIDC_CLIENT_ID:-networktools-automation}"
+  fi
+
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
     KEYCLOAK_DB_PASSWORD="${KEYCLOAK_DB_PASSWORD:-$(gen_urlsafe 32)}"
   fi
@@ -1124,6 +1208,13 @@ else
   if [[ "${INCLUDE_FASTAPI}" -eq 1 ]]; then
     [[ -n "${FASTAPI_DB_PASSWORD}" ]] || FASTAPI_DB_PASSWORD="$(gen_urlsafe 32)"
   fi
+  if [[ "${INCLUDE_FRONTEND}" -eq 1 ]]; then
+    [[ -n "${FRONTEND_APP_SECRET}" ]] || FRONTEND_APP_SECRET="$(gen_urlsafe 64)"
+    [[ -n "${FRONTEND_KEYCLOAK_REALM}" ]] || FRONTEND_KEYCLOAK_REALM="network_tools"
+    [[ -n "${FRONTEND_KEYCLOAK_CLIENT_ID}" ]] || FRONTEND_KEYCLOAK_CLIENT_ID="networktools-web"
+    [[ -n "${FRONTEND_FASTAPI_OIDC_CLIENT_ID}" ]] || FRONTEND_FASTAPI_OIDC_CLIENT_ID="networktools-automation"
+  fi
+
   if [[ "${INCLUDE_KEYCLOAK}" -eq 1 ]]; then
     [[ -n "${KEYCLOAK_DB_PASSWORD}" ]] || KEYCLOAK_DB_PASSWORD="$(gen_urlsafe 32)"
   fi
@@ -1238,6 +1329,16 @@ POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 
 INCLUDE_FASTAPI=${INCLUDE_FASTAPI}
 
+INCLUDE_FRONTEND=${INCLUDE_FRONTEND}
+
+# Frontend (Symfony)
+FRONTEND_APP_SECRET=${FRONTEND_APP_SECRET}
+FRONTEND_KEYCLOAK_REALM=${FRONTEND_KEYCLOAK_REALM}
+FRONTEND_KEYCLOAK_CLIENT_ID=${FRONTEND_KEYCLOAK_CLIENT_ID}
+FRONTEND_KEYCLOAK_CLIENT_SECRET=${FRONTEND_KEYCLOAK_CLIENT_SECRET}
+FRONTEND_FASTAPI_OIDC_CLIENT_ID=${FRONTEND_FASTAPI_OIDC_CLIENT_ID}
+FRONTEND_FASTAPI_OIDC_CLIENT_SECRET=${FRONTEND_FASTAPI_OIDC_CLIENT_SECRET}
+
 # FastAPI (network_tools DB — limited DML user)
 FASTAPI_DB_URL_HOST=${FASTAPI_DB_URL_HOST}
 FASTAPI_DB_URL_PORT=${FASTAPI_DB_URL_PORT}
@@ -1305,7 +1406,7 @@ EOF
 fi
 
 # Credentials JSON
-export INCLUDE_FASTAPI INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
+export INCLUDE_FASTAPI INCLUDE_FRONTEND INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
 
 jq -n \
   --arg generated_at_utc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
@@ -1343,6 +1444,12 @@ jq -n \
   --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
   --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
   --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
+  --arg FRONTEND_APP_SECRET "${FRONTEND_APP_SECRET}" \
+  --arg FRONTEND_KEYCLOAK_REALM "${FRONTEND_KEYCLOAK_REALM}" \
+  --arg FRONTEND_KEYCLOAK_CLIENT_ID "${FRONTEND_KEYCLOAK_CLIENT_ID}" \
+  --arg FRONTEND_KEYCLOAK_CLIENT_SECRET "${FRONTEND_KEYCLOAK_CLIENT_SECRET}" \
+  --arg FRONTEND_FASTAPI_OIDC_CLIENT_ID "${FRONTEND_FASTAPI_OIDC_CLIENT_ID}" \
+  --arg FRONTEND_FASTAPI_OIDC_CLIENT_SECRET "${FRONTEND_FASTAPI_OIDC_CLIENT_SECRET}" \
   --arg REDIS_HOST "${REDIS_HOST}" \
   --arg REDIS_PORT "${REDIS_PORT}" \
   --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
@@ -1423,6 +1530,16 @@ jq -n \
       CELERY_RESULT_BACKEND: (if env.INCLUDE_CELERY == "1" then $CELERY_RESULT_BACKEND else "" end)
     }
       ) } else {} end)
+  + (if env.INCLUDE_FRONTEND == "1" then { frontend_secrets: (
+    {
+      "APP_SECRET": $FRONTEND_APP_SECRET,
+      "KEYCLOAK_REALM": $FRONTEND_KEYCLOAK_REALM,
+      "KEYCLOAK_CLIENT_ID": $FRONTEND_KEYCLOAK_CLIENT_ID,
+      "KEYCLOAK_CLIENT_SECRET": $FRONTEND_KEYCLOAK_CLIENT_SECRET,
+      "FASTAPI_OIDC_CLIENT_ID": $FRONTEND_FASTAPI_OIDC_CLIENT_ID,
+      "FASTAPI_OIDC_CLIENT_SECRET": $FRONTEND_FASTAPI_OIDC_CLIENT_SECRET
+    }
+  ) } else {} end)
   + (if env.INCLUDE_KEYCLOAK == "1" then { keycloak_postgres: {
         KC_DB: $KC_DB,
         KC_DB_URL_HOST: $KC_DB_URL_HOST,
@@ -1464,7 +1581,7 @@ export INCLUDE_FASTAPI INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK_BOOTSTRAP I
 # Structure required by vault_unseal_multi_kv_seed_bootstrap_rootless.sh:
 # { mounts: [ { mount, version, prefix?, secrets: {...} } ] }
 
-export INCLUDE_FASTAPI INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
+export INCLUDE_FASTAPI INCLUDE_FRONTEND INCLUDE_REDIS INCLUDE_CELERY INCLUDE_KEYCLOAK INCLUDE_KEYCLOAK_BOOTSTRAP INCLUDE_KEYCLOAK_RUNTIME KEYCLOAK_TLS_PRESENT
 
 if [[ -n "${VAULT_PREFIX}" ]]; then
   jq -n \
@@ -1502,6 +1619,12 @@ if [[ -n "${VAULT_PREFIX}" ]]; then
     --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
     --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
     --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
+  --arg FRONTEND_APP_SECRET "${FRONTEND_APP_SECRET}" \
+  --arg FRONTEND_KEYCLOAK_REALM "${FRONTEND_KEYCLOAK_REALM}" \
+  --arg FRONTEND_KEYCLOAK_CLIENT_ID "${FRONTEND_KEYCLOAK_CLIENT_ID}" \
+  --arg FRONTEND_KEYCLOAK_CLIENT_SECRET "${FRONTEND_KEYCLOAK_CLIENT_SECRET}" \
+  --arg FRONTEND_FASTAPI_OIDC_CLIENT_ID "${FRONTEND_FASTAPI_OIDC_CLIENT_ID}" \
+  --arg FRONTEND_FASTAPI_OIDC_CLIENT_SECRET "${FRONTEND_FASTAPI_OIDC_CLIENT_SECRET}" \
   --arg REDIS_HOST "${REDIS_HOST}" \
   --arg REDIS_PORT "${REDIS_PORT}" \
   --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
@@ -1592,6 +1715,16 @@ if [[ -n "${VAULT_PREFIX}" ]]; then
                 CELERY_RESULT_BACKEND: (if env.INCLUDE_CELERY == "1" then $CELERY_RESULT_BACKEND else "" end)
               }
       ) } else {} end)
+            + (if env.INCLUDE_FRONTEND == "1" then { frontend_secrets: (
+              {
+                "APP_SECRET": $FRONTEND_APP_SECRET,
+                "KEYCLOAK_REALM": $FRONTEND_KEYCLOAK_REALM,
+                "KEYCLOAK_CLIENT_ID": $FRONTEND_KEYCLOAK_CLIENT_ID,
+                "KEYCLOAK_CLIENT_SECRET": $FRONTEND_KEYCLOAK_CLIENT_SECRET,
+                "FASTAPI_OIDC_CLIENT_ID": $FRONTEND_FASTAPI_OIDC_CLIENT_ID,
+                "FASTAPI_OIDC_CLIENT_SECRET": $FRONTEND_FASTAPI_OIDC_CLIENT_SECRET
+              }
+            ) } else {} end)
             + (if env.INCLUDE_KEYCLOAK == "1" then { keycloak_postgres: {
                   KC_DB: $KC_DB,
                   KC_DB_URL_HOST: $KC_DB_URL_HOST,
@@ -1659,6 +1792,12 @@ else
     --arg FASTAPI_DB_USERNAME "${FASTAPI_DB_USERNAME}" \
     --arg FASTAPI_DB_PASSWORD "${FASTAPI_DB_PASSWORD}" \
     --arg FASTAPI_DB_SCHEMA "${FASTAPI_DB_SCHEMA}" \
+  --arg FRONTEND_APP_SECRET "${FRONTEND_APP_SECRET}" \
+  --arg FRONTEND_KEYCLOAK_REALM "${FRONTEND_KEYCLOAK_REALM}" \
+  --arg FRONTEND_KEYCLOAK_CLIENT_ID "${FRONTEND_KEYCLOAK_CLIENT_ID}" \
+  --arg FRONTEND_KEYCLOAK_CLIENT_SECRET "${FRONTEND_KEYCLOAK_CLIENT_SECRET}" \
+  --arg FRONTEND_FASTAPI_OIDC_CLIENT_ID "${FRONTEND_FASTAPI_OIDC_CLIENT_ID}" \
+  --arg FRONTEND_FASTAPI_OIDC_CLIENT_SECRET "${FRONTEND_FASTAPI_OIDC_CLIENT_SECRET}" \
   --arg REDIS_HOST "${REDIS_HOST}" \
   --arg REDIS_PORT "${REDIS_PORT}" \
   --arg REDIS_PASSWORD "${REDIS_PASSWORD}" \
@@ -1748,6 +1887,16 @@ else
                 CELERY_RESULT_BACKEND: (if env.INCLUDE_CELERY == "1" then $CELERY_RESULT_BACKEND else "" end)
               }
       ) } else {} end)
+            + (if env.INCLUDE_FRONTEND == "1" then { frontend_secrets: (
+              {
+                "APP_SECRET": $FRONTEND_APP_SECRET,
+                "KEYCLOAK_REALM": $FRONTEND_KEYCLOAK_REALM,
+                "KEYCLOAK_CLIENT_ID": $FRONTEND_KEYCLOAK_CLIENT_ID,
+                "KEYCLOAK_CLIENT_SECRET": $FRONTEND_KEYCLOAK_CLIENT_SECRET,
+                "FASTAPI_OIDC_CLIENT_ID": $FRONTEND_FASTAPI_OIDC_CLIENT_ID,
+                "FASTAPI_OIDC_CLIENT_SECRET": $FRONTEND_FASTAPI_OIDC_CLIENT_SECRET
+              }
+            ) } else {} end)
             + (if env.INCLUDE_KEYCLOAK == "1" then { keycloak_postgres: {
                   KC_DB: $KC_DB,
                   KC_DB_URL_HOST: $KC_DB_URL_HOST,

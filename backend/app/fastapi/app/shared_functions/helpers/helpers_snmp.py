@@ -10,24 +10,32 @@ import time
 import binascii
 import asyncio
 import struct
-from typing import Any, Dict, List, Optional, Tuple, Union
-from pysnmp import hlapi
-from pysnmp.hlapi import (
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, Mapping
+from pysnmp.proto.rfc1902 import ObjectIdentifier
+from pysnmp.hlapi.v3arch.asyncio import (
     SnmpEngine,
     UdpTransportTarget,
     ContextData,
+    CommunityData,
     UsmUserData,
     ObjectType,
     ObjectIdentity,
-    bulkCmd,
-    getCmd,
-    ObjectIdentifier,
-    CommunityData
+    get_cmd,
+    bulk_walk_cmd,
+    # Common protocol constants (you can pass raw OIDs too)
+    usmNoAuthProtocol,
+    usmNoPrivProtocol,
+    usmHMACMD5AuthProtocol,
+    usmHMACSHAAuthProtocol,
+    usmDESPrivProtocol,
+    usm3DESEDEPrivProtocol,
+    usmAesCfb128Protocol,
+    usmAesCfb192Protocol,
+    usmAesCfb256Protocol,
 )
-from pysnmp.error import PySnmpError
-from pysnmp.entity.rfc3413.oneliner import cmdgen
 
-cmdGen = cmdgen.CommandGenerator()
+ProtocolRaw = Optional[Union[str, Tuple[int, ...], List[int], ObjectIdentifier]]
+
 
 from typing import Iterable, Any, Dict, List, Optional, Tuple, Union
 
@@ -39,31 +47,175 @@ Pre compile regex statements
 
 _dot_regex = re.compile(r"^\..*")
 
+
+def _to_object_types(oids: Iterable[OidLike]) -> list[ObjectType]:
+    out: list[ObjectType] = []
+    for oid in oids:
+        if isinstance(oid, ObjectType):
+            out.append(oid)
+        elif isinstance(oid, ObjectIdentity):
+            out.append(ObjectType(oid))
+        else:
+            out.append(ObjectType(ObjectIdentity(str(oid))))
+    return out
+
+def _oid_to_numeric_dot(oid_obj: Any) -> str:
+    """
+    Always return numeric OID with leading dot, e.g. ".1.3.6.1.2.1.1.1.0"
+    """
+    try:
+        tup = oid_obj.asTuple()
+        return "." + ".".join(str(int(x)) for x in tup)
+    except Exception:
+        try:
+            s = oid_obj.prettyPrint()
+        except Exception:
+            s = str(oid_obj)
+        return "." + str(s).lstrip(".")
+
 """
 This is used because the snmpv3 credentials are saved inside the vault instance as a string that resembles
 the protocols pysnmp is looking for. This will convert them into usable data tuples.
 """
 
-def _parse_protocol(proto):
+def _parse_protocol(raw: ProtocolRaw, *, kind: str) -> ObjectIdentifier:
     """
-    Accept either:
-      • a tuple of ints:   (1,3,6,1,6,3,10,1,1,3)
-      • a string:          "(1, 3, 6, 1, 6, 3, 10, 1, 1, 3)"
-      • an already-valid ObjectIdentifier
-    and return an ObjectIdentifier instance.
+    kind: "auth" or "priv"
+    Accepts:
+      - None -> default
+      - ObjectIdentifier -> as-is
+      - tuple/list ints -> converted to dotted OID
+      - "(1,3,6,...)" string -> parsed
+      - "1.3.6...." string -> parsed
+      - friendly names: auth: none|md5|sha|sha1 ; priv: none|des|3des|aes|aes128|aes192|aes256
     """
-    if isinstance(proto, ObjectIdentifier):
-        return proto
+    if raw is None:
+        return usmNoAuthProtocol if kind == "auth" else usmNoPrivProtocol
 
-    if isinstance(proto, tuple):
-        return ObjectIdentifier(proto)
+    if isinstance(raw, ObjectIdentifier):
+        return raw
 
-    if isinstance(proto, str):
-        nums = [int(x) for x in proto.strip("()[]").split(",")]
-        return ObjectIdentifier(tuple(nums))
+    if isinstance(raw, (tuple, list)):
+        dotted = ".".join(str(int(x)) for x in raw)
+        return ObjectIdentifier(dotted)
 
-    return proto
+    s = str(raw).strip()
+    if not s:
+        return usmNoAuthProtocol if kind == "auth" else usmNoPrivProtocol
 
+    if s.startswith("(") and s.endswith(")"):
+        inner = s[1:-1].strip()
+        parts = [p.strip() for p in inner.split(",") if p.strip()]
+        if not parts:
+            return usmNoAuthProtocol if kind == "auth" else usmNoPrivProtocol
+        dotted = ".".join(str(int(p)) for p in parts)
+        return ObjectIdentifier(dotted)
+
+    sl = s.lower()
+
+    if all(ch.isdigit() or ch == "." for ch in sl):
+        return ObjectIdentifier(sl)
+
+    if kind == "auth":
+        auth_map = {
+            "none": usmNoAuthProtocol,
+            "md5": usmHMACMD5AuthProtocol,
+            "sha": usmHMACSHAAuthProtocol,
+            "sha1": usmHMACSHAAuthProtocol,
+        }
+        if sl in auth_map:
+            return auth_map[sl]
+    else:
+        priv_map = {
+            "none": usmNoPrivProtocol,
+            "des": usmDESPrivProtocol,
+            "3des": usm3DESEDEPrivProtocol,
+            "aes": usmAesCfb128Protocol,
+            "aes128": usmAesCfb128Protocol,
+            "aes192": usmAesCfb192Protocol,
+            "aes256": usmAesCfb256Protocol,
+        }
+        if sl in priv_map:
+            return priv_map[sl]
+
+    raise ValueError(f"Unsupported {kind}Protocol value: {raw!r}")
+
+
+def _extract_v2_communities(snmp_v2: Any) -> List[str]:
+    """
+    Accepts:
+      - {"string": ["public", "private"]}
+      - ["public", "private"]
+      - "public"
+    """
+    if snmp_v2 is None:
+        return []
+    if isinstance(snmp_v2, str):
+        s = snmp_v2.strip()
+        return [s] if s else []
+    if isinstance(snmp_v2, list):
+        out = []
+        for x in snmp_v2:
+            if x is None:
+                continue
+            s = str(x).strip()
+            if s:
+                out.append(s)
+        return out
+    if isinstance(snmp_v2, dict):
+        vals = snmp_v2.get("string")
+        return _extract_v2_communities(vals)
+    return []
+
+def _iter_v3_profiles(snmp_v3: Any) -> Iterable[Tuple[str, Mapping[str, Any]]]:
+    """
+    Accepts:
+      - {"profile_name": { ...fields... }, "profile2": {...}}
+    """
+    if not snmp_v3:
+        return []
+    if isinstance(snmp_v3, dict):
+        return list(snmp_v3.items())
+    return []
+
+def _build_usm_user_data(profile: Mapping[str, Any]) -> Union[UsmUserData, Dict[str, str]]:
+    """
+    Profile fields expected (your schema):
+      - UsmUserData_username
+      - UsmUserData_password   (authKey)
+      - private_key            (privKey)
+      - authProtocol           (OID / "(1,3,...)" / friendly)
+      - privProtocol           (OID / "(1,3,...)" / friendly)
+    """
+    username = (profile.get("UsmUserData_username") or profile.get("username") or "").strip()
+    password = profile.get("UsmUserData_password") or profile.get("password") or profile.get("authKey")
+    priv_key = profile.get("private_key") or profile.get("privKey")
+
+    if not username:
+        return {"error": "missing_v3_username"}
+
+    # parse protocols (or defaults)
+    try:
+        auth_proto = _parse_protocol(profile.get("authProtocol"), kind="auth")
+        priv_proto = _parse_protocol(profile.get("privProtocol"), kind="priv")
+    except Exception as e:
+        return {"error": f"invalid_protocol: {e}"}
+
+    # auto-normalize if keys not provided
+    auth_key = str(password) if password not in (None, "") else None
+    privKey = str(priv_key) if priv_key not in (None, "") else None
+    if auth_key is None:
+        auth_proto = usmNoAuthProtocol
+    if privKey is None:
+        priv_proto = usmNoPrivProtocol
+
+    return UsmUserData(
+        userName=str(username),
+        authKey=auth_key,
+        privKey=privKey,
+        authProtocol=auth_proto,
+        privProtocol=priv_proto,
+    )
 
 def decimalToHexadecimal(decimal):
     conversion_table = {0: '0', 1: '1', 2: '2', 3: '3', 4: '4',
@@ -82,18 +234,13 @@ def decimalToHexadecimal(decimal):
             decimal = decimal // 16
         return hexadecimal.zfill(2)
 
-async def get(target, oids, credentials, port=161, engine=hlapi.SnmpEngine(), context=hlapi.ContextData()):
-    handler = hlapi.getCmd(
-        engine,
-        credentials,
-        hlapi.UdpTransportTarget((target, port), timeout=3, retries=0),
-        context,
-        *construct_object_types(oids)
-    )
-    try:
-        return fetch(handler, 1)[0]
-    except:
-        return False
+def construct_object_types(list_of_oids):
+    object_types = []
+    for oid in list_of_oids:
+        object_types.append(hlapi.ObjectType(hlapi.ObjectIdentity(oid)))
+    return object_types
+
+
 
 def convertDecToHex(dec):
     mac = []
@@ -104,10 +251,557 @@ def convertDecToHex(dec):
     mac = ':'.join(mac)
     return mac
 
+def _suffix_to_macs(suffix: str) -> Optional[Dict[str, str]]:
+    """
+    Convert OID suffix "a.b.c.d.e.f" (decimal bytes) to MAC formats.
 
+    Returns:
+      {
+        "plain": "aabbccddeeff",
+        "colon": "aa:bb:cc:dd:ee:ff",
+        "cisco": "aabb.ccdd.eeff"
+      }
+    """
+    parts = [p for p in suffix.strip(".").split(".") if p != ""]
+    if not parts:
+        return None
 
+    try:
+        nums = [int(p) for p in parts]
+    except Exception:
+        return None
 
+    if len(nums) < 6:
+        return None
 
+    # Some agents tack on extra indexes; MAC is usually the last 6 bytes.
+    nums = nums[-6:]
+
+    if any(n < 0 or n > 255 for n in nums):
+        return None
+
+    hexpairs = [f"{n:02x}" for n in nums]
+
+    mac_plain = "".join(hexpairs)
+    mac_colon = ":".join(hexpairs)
+    mac_cisco = f"{hexpairs[0]}{hexpairs[1]}.{hexpairs[2]}{hexpairs[3]}.{hexpairs[4]}{hexpairs[5]}"
+
+    return {"plain": mac_plain, "colon": mac_colon, "cisco": mac_cisco}
+
+"""
+BEGIN - SNMP GET Functions
+"""
+
+async def snmp_get_one_auto(
+    target: str,
+    oid: str,
+    *,
+    snmp_v2: Optional[Union[Dict[str, List[str]], List[str], str]] = None,
+    snmp_v3: Optional[Dict[str, Dict[str, Any]]] = None,
+    port: int = 161,
+    timeout: float = 3,
+    retries: int = 0,
+    engine: Optional[SnmpEngine] = None,
+    context: Optional[ContextData] = None,
+    prefer: str = "v3_then_v2",  # or "v2_then_v3"
+) -> Dict[str, Any]:
+    """
+    One-OID SNMP GET that tries v3 profiles and/or v2 communities until success.
+
+    Inputs:
+      - snmp_v2: {"string": ["public","private"]} OR ["public","private"] OR "public"
+      - snmp_v3: {"profile_one": {...}, "profile_two": {...}}
+
+    Returns on success:
+      {
+        "detail": {".<oid>": "<value>"},
+        "used": { ... credential payload ... }
+      }
+
+    Returns on failure:
+      {"error": "no_valid_credentials", "attempts": [...]}  (attempts are brief)
+    """
+    if not target or not oid:
+        return {"error": "missing_required_fields: target and oid are required"}
+
+    snmp_engine = engine or SnmpEngine()
+    ctx = context or ContextData()
+
+    # v7+ pattern: create target once
+    try:
+        transport = await UdpTransportTarget.create((str(target), int(port)), timeout=float(timeout), retries=int(retries))
+    except Exception as e:
+        return {"error": "snmp_transport_init_error", "detail": str(e)}
+
+    obj = ObjectType(ObjectIdentity(str(oid).lstrip(".")))
+
+    v2_candidates = _extract_v2_communities(snmp_v2)
+    v3_candidates = list(_iter_v3_profiles(snmp_v3))
+
+    attempts: List[Dict[str, Any]] = []
+
+    def _order() -> List[str]:
+        if prefer == "v2_then_v3":
+            return ["v2", "v3"]
+        return ["v3", "v2"]
+
+    for mode in _order():
+        if mode == "v3":
+            for profile_name, profile in v3_candidates:
+                usm = _build_usm_user_data(profile)
+                if isinstance(usm, dict) and usm.get("error"):
+                    attempts.append({"version": "3", "profile": profile_name, "error": usm["error"]})
+                    continue
+
+                try:
+                    err_ind, err_stat, err_idx, var_binds = await get_cmd(
+                        snmp_engine,
+                        usm,
+                        transport,
+                        ctx,
+                        obj,
+                    )
+                except Exception as e:
+                    attempts.append({"version": "3", "profile": profile_name, "error": cast(e)})
+                    continue
+
+                if err_ind:
+                    attempts.append({"version": "3", "profile": profile_name, "error": cast(err_ind)})
+                    continue
+
+                if err_stat:
+                    attempts.append({"version": "3", "profile": profile_name, "error": cast(err_stat), "index": int(err_idx or 0)})
+                    continue
+
+                # success
+                out: Dict[str, str] = {}
+                for oid_obj, value_obj in var_binds:
+                    out[f".{oid_obj.prettyPrint()}"] = cast(value_obj)
+
+                # return the EXACT profile used (so you can inject it later)
+                used = {"version": "3", "profile": profile_name, **dict(profile)}
+                return {"detail": out, "used": used}
+
+        else:  # v2
+            for community in v2_candidates:
+                creds = CommunityData(str(community), mpModel=1)  # SNMPv2c
+
+                try:
+                    err_ind, err_stat, err_idx, var_binds = await get_cmd(
+                        snmp_engine,
+                        creds,
+                        transport,
+                        ctx,
+                        obj,
+                    )
+                except Exception as e:
+                    attempts.append({"version": "2c", "community": community, "error": cast(e)})
+                    continue
+
+                if err_ind:
+                    attempts.append({"version": "2c", "community": community, "error": cast(err_ind)})
+                    continue
+
+                if err_stat:
+                    attempts.append({"version": "2c", "community": community, "error": cast(err_stat), "index": int(err_idx or 0)})
+                    continue
+
+                out: Dict[str, str] = {}
+                for oid_obj, value_obj in var_binds:
+                    out[f".{oid_obj.prettyPrint()}"] = cast(value_obj)
+
+                used = {"version": "2c", "community": community}
+                return {"detail": out, "used": used}
+
+    return {"error": "no_valid_credentials", "attempts": attempts}
+
+async def snmp_bulk_auto(
+    target: str,
+    oid: str,
+    *,
+    snmp_v2: Optional[Union[Dict[str, List[str]], List[str], str]] = None,
+    snmp_v3: Optional[Dict[str, Dict[str, Any]]] = None,
+    port: int = 161,
+    max_repetitions: int = 25,
+    timeout: float = 10,
+    retries: int = 0,
+    engine: Optional[SnmpEngine] = None,
+    context: Optional[ContextData] = None,
+    prefer: str = "v3_then_v2",  # or "v2_then_v3"
+    # bulk walk options
+    non_repeaters: int = 0,
+    max_rows: int = 0,   # 0 = unlimited
+    max_calls: int = 0,  # 0 = unlimited
+) -> Dict[str, Any]:
+    """
+    BULK-WALK a subtree starting at `oid` using SNMPv3 profiles and/or SNMPv2c communities.
+    Tries each credential until one succeeds.
+
+    Success:
+      {
+        "detail": {".1.3.6....": <casted value>, ...},
+        "used":   { ...credential payload used... }
+      }
+
+    Failure:
+      {"error": "no_valid_credentials", "attempts": [...]}
+    """
+    if not target or not oid:
+        return {"error": "missing_required_fields: target and oid are required"}
+
+    snmp_engine = engine or SnmpEngine()
+    ctx = context or ContextData()
+
+    try:
+        transport = await UdpTransportTarget.create(
+            (str(target), int(port)),
+            timeout=float(timeout),
+            retries=int(retries),
+        )
+    except Exception as e:
+        return {"error": "snmp_transport_init_error", "detail": str(e)}
+
+    root_obj = ObjectType(ObjectIdentity(str(oid).lstrip(".")))
+
+    v2_candidates = _extract_v2_communities(snmp_v2)
+    v3_candidates = list(_iter_v3_profiles(snmp_v3))
+
+    attempts: List[Dict[str, Any]] = []
+    order = ["v3", "v2"] if prefer != "v2_then_v3" else ["v2", "v3"]
+
+    async def _run_bulk(auth_data: Union[CommunityData, UsmUserData]) -> Tuple[Optional[str], Optional[str], Dict[str, Any]]:
+        """
+        Returns: (err_indication, err_status, out_dict)
+        """
+        out: Dict[str, Any] = {}
+
+        try:
+            async for err_ind, err_stat, err_idx, var_binds in bulk_walk_cmd(
+                snmp_engine,
+                auth_data,
+                transport,
+                ctx,
+                int(non_repeaters),
+                int(max_repetitions),
+                root_obj,
+                lexicographicMode=False,
+                lookupMib=False,
+                ignoreNonIncreasingOid=True,
+                maxRows=int(max_rows),
+                maxCalls=int(max_calls),
+            ):
+                if err_ind:
+                    return (str(err_ind), None, {})
+                if err_stat:
+                    return (None, str(err_stat), {})
+
+                for vb in var_binds:
+                    # vb is an ObjectType; indexable as (name, value)
+                    name_obj = vb[0]
+                    val_obj = vb[1]
+
+                    # skip exception values if they show up
+                    cls = getattr(val_obj, "__class__", type(val_obj)).__name__
+                    if cls in ("NoSuchObject", "NoSuchInstance", "EndOfMibView"):
+                        continue
+
+                    key = _oid_to_numeric_dot(name_obj)
+                    val = cast(val_obj)
+
+                    if val is None:
+                        continue
+                    if isinstance(val, str):
+                        val = val.strip()
+                        if val == "":
+                            continue
+
+                    out[key] = val
+
+        except Exception as e:
+            return (str(e), None, {})
+
+        return (None, None, out)
+
+    # try credentials until one succeeds
+    for mode in order:
+        if mode == "v3":
+            for profile_name, profile in v3_candidates:
+                usm = _build_usm_user_data(profile)
+                if isinstance(usm, dict) and usm.get("error"):
+                    attempts.append({"version": "3", "profile": profile_name, "error": usm["error"]})
+                    continue
+
+                err_ind, err_stat, out = await _run_bulk(usm)
+                if err_ind or err_stat:
+                    attempts.append({
+                        "version": "3",
+                        "profile": profile_name,
+                        "error": err_ind or err_stat,
+                    })
+                    continue
+
+                used = {"version": "3", "profile": profile_name, **dict(profile)}
+                return {"detail": out, "used": used}
+
+        else:  # v2c
+            for community in v2_candidates:
+                creds = CommunityData(str(community), mpModel=1)  # SNMPv2c
+                err_ind, err_stat, out = await _run_bulk(creds)
+                if err_ind or err_stat:
+                    attempts.append({
+                        "version": "2c",
+                        "community": community,
+                        "error": err_ind or err_stat,
+                    })
+                    continue
+
+                used = {"version": "2c", "community": community}
+                return {"detail": out, "used": used}
+
+    return {"error": "no_valid_credentials", "attempts": attempts}
+
+async def get_bulk_vlan_mac_table_cisco_auto(**kwargs) -> Dict[str, Any]:
+    """
+    Tries SNMPv3 (context vlan-<id>) and SNMPv2c (community@vlan) until one works.
+
+    Required:
+      vlan_id, host/target_ip, oid
+
+    v3:
+      snmp_v3 = { "profile": {...}, ... }   OR inline username/password/privKey/authProtocol/privProtocol
+
+    v2:
+      snmp_v2 = {"string": ["public", ...]} OR community/credentials
+
+    Returns:
+      {"detail": {...}, "used": {...}} or {"error": "...", "attempts": [...]}
+    """
+    vlan_id = kwargs.get("vlan_id")
+    host = kwargs.get("host") or kwargs.get("target_ip")
+    walk_oid = kwargs.get("oid")
+
+    if vlan_id in (None, "") or not host or not walk_oid:
+        return {"error": "missing_required_fields: vlan_id, host/target_ip, oid"}
+
+    port = int(kwargs.get("port", 161))
+    max_repetitions = int(kwargs.get("max_repetitions", 25))
+    timeout = float(kwargs.get("timeout", 1.0))
+    retries = int(kwargs.get("retries", 5))
+    prefer = str(kwargs.get("prefer", "v3_then_v2")).strip() or "v3_then_v2"
+    debug = bool(kwargs.get("debug", False))
+
+    # ---- v3 candidates ----
+    v3_candidates: List[Tuple[str, Dict[str, Any]]] = []
+    snmp_v3_profiles = kwargs.get("snmp_v3")
+    if isinstance(snmp_v3_profiles, dict) and snmp_v3_profiles:
+        for profile_name, profile in snmp_v3_profiles.items():
+            if isinstance(profile, dict):
+                v3_candidates.append((str(profile_name), dict(profile)))
+
+    if kwargs.get("username"):
+        v3_candidates.append((
+            "inline",
+            {
+                "UsmUserData_username": kwargs.get("username"),
+                "UsmUserData_password": kwargs.get("password"),
+                "private_key": kwargs.get("privKey"),
+                "authProtocol": kwargs.get("authProtocol"),
+                "privProtocol": kwargs.get("privProtocol"),
+            },
+        ))
+
+    # ---- v2 candidates ----
+    v2_communities: List[str] = []
+    snmp_v2 = kwargs.get("snmp_v2")
+    if isinstance(snmp_v2, dict):
+        vals = snmp_v2.get("string")
+        if isinstance(vals, list):
+            v2_communities.extend([str(x).strip() for x in vals if str(x).strip()])
+
+    legacy_comm = kwargs.get("community") or kwargs.get("credentials")
+    if legacy_comm and str(legacy_comm).strip():
+        v2_communities.append(str(legacy_comm).strip())
+
+    # dedupe preserving order
+    seen: Dict[str, bool] = {}
+    v2_communities = [c for c in v2_communities if not (c in seen or seen.setdefault(c, True))]
+
+    if not v3_candidates and not v2_communities:
+        return {"error": "no_credentials_provided"}
+
+    engine = SnmpEngine()
+    root_norm = "." + str(walk_oid).lstrip(".")
+    root_obj = ObjectType(ObjectIdentity(str(walk_oid).lstrip(".")))
+
+    attempts: List[Dict[str, Any]] = []
+
+    async def _walk(auth_data: Any, ctx: ContextData) -> Tuple[Optional[str], bool, Dict[str, Any]]:
+        # transport-per-attempt
+        transport = await UdpTransportTarget.create((str(host), port), timeout=timeout, retries=retries)
+
+        macs_seen: Dict[str, bool] = {}
+        mac_plain: List[str] = []
+        mac_colon: List[str] = []
+        mac_cisco: List[str] = []
+        mac_to_port_colon: Dict[str, Any] = {}
+        mac_to_port_plain: Dict[str, Any] = {}
+
+        saw_any = False
+
+        try:
+            async for err_ind, err_stat, err_idx, var_binds in bulk_walk_cmd(
+                engine,
+                auth_data,
+                transport,
+                ctx,
+                0,
+                max_repetitions,
+                root_obj,
+                lexicographicMode=False,
+                lookupMib=False,
+                ignoreNonIncreasingOid=True,
+            ):
+                saw_any = True
+
+                if err_ind:
+                    return str(err_ind), saw_any, {}
+                if err_stat:
+                    return str(err_stat), saw_any, {}
+
+                for vb in var_binds:
+                    name_obj = vb[0]
+                    val_obj = vb[1]
+
+                    cls = getattr(val_obj, "__class__", type(val_obj)).__name__
+                    if cls in ("NoSuchObject", "NoSuchInstance", "EndOfMibView"):
+                        continue
+
+                    name_num = _oid_to_numeric_dot(name_obj)
+                    if not name_num.startswith(root_norm + "."):
+                        continue
+
+                    suffix = name_num[len(root_norm) + 1 :]
+                    macs = _suffix_to_macs(suffix)
+                    if not macs:
+                        continue
+
+                    mp, mc, ms = macs["plain"], macs["colon"], macs["cisco"]
+
+                    if mc not in macs_seen:
+                        macs_seen[mc] = True
+                        mac_plain.append(mp)
+                        mac_colon.append(mc)
+                        mac_cisco.append(ms)
+
+                    port_val = _safe_cast(val_obj)
+                    if port_val is None:
+                        continue
+                    if isinstance(port_val, str):
+                        port_val = port_val.strip()
+                        if not port_val:
+                            continue
+
+                    mac_to_port_colon[mc] = port_val
+                    mac_to_port_plain[mp] = port_val
+
+        except Exception as e:
+            return str(e), saw_any, {}
+
+        return None, saw_any, {
+            "mac_addresses_plain": mac_plain,
+            "mac_addresses": mac_colon,
+            "mac_addresses_cisco": mac_cisco,
+            "mac_to_port": mac_to_port_colon,
+            "mac_to_port_plain": mac_to_port_plain,
+        }
+
+    order = ("v3", "v2") if prefer != "v2_then_v3" else ("v2", "v3")
+
+    for fam in order:
+        if fam == "v3":
+            ctx_v3 = ContextData(contextName=f"vlan-{int(vlan_id)}")
+
+            for profile_name, profile in v3_candidates:
+                usm = _build_usm_user_data(profile)
+                if isinstance(usm, dict) and usm.get("error"):
+                    attempts.append({"version": "3", "profile": profile_name, "error": usm["error"]})
+                    continue
+
+                if debug:
+                    u = profile.get("UsmUserData_username") or profile.get("username") or "<?>"
+                    print(f"[DEBUG] v3 attempt profile={profile_name} user={u} ctx=vlan-{int(vlan_id)} host={host}")
+
+                err, saw_any, results = await _walk(usm, ctx_v3)
+                if err:
+                    attempts.append({"version": "3", "profile": profile_name, "error": err})
+                    continue
+
+                if saw_any and not results.get("mac_addresses"):
+                    return {
+                        "detail": {
+                            "vlan_id": int(vlan_id),
+                            "walk_oid": root_norm,
+                            "context": f"vlan-{int(vlan_id)}",
+                            "warning": "walk_completed_but_no_rows",
+                            **results,
+                        },
+                        "used": {"version": "3", "profile": profile_name, **profile},
+                    }
+
+                if results.get("mac_addresses"):
+                    return {
+                        "detail": {
+                            "vlan_id": int(vlan_id),
+                            "walk_oid": root_norm,
+                            "context": f"vlan-{int(vlan_id)}",
+                            **results,
+                        },
+                        "used": {"version": "3", "profile": profile_name, **profile},
+                    }
+
+                attempts.append({"version": "3", "profile": profile_name, "error": "no_results"})
+
+        else:
+            ctx_v2 = ContextData()
+
+            for community in v2_communities:
+                comm_used = f"{community}@{int(vlan_id)}"
+                auth_v2 = CommunityData(comm_used, mpModel=1)
+
+                if debug:
+                    print(f"[DEBUG] v2 attempt community={community} comm_used={comm_used} host={host}")
+
+                err, saw_any, results = await _walk(auth_v2, ctx_v2)
+                if err:
+                    attempts.append({"version": "2c", "community": community, "community_used": comm_used, "error": err})
+                    continue
+
+                if saw_any and not results.get("mac_addresses"):
+                    return {
+                        "detail": {
+                            "vlan_id": int(vlan_id),
+                            "walk_oid": root_norm,
+                            "community_indexing": True,
+                            "warning": "walk_completed_but_no_rows",
+                            **results,
+                        },
+                        "used": {"version": "2c", "community": community, "community_used": comm_used},
+                    }
+
+                if results.get("mac_addresses"):
+                    return {
+                        "detail": {
+                            "vlan_id": int(vlan_id),
+                            "walk_oid": root_norm,
+                            "community_indexing": True,
+                            **results,
+                        },
+                        "used": {"version": "2c", "community": community, "community_used": comm_used},
+                    }
+
+                attempts.append({"version": "2c", "community": community, "community_used": comm_used, "error": "no_results"})
+
+    return {"error": "no_valid_credentials", "attempts": attempts}
 """
 This is a library of snmp mibs I want to pull instead of walking the entire device. 
 Feel free to update for your preferences. 
@@ -4517,6 +5211,37 @@ def cast(value: Any) -> Any:
 
 
 
+if __name__ == '__main__':
+    # Use the below if you wish to test each snmp function. Replace with your own credentials
+    snmp_v2 = {"string": ["public", "private"]}
 
+    snmp_v3 = {
+        "snmp_v3_profile_two": {
+            "UsmUserData_username": "SNMPV3UserNetworking",
+            "UsmUserData_password": "SNMPV3AuthSHANetworking",
+            "authProtocol": "(1, 3, 6, 1, 6, 3, 10, 1, 1, 3)",
+            "privProtocol": "(1, 3, 6, 1, 6, 3, 10, 1, 2, 4)",
+            "private_key": "SNMPV3aes128Networking",
+        },
+    }
 
+    #print(asyncio.run(snmp_get_one_auto(
+    #    target="10.0.0.101",
+    #    oid=".1.3.6.1.2.1.1.1.0",
+    #    snmp_v2=snmp_v2,
+    #    snmp_v3=snmp_v3,
+    #    prefer="v3_then_v2",
+    #    #prefer="v3_then_v2",
+    #)))
+
+    res = asyncio.run(get_bulk_vlan_mac_table_cisco_auto(
+        vlan_id=10,
+        host="10.0.0.101",
+        oid="1.3.6.1.2.1.17.4.3.1.2",
+        snmp_v3=snmp_v3,
+        prefer="v3_then_v2",
+        timeout=1,
+        retries=5,
+    ))
+    print(res)
 

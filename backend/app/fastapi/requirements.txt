@@ -3,6 +3,7 @@ gunicorn==23.0.0
 uvicorn==0.40.0
 uvicorn-worker==0.4.0
 celery[redis]==5.6.2
+cryptography==44.0.0
 # Pinning redis python client to the highest version supported by Kombu (<6.5)
 redis==6.4.0
 flower==2.0.1
@@ -12,3 +13,7 @@ cachetools==6.2.4
 netmiko==4.6.0
 databases[postgresql]>=0.9.0
 asyncpg>=0.29.0
+pysnmp==7.1.22
+pyasn1==0.6.1
+pysmi==1.6.3
+pysnmp-mibs==0.1.6

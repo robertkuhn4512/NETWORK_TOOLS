@@ -554,7 +554,12 @@ sudo apt update
 sudo apt install -y openssl
 sudo apt full-upgrade -y
 # Enable containers to use the ping command 
-sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+sudo tee /etc/sysctl.d/99-ping-group-range.conf >/dev/null <<'EOF'
+net.ipv4.ping_group_range = 0 2147483647
+EOF
+
+# apply immediately (no reboot needed)
+sudo sysctl --system
 ```
 
 A reboot is recommended after major upgrades, especially if a new kernel or critical libraries are installed:
