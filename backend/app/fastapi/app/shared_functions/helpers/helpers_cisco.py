@@ -10,6 +10,33 @@ from app.database import database
 from uuid import uuid4
 
 
+# Precompiled Regex's
+# ---------------------------------------------------------------------------
+# Unified MAC address-table parsers (IOS/IOS-XE/NX-OS; best-effort XR)
+# ---------------------------------------------------------------------------
+
+_MAC_TOKEN = re.compile(
+    r'^(?:'
+    r'(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}'          # xxxx.xxxx.xxxx
+    r'|(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}'           # xx:xx:xx:xx:xx:xx
+    r'|[0-9A-Fa-f]{12}'                                # xxxxxxxxxxxx
+    r')$'
+)
+
+_AGE_TOKEN = re.compile(r'^(?:\d+|N/A|n/a|\-|\d+[:\.]\d+(?::\d+)?)$')
+
+def _cisco_normalize_mac(mac: str) -> Dict[str, str]:
+    """Return normalized MAC variants for downstream filters/joins."""
+    mac_raw = (mac or '').strip()
+    condensed = re.sub(r'[^0-9A-Fa-f]', '', mac_raw).lower()
+    dotted = mac_raw.strip()
+    if len(condensed) == 12:
+        dotted = f"{condensed[0:4]}.{condensed[4:8]}.{condensed[8:12]}"
+    return {
+        'mac_address': dotted,
+        'mac_address_condensed': condensed,
+    }
+
 def cisco_allowed_backup_commands(device_type) -> Dict[str, str]:
     """
 
@@ -116,7 +143,70 @@ def cisco_allowed_show_mac_address_table_commands(device_type) -> Dict[str, str]
 
     return _SHOW_VERSION_CMD_BY_DEVICE.get(device_type)
 
-def parse_cisco_show_version(output: str) -> Dict[str, str]:
+def cisco_allowed_show_cdp_neighbor_commands(device_type) -> Dict[str, str]:
+    """
+
+    :param device_type (cisco_ios | cisco_xe | cisco_xr) etc:
+    :return: allowed commands that can be sent to a device for mac address table reporting
+
+    Device types are based off what netmiko uses to describe a device using the autodiscover process
+    The list can be found here
+    https://ktbyers.github.io/netmiko/PLATFORMS.html
+
+    """
+
+    _SHOW_VERSION_CMD_BY_DEVICE: Mapping[str, str] = {
+        "cisco_ios": "show cdp neighbors",
+        "cisco_xe":  "show cdp neighbors",
+        "cisco_xr":  "show cdp neighbors",
+        "cisco_nxos":  "show cdp neighbors",
+    }
+
+    return _SHOW_VERSION_CMD_BY_DEVICE.get(device_type)
+
+def cisco_allowed_show_lldp_neighbor_commands(device_type) -> Dict[str, str]:
+    """
+
+    :param device_type (cisco_ios | cisco_xe | cisco_xr) etc:
+    :return: allowed commands that can be sent to a device for mac address table reporting
+
+    Device types are based off what netmiko uses to describe a device using the autodiscover process
+    The list can be found here
+    https://ktbyers.github.io/netmiko/PLATFORMS.html
+
+    """
+
+    _SHOW_VERSION_CMD_BY_DEVICE: Mapping[str, str] = {
+        "cisco_ios": "show lldp neighbors",
+        "cisco_xe":  "show lldp neighbors",
+        "cisco_xr":  "show lldp neighbors",
+        "cisco_nxos":  "show lldp neighbors",
+    }
+
+    return _SHOW_VERSION_CMD_BY_DEVICE.get(device_type)
+
+def cisco_allowed_show_ip_arp_table_commands(device_type) -> Dict[str, str]:
+    """
+
+    :param device_type (cisco_ios | cisco_xe | cisco_xr) etc:
+    :return: allowed commands that can be sent to a device for ip arp table reporting
+
+    Device types are based off what netmiko uses to describe a device using the autodiscover process
+    The list can be found here
+    https://ktbyers.github.io/netmiko/PLATFORMS.html
+
+    """
+
+    _SHOW_VERSION_CMD_BY_DEVICE: Mapping[str, str] = {
+        "cisco_ios": "show ip arp",
+        "cisco_xe":  "show ip arp",
+        "cisco_xr":  "show ip arp",
+        "cisco_nxos":  "show ip arp",
+    }
+
+    return _SHOW_VERSION_CMD_BY_DEVICE.get(device_type)
+
+def cisco_parse_show_version(output: str) -> Dict[str, str]:
     """
     Parse key bits out of Cisco 'show version' output (IOS-XE + older IOS/3x/4xx).
 
@@ -1648,129 +1738,6 @@ def cisco_nexus_parse_show_ip_arp_matches(output):
 
     return data
 
-def cisco_c9xxx_parse_show_ip_arp_matches(output):
-    """
-    parse the following from the nexus 9k devices and return a dict of the information below
-
-    show ip arp
-
-    123testlab-109-a4-3000#sh ip arp
-    Protocol  Address          Age (min)  Hardware Addr   Type   Interface
-    Internet  10.0.0.1                3   18e8.29bf.0a34  ARPA   Vlan10
-    Internet  10.0.0.10               0   e063.da30.fb4a  ARPA   Vlan10
-    Internet  10.0.0.11               0   7483.c202.c627  ARPA   Vlan10
-    Internet  10.0.0.51               0   1498.775b.71e3  ARPA   Vlan10
-    Internet  10.0.0.98               2   9c8e.cd21.b298  ARPA   Vlan10
-    Internet  10.0.0.99               0   9c8e.cd2d.0c35  ARPA   Vlan10
-    Internet  10.0.0.101              -   0c75.bd90.f746  ARPA   Vlan10
-    Internet  10.0.0.105             39   b4b6.768d.d943  ARPA   Vlan10
-    Internet  10.0.0.106              0   e063.da3c.c279  ARPA   Vlan10
-    Internet  10.0.0.107              1   603e.5f4d.f1f6  ARPA   Vlan10
-    Internet  10.0.0.123            158   00e4.21c0.bd5f  ARPA   Vlan10
-    Internet  10.0.0.125             75   18cc.18dd.1eea  ARPA   Vlan10
-    Internet  10.0.0.138              0   000c.2920.ebc4  ARPA   Vlan10
-    Internet  10.0.0.141            128   9ebe.4405.1b31  ARPA   Vlan10
-    Internet  10.0.0.142              1   8e2e.8ad5.75ec  ARPA   Vlan10
-    Internet  10.0.0.143              8   b827.eb87.278d  ARPA   Vlan10
-    Internet  10.0.0.151              0   9c8e.cd2b.bb6a  ARPA   Vlan10
-    Internet  10.0.0.152              0   9c8e.cd2b.bb87  ARPA   Vlan10
-    Internet  10.0.0.153              0   9c8e.cd2b.bb80  ARPA   Vlan10
-    Internet  10.0.0.154              0   9c8e.cd2b.bb83  ARPA   Vlan10
-    Internet  10.0.0.155              0   4c11.bff5.0360  ARPA   Vlan10
-    Internet  10.0.0.156              0   9c8e.cd19.407a  ARPA   Vlan10
-    Internet  10.0.0.161              0   62ff.846b.8b0c  ARPA   Vlan10
-    Internet  10.0.0.190              0   2eec.c48b.acaf  ARPA   Vlan10
-    Internet  10.0.0.203             48   dccd.2f41.3b28  ARPA   Vlan10
-    Internet  10.32.0.2               -   0c75.bd90.f75d  ARPA   Vlan440
-    """
-
-    regex_show_ip_arp_matches = re.compile(
-        r'^(?P<protocol>[a-zA-Z0-9]+)\s+(?P<ipv4_address>([0-9]{1,3}\.){3}[0-9]{1,3})\s+(?P<age>([0-9:\.-]+|N\/A))\s+(?P<mac_address>([0-9a-fA-F]{4}\.){2}[0-9a-fA-F]{4}|INCOMPLETE)\s+(?P<type>[a-zA-Z0-9]+)\s+(?P<interface>([a-zA-Z0-9,\s\-\/]+))$')
-
-
-
-    data = {}
-    count = 0
-    for line in output.splitlines():
-        a = re.search(regex_show_ip_arp_matches, line.strip())
-        if a is not None and line.strip() != "":
-            data[count] = {
-                'ipv4_address': a.groupdict()['ipv4_address'],
-                'age': a.groupdict()['age'],
-                'mac_address': a.groupdict()['mac_address'],
-                'mac_address_condensed': re.sub('(\.|:)', '', a.groupdict()['mac_address']),
-                'interface': a.groupdict()['interface']
-            }
-            count = count + 1
-
-
-    return data
-
-def cisco_3xxx_parse_show_mac_address_table(output):
-    """
-    parse the following from the c9xxx devices and return a dict of the information below
-
-    show mac address_table
-
-    123testlab-109-a4-3000#sh mac address-table
-                            Mac Address Table
-                        -------------------------------------------
-
-                        Vlan    Mac Address       Type        Ports
-                        ----    -----------       --------    -----
-                         All    0100.0ccc.cccc    STATIC      CPU
-                         All    0100.0ccc.cccd    STATIC      CPU
-                         All    0180.c200.0000    STATIC      CPU
-                         All    0180.c200.0001    STATIC      CPU
-                         All    0180.c200.0002    STATIC      CPU
-                         All    0180.c200.0003    STATIC      CPU
-                         All    0180.c200.0004    STATIC      CPU
-                         All    0180.c200.0005    STATIC      CPU
-                         All    0180.c200.0006    STATIC      CPU
-                         All    0180.c200.0007    STATIC      CPU
-                         All    0180.c200.0008    STATIC      CPU
-                         All    0180.c200.0009    STATIC      CPU
-                         All    0180.c200.000a    STATIC      CPU
-                         All    0180.c200.000b    STATIC      CPU
-                         All    0180.c200.000c    STATIC      CPU
-                         All    0180.c200.000d    STATIC      CPU
-                         All    0180.c200.000e    STATIC      CPU
-                         All    0180.c200.000f    STATIC      CPU
-                         All    0180.c200.0010    STATIC      CPU
-                         All    0180.c200.0021    STATIC      CPU
-                         All    ffff.ffff.ffff    STATIC      CPU
-                          10    000c.2920.ebc4    DYNAMIC     Te1/0/15
-                          10    00c0.b7d8.afb0    DYNAMIC     Te1/0/13
-                          10    00c0.b7d8.afb1    DYNAMIC     Te1/0/14
-                          10    00e4.21c0.bd5f    DYNAMIC     Te1/0/22
-                          10    0c75.bd90.f746    STATIC      Vl10
-                          10    1498.775b.71e3    DYNAMIC     Te1/0/15
-                          10    18cc.18dd.1eea    DYNAMIC     Te1/0/23
-                          10    18e8.29bf.0a34    DYNAMIC     Te1/0/24
-                          10    2eec.c48b.acaf    DYNAMIC     Te1/0/22
-                          10    4c11.bff5.0360    DYNAMIC     Te1/0/22
-                          10    603e.5f4d.f1f6    DYNAMIC     Te1/0/23
-    """
-
-    regex_show_mac_address = re.compile(
-        r'^(?P<vlan_id>(All|[0-9]+))\s+(?P<mac_address>(INCOMPLETE|STATIC|DYNAMIC|([a-fA-F0-9]{4}\.){2}[a-fA-F0-9]{4}))\s+(?P<type>[a-zA-Z0-9]+)\s+(?P<interface>[a-zA-Z0-9\/]+)$')
-
-    data = {}
-    count = 0
-    for line in output.splitlines():
-        a = re.search(regex_show_mac_address, line.strip())
-        if a is not None and line.strip() != "":
-            if a.groupdict()['mac_address'] != 'ffffffffffff':
-                data[count] = {
-                    'vlan_id': a.groupdict()['vlan_id'],
-                    'mac_address': a.groupdict()['mac_address'],
-                    'type': a.groupdict()['type'],
-                    'interface': a.groupdict()['interface'],
-                    'age': ''
-                }
-                count = count + 1
-
-    return data
 
 def cisco_parse_show_capabilities(output: str) -> Dict[str, Dict]:
     """
@@ -1855,3 +1822,1003 @@ def cisco_parse_show_capabilities(output: str) -> Dict[str, Dict]:
             break
 
     return interfaces
+
+def cisco_parse_show_mac_address_table(
+    output: str,
+    device_type: Optional[str] = None,
+    *,
+    include_broadcast: bool = False,
+    return_envelope: bool = False,
+) -> Dict:
+    """
+    Parse Cisco MAC forwarding table output.
+
+    Supported formats:
+      - IOS / IOS-XE: `show mac address-table`
+        Vlan  Mac Address       Type     Ports
+      - NX-OS: `show mac address-table`
+        VLAN  MAC Address       Type  age  Secure  NTF  Ports
+
+    For IOS-XR: this is **best-effort**. XR commonly uses L2VPN/bridge-domain
+    specific commands rather than `show mac address-table`. If you feed this
+    function XR L2 forwarding output, you may need to add one more pattern
+    once you have a sample.
+
+    Returns:
+      - default: dict[int, dict] (backwards compatible with existing parsers)
+      - if return_envelope=True: {'rows': <dict[int,dict]>, 'meta': {...}, 'error': <str|None>}
+    """
+    raw = '' if output is None else str(output)
+    lines = raw.splitlines()
+
+    # quick negative signal; keep backwards compatibility by defaulting to empty dict
+    error_markers = (
+        'Invalid input detected',
+        '% Invalid input',
+        'Incomplete command',
+        'Ambiguous command',
+        'Unknown command',
+    )
+    parse_error = None
+    if any(m in raw for m in error_markers):
+        parse_error = 'command_not_supported_or_invalid'
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    detected_style = None
+
+    for line in lines:
+        ln = (line or '').strip()
+        if not ln:
+            continue
+
+        lnl = ln.lower()
+        # headers / separators
+        if (
+            'mac address table' in lnl
+            or lnl.startswith(('vlan', 'vlan,', '----', 'legend', 'mac entries', 'dynamic', 'static', 'total '))
+        ):
+            continue
+
+        # NX-OS sometimes prefixes with "*"
+        if ln.startswith('*'):
+            ln = ln.lstrip('*').strip()
+
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+
+        # Find the MAC token (some outputs can have extra leading flags)
+        mac_idx = None
+        for i, tok in enumerate(parts):
+            if _MAC_TOKEN.match(tok):
+                mac_idx = i
+                break
+        if mac_idx is None:
+            continue
+
+        # Typical IOS/NX-OS layouts put VLAN immediately before the MAC
+        if mac_idx < 1:
+            # best-effort XR / odd outputs (MAC starts the line)
+            if device_type and device_type.lower().startswith('cisco_xr') and len(parts) >= 3:
+                mac_raw = parts[0]
+                mac_norm = _cisco_normalize_mac(mac_raw)
+                # heuristic: last token is interface, middle token is type, vlan unknown
+                rows[count] = {
+                    'vlan_id': '',
+                    **mac_norm,
+                    'type': parts[1],
+                    'interface': parts[-1],
+                    'age': '',
+                    'raw': ln,
+                    'source_os': device_type or '',
+                }
+                count += 1
+            continue
+
+        vlan = parts[0]
+        mac_raw = parts[mac_idx]
+        type_tok = parts[mac_idx + 1] if (mac_idx + 1) < len(parts) else ''
+        remainder = parts[mac_idx + 2:] if (mac_idx + 2) < len(parts) else []
+
+        # Normalize MAC and filter broadcast
+        mac_norm = _cisco_normalize_mac(mac_raw)
+        if not include_broadcast and mac_norm['mac_address_condensed'] == 'ffffffffffff':
+            continue
+
+        row: Dict[str, Any] = {
+            'vlan_id': vlan,
+            **mac_norm,
+            'type': type_tok,
+            'interface': '',
+            'age': '',
+            'raw': ln,
+            'source_os': device_type or '',
+        }
+
+        if remainder:
+            if (
+                (device_type or '').lower() in ('cisco_nxos', 'nxos')
+                or 'legend:' in lnl
+                or 'secure' in raw.lower()
+            ):
+                # try 7-column NX-OS: age secure ntf ports...
+                if len(remainder) >= 4 and _AGE_TOKEN.match(remainder[0]):
+                    row['age'] = remainder[0]
+                    row['secure'] = remainder[1]
+                    row['ntf'] = remainder[2]
+                    row['interface'] = ' '.join(remainder[3:]).strip()
+                    detected_style = detected_style or 'nxos'
+                # try shorter NX-OS: age ports...
+                elif len(remainder) >= 2 and _AGE_TOKEN.match(remainder[0]):
+                    row['age'] = remainder[0]
+                    row['interface'] = ' '.join(remainder[1:]).strip()
+                    detected_style = detected_style or 'nxos'
+                else:
+                    row['interface'] = ' '.join(remainder).strip()
+            else:
+                row['interface'] = ' '.join(remainder).strip()
+
+        # common convenience: split multi-ports into a list
+        if row['interface']:
+            toks = []
+            for chunk in row['interface'].split(','):
+                toks.extend([t for t in chunk.strip().split() if t])
+            row['interfaces'] = toks
+
+        rows[count] = row
+        count += 1
+        detected_style = detected_style or 'ios'
+
+    if return_envelope:
+        return {'rows': rows, 'meta': {'detected_style': detected_style, 'device_type': device_type}, 'error': parse_error}
+
+    # backwards compatible return (existing code expects dict[int] for success, {} for failure)
+    return rows if rows else ({'error': parse_error} if parse_error else {})
+
+def cisco_parse_show_ip_arp_table(
+    output: str,
+    device_type: Optional[str] = None,
+    *,
+    include_incomplete: bool = True,
+    return_envelope: bool = False,
+) -> Dict:
+    """Parse Cisco ARP table output (IOS/IOS-XE/NX-OS best-effort).
+
+    Supported formats (best-effort):
+      - IOS / IOS-XE: `show ip arp`
+        Protocol  Address  Age (min)  Hardware Addr  Type  Interface
+        Internet  10.0.0.1        3    18e8.29bf.0a34 ARPA  Vlan10
+
+      - NX-OS: `show ip arp`
+        Address  Age  MAC Address  Interface  Flags
+        10.23.6.21  00:06:29  08f3.fbd6.3c3f  Vlan123
+
+    If device_type indicates XR, returns an error and you should call
+    `cisco_parse_show_ip_arp_table_xr(...)`.
+
+    Returns:
+      - default: dict[int, dict]
+      - if return_envelope=True: {'rows': <dict[int,dict]>, 'meta': {...}, 'error': <str|None>}
+    """
+    raw = '' if output is None else str(output)
+
+    dt = (device_type or '').strip().lower()
+    if dt in ('cisco_xr', 'xr', 'iosxr', 'cisco-iosxr'):
+        err = 'unsupported_device_type: cisco_xr; use cisco_parse_show_ip_arp_table_xr'
+        if return_envelope:
+            return {'rows': {}, 'meta': {'device_type': device_type}, 'error': err}
+        return {'error': err}
+
+    error_markers = (
+        'Invalid input detected',
+        '% Invalid input',
+        'Incomplete command',
+        'Ambiguous command',
+        'Unknown command',
+    )
+    parse_error = 'command_not_supported_or_invalid' if any(m in raw for m in error_markers) else None
+
+    def _is_ipv4_token(tok: str) -> bool:
+        t = (tok or '').strip()
+        if not t or t.count('.') != 3:
+            return False
+        try:
+            return ipaddress.ip_address(t).version == 4
+        except Exception:
+            return False
+
+    def _looks_like_interface(tok: str) -> bool:
+        t = (tok or '').strip()
+        if not t:
+            return False
+        tl = t.lower()
+        return (
+            '/' in t
+            or tl.startswith(('vlan', 'ethernet', 'port-channel', 'po', 'gi', 'te', 'fa', 'twe', 'tw', 'mgmt'))
+        )
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+
+    detected_style = None
+    if dt in ('cisco_nxos', 'nxos') or 'ip arp table for context' in raw.lower():
+        detected_style = 'nxos'
+    elif 'protocol' in raw.lower() and 'hardware' in raw.lower():
+        detected_style = 'ios'
+
+    for line in raw.splitlines():
+        ln = (line or '').strip()
+        if not ln:
+            continue
+
+        lnl = ln.lower()
+        if (
+            lnl.startswith(('protocol', 'address', 'ip arp table', 'total number', '----', 'flags'))
+            or 'hardware addr' in lnl
+            or ('mac address' in lnl and 'table' not in lnl)
+        ):
+            continue
+
+        parts = ln.split()
+        if len(parts) < 3:
+            continue
+
+        # Find IPv4 token
+        ip_idx = None
+        for i, tok in enumerate(parts):
+            if _is_ipv4_token(tok):
+                ip_idx = i
+                break
+        if ip_idx is None:
+            continue
+
+        protocol = parts[ip_idx - 1] if ip_idx >= 1 and parts[ip_idx - 1].isalpha() else ''
+        ipv4 = parts[ip_idx]
+
+        # Age token (optional)
+        age = ''
+        nxt = ip_idx + 1
+        if nxt < len(parts) and _AGE_TOKEN.match(parts[nxt]):
+            age = parts[nxt]
+            nxt += 1
+
+        # MAC token
+        if nxt >= len(parts):
+            continue
+        mac_tok = parts[nxt]
+        if not (_MAC_TOKEN.match(mac_tok) or mac_tok.upper() == 'INCOMPLETE'):
+            continue
+        nxt += 1
+
+        if mac_tok.upper() == 'INCOMPLETE':
+            if not include_incomplete:
+                continue
+            mac_norm = {'mac_address': 'INCOMPLETE', 'mac_address_condensed': ''}
+        else:
+            mac_norm = _cisco_normalize_mac(mac_tok)
+
+        # Next token might be Type (ARPA) or Interface (NX-OS)
+        type_tok = ''
+        interface = ''
+        flags = ''
+
+        if nxt < len(parts) and not _looks_like_interface(parts[nxt]):
+            type_tok = parts[nxt]
+            nxt += 1
+
+        if nxt < len(parts):
+            interface = parts[nxt]
+            nxt += 1
+
+        if nxt < len(parts):
+            tail = ' '.join(parts[nxt:]).strip()
+            if tail:
+                flags = tail
+
+        row: Dict[str, Any] = {
+            'ipv4_address': ipv4,
+            'age': age,
+            **mac_norm,
+            'interface': interface,
+            'protocol': protocol,
+            'type': type_tok,
+            'flags': flags,
+            'raw': ln,
+            'source_os': device_type or '',
+        }
+
+        if row.get('interface'):
+            toks = []
+            for chunk in str(row['interface']).split(','):
+                toks.extend([t for t in chunk.strip().split() if t])
+            row['interfaces'] = toks
+
+        rows[count] = row
+        count += 1
+
+    if return_envelope:
+        return {'rows': rows, 'meta': {'detected_style': detected_style, 'device_type': device_type}, 'error': parse_error}
+
+    return rows if rows else ({'error': parse_error} if parse_error else {})
+
+
+def cisco_parse_show_ip_arp_table_xr(
+    output: str,
+    *,
+    include_incomplete: bool = True,
+    return_envelope: bool = False,
+) -> Dict:
+    """Best-effort IOS-XR ARP parser (separate on purpose).
+
+    IOS-XR ARP output varies a lot by platform/version/VRF.
+    This parser:
+      - finds an IPv4 token
+      - finds the next MAC token (or INCOMPLETE)
+      - treats the last token as interface when possible
+      - stores middle tokens as state/type/flags-ish fields
+    """
+    raw = '' if output is None else str(output)
+
+    error_markers = (
+        'Invalid input detected',
+        '% Invalid input',
+        'Incomplete command',
+        'Ambiguous command',
+        'Unknown command',
+    )
+    parse_error = 'command_not_supported_or_invalid' if any(m in raw for m in error_markers) else None
+
+    def _is_ipv4_token(tok: str) -> bool:
+        t = (tok or '').strip()
+        if not t or t.count('.') != 3:
+            return False
+        try:
+            return ipaddress.ip_address(t).version == 4
+        except Exception:
+            return False
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+
+    for line in raw.splitlines():
+        ln = (line or '').strip()
+        if not ln:
+            continue
+
+        lnl = ln.lower()
+        if ('address' in lnl and 'hardware' in lnl) or lnl.startswith(('---', '===', 'vrf', 'flags', 'protocol')):
+            continue
+
+        parts = ln.split()
+        if len(parts) < 3:
+            continue
+
+        ip_idx = None
+        for i, tok in enumerate(parts):
+            if _is_ipv4_token(tok):
+                ip_idx = i
+                break
+        if ip_idx is None:
+            continue
+
+        ipv4 = parts[ip_idx]
+        age = parts[ip_idx + 1] if (ip_idx + 1) < len(parts) else ''
+
+        mac_idx = None
+        for j in range(ip_idx + 1, len(parts)):
+            if _MAC_TOKEN.match(parts[j]) or parts[j].upper() == 'INCOMPLETE':
+                mac_idx = j
+                break
+        if mac_idx is None:
+            continue
+
+        mac_tok = parts[mac_idx]
+        if mac_tok.upper() == 'INCOMPLETE':
+            if not include_incomplete:
+                continue
+            mac_norm = {'mac_address': 'INCOMPLETE', 'mac_address_condensed': ''}
+        else:
+            mac_norm = _cisco_normalize_mac(mac_tok)
+
+        interface = parts[-1]
+        middle = parts[mac_idx + 1:-1] if (mac_idx + 1) < (len(parts) - 1) else []
+        state = middle[0] if len(middle) >= 1 else ''
+        type_tok = middle[1] if len(middle) >= 2 else ''
+        flags = ' '.join(middle[2:]).strip() if len(middle) >= 3 else ''
+
+        rows[count] = {
+            'ipv4_address': ipv4,
+            'age': age,
+            **mac_norm,
+            'interface': interface,
+            'state': state,
+            'type': type_tok,
+            'flags': flags,
+            'raw': ln,
+            'source_os': 'cisco_xr',
+        }
+        count += 1
+
+    if return_envelope:
+        return {'rows': rows, 'meta': {'detected_style': 'xr', 'device_type': 'cisco_xr'}, 'error': parse_error}
+
+    return rows if rows else ({'error': parse_error} if parse_error else {})
+
+# -----------------------------------------------------------------------------
+# Neighbors: CDP + LLDP
+# -----------------------------------------------------------------------------
+
+def cisco_parse_show_cdp_neighbors(
+    output: str,
+    device_type: Optional[str] = None,
+    *,
+    return_envelope: bool = False,
+) -> Dict:
+    """Parse `show cdp neighbors` output (IOS / IOS-XE / NX-OS best-effort).
+
+    Notes
+    - For IOS-XR, this function returns an error and you should call
+      `cisco_parse_show_cdp_neighbors_xr(...)`.
+    - This parser targets the common tabular output:
+
+        Device ID        Local Intrfce     Holdtme    Capability  Platform  Port ID
+
+    Returns
+    - default: dict[int, dict]
+    - if return_envelope=True: {'rows': <dict>, 'meta': {...}, 'error': <str|None>}
+    """
+    raw = "" if output is None else str(output)
+    dt = (device_type or "").strip().lower()
+
+    if dt in ("cisco_xr", "xr", "iosxr", "cisco-iosxr"):
+        err = "unsupported_device_type: cisco_xr; use cisco_parse_show_cdp_neighbors_xr"
+        if return_envelope:
+            return {"rows": {}, "meta": {"device_type": device_type}, "error": err}
+        return {"error": err}
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    def _capability_tokens(val: str) -> List[str]:
+        s = (val or "").strip()
+        if not s:
+            return []
+        s = s.replace(",", " ").replace("/", " ")
+        toks = [t for t in s.split() if t]
+        return toks
+
+    def _build_spans(header: str) -> Optional[List[Tuple[str, int, int]]]:
+        labels: List[Tuple[str, Sequence[str]]] = [
+            ("device_id", ("Device ID", "Device-ID", "Device")),
+            ("local_interface", ("Local Intrfce", "Local Interface", "Local Intf")),
+            ("hold_time", ("Holdtme", "Holdtime", "Hold-time", "Hold Time")),
+            ("capability", ("Capability", "Capabilities")),
+            ("platform", ("Platform",)),
+            ("port_id", ("Port ID", "PortID")),
+        ]
+        found: List[Tuple[str, int]] = []
+        for key, variants in labels:
+            pos = -1
+            for v in variants:
+                p = header.find(v)
+                if p >= 0:
+                    pos = p
+                    break
+            if pos >= 0:
+                found.append((key, pos))
+
+        keys = {k for k, _ in found}
+        if not {"device_id", "local_interface", "hold_time", "port_id"}.issubset(keys):
+            return None
+
+        found.sort(key=lambda x: x[1])
+        spans: List[Tuple[str, int, int]] = []
+        for i, (key, start) in enumerate(found):
+            end = found[i + 1][1] if i + 1 < len(found) else len(header)
+            spans.append((key, start, end))
+        return spans
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    spans: Optional[List[Tuple[str, int, int]]] = None
+    started = False
+    detected_style = None
+
+    for line in raw.splitlines():
+        ln = (line or "").rstrip("\n")
+        if not ln.strip():
+            continue
+
+        lnl = ln.lower().strip()
+
+        if not started and "device id" in lnl and ("local" in lnl) and ("port" in lnl):
+            spans = _build_spans(ln)
+            started = True
+            detected_style = "fixed_columns" if spans else "heuristic"
+            continue
+
+        if not started:
+            continue
+
+        if set(ln.strip()) <= {"-", " "}:
+            continue
+        if lnl.startswith(("capability codes", "capability code", "total cdp entries", "total entries")):
+            continue
+
+        if spans:
+            parsed: Dict[str, str] = {}
+            padded = ln + (" " * 4)
+            for key, start, end in spans:
+                parsed[key] = padded[start:end].strip()
+
+            ht = parsed.get("hold_time", "").strip()
+            if not ht.isdigit():
+                continue
+
+            row = {
+                "device_id": parsed.get("device_id", "").strip(),
+                "local_interface": parsed.get("local_interface", "").strip(),
+                "hold_time": int(ht),
+                "capability": parsed.get("capability", "").strip(),
+                "capability_tokens": _capability_tokens(parsed.get("capability", "")),
+                "platform": parsed.get("platform", "").strip(),
+                "port_id": parsed.get("port_id", "").strip(),
+                "raw": ln.strip(),
+                "source_os": device_type or "",
+            }
+            rows[count] = row
+            count += 1
+            continue
+
+        # heuristic fallback
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+
+        ht_idx = None
+        for i in range(2, len(parts)):
+            if parts[i].isdigit():
+                ht_idx = i
+                break
+        if ht_idx is None:
+            continue
+
+        device_id = parts[0]
+        local_interface = " ".join(parts[1:ht_idx])
+        hold_time = int(parts[ht_idx])
+
+        tail = parts[ht_idx + 1 :]
+        if not tail:
+            continue
+
+        platform = tail[-2] if len(tail) >= 2 else ""
+        port_id = tail[-1] if len(tail) >= 1 else ""
+        capability = " ".join(tail[:-2]).strip() if len(tail) >= 2 else ""
+
+        row = {
+            "device_id": device_id,
+            "local_interface": local_interface,
+            "hold_time": hold_time,
+            "capability": capability,
+            "capability_tokens": _capability_tokens(capability),
+            "platform": platform,
+            "port_id": port_id,
+            "raw": ln.strip(),
+            "source_os": device_type or "",
+        }
+        rows[count] = row
+        count += 1
+
+    if return_envelope:
+        return {
+            "rows": rows,
+            "meta": {"detected_style": detected_style, "device_type": device_type, "count": count},
+            "error": parse_error,
+        }
+
+    return rows if rows else ({"error": parse_error} if parse_error else {})
+
+
+def cisco_parse_show_cdp_neighbors_xr(
+    output: str,
+    *,
+    return_envelope: bool = False,
+) -> Dict:
+    """Best-effort IOS-XR CDP neighbor parser.
+
+    IOS-XR neighbor outputs can vary by platform/version.
+    This function is intentionally tolerant and extracts:
+      - device_id
+      - local_interface (if present)
+      - hold_time (if present)
+      - port_id (if present)
+      - platform/capability when they appear
+    """
+    raw = "" if output is None else str(output)
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    started = False
+
+    for line in raw.splitlines():
+        ln = (line or "").rstrip("\n")
+        if not ln.strip():
+            continue
+
+        lnl = ln.lower().strip()
+
+        if not started and "device id" in lnl and "local" in lnl and "port" in lnl:
+            started = True
+            continue
+
+        if not started:
+            continue
+
+        if set(ln.strip()) <= {"-", " "}:
+            continue
+        if lnl.startswith(("capability codes", "total", "entries", "capability code")):
+            continue
+
+        parts = ln.split()
+        if len(parts) < 2:
+            continue
+
+        device_id = parts[0]
+
+        ht_idx = None
+        for i in range(1, len(parts)):
+            if parts[i].isdigit():
+                ht_idx = i
+                break
+
+        local_interface = " ".join(parts[1:ht_idx]) if ht_idx else ""
+        hold_time = int(parts[ht_idx]) if ht_idx else None
+
+        tail = parts[ht_idx + 1 :] if ht_idx is not None else []
+        capability = ""
+        platform = ""
+        port_id = ""
+
+        if tail:
+            port_id = tail[-1]
+            platform = tail[-2] if len(tail) >= 2 else ""
+            capability = " ".join(tail[:-2]).strip() if len(tail) >= 2 else ""
+
+        rows[count] = {
+            "device_id": device_id,
+            "local_interface": local_interface,
+            "hold_time": hold_time,
+            "capability": capability,
+            "platform": platform,
+            "port_id": port_id,
+            "raw": ln.strip(),
+            "source_os": "cisco_xr",
+        }
+        count += 1
+
+    if return_envelope:
+        return {"rows": rows, "meta": {"detected_style": "xr_heuristic", "count": count}, "error": parse_error}
+
+    return rows if rows else ({"error": parse_error} if parse_error else {})
+
+
+def cisco_parse_show_lldp_neighbors(
+    output: str,
+    device_type: Optional[str] = None,
+    *,
+    return_envelope: bool = False,
+) -> Dict:
+    """Parse `show lldp neighbors` output (IOS / IOS-XE / NX-OS best-effort).
+
+    Notes
+    - For IOS-XR, this function returns an error and you should call
+      `cisco_parse_show_lldp_neighbors_xr(...)`.
+    - Targets the common tabular output:
+
+        Device ID           Local Intf     Hold-time  Capability      Port ID
+
+    Returns
+    - default: dict[int, dict]
+    - if return_envelope=True: {'rows': <dict>, 'meta': {...}, 'error': <str|None>}
+    """
+    raw = "" if output is None else str(output)
+    dt = (device_type or "").strip().lower()
+
+    if dt in ("cisco_xr", "xr", "iosxr", "cisco-iosxr"):
+        err = "unsupported_device_type: cisco_xr; use cisco_parse_show_lldp_neighbors_xr"
+        if return_envelope:
+            return {"rows": {}, "meta": {"device_type": device_type}, "error": err}
+        return {"error": err}
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+        "LLDP is not enabled",
+        "lldp is not enabled",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    def _capability_tokens(val: str) -> List[str]:
+        s = (val or "").strip()
+        if not s:
+            return []
+        s = s.replace(",", " ").replace("/", " ")
+        toks = [t for t in s.split() if t]
+        return toks
+
+    def _build_spans(header: str) -> Optional[List[Tuple[str, int, int]]]:
+        labels: List[Tuple[str, Sequence[str]]] = [
+            ("device_id", ("Device ID", "System Name", "Chassis ID", "Device")),
+            ("local_interface", ("Local Intf", "Local Interface", "Local Port", "Local Intrfce")),
+            ("hold_time", ("Hold-time", "Hold Time", "Holdtime", "Holdtme")),
+            ("capability", ("Capability", "Capabilities")),
+            ("port_id", ("Port ID", "PortID", "Port Description", "Port Descr")),
+        ]
+        found: List[Tuple[str, int]] = []
+        for key, variants in labels:
+            pos = -1
+            for v in variants:
+                p = header.find(v)
+                if p >= 0:
+                    pos = p
+                    break
+            if pos >= 0:
+                found.append((key, pos))
+
+        keys = {k for k, _ in found}
+        if not {"device_id", "local_interface", "hold_time", "port_id"}.issubset(keys):
+            return None
+
+        found.sort(key=lambda x: x[1])
+        spans: List[Tuple[str, int, int]] = []
+        for i, (key, start) in enumerate(found):
+            end = found[i + 1][1] if i + 1 < len(found) else len(header)
+            spans.append((key, start, end))
+        return spans
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    spans: Optional[List[Tuple[str, int, int]]] = None
+    started = False
+    detected_style = None
+
+    for line in raw.splitlines():
+        ln = (line or "").rstrip("\n")
+        if not ln.strip():
+            continue
+
+        lnl = ln.lower().strip()
+
+        if not started and ("device id" in lnl or "system name" in lnl) and ("local" in lnl) and ("port" in lnl):
+            spans = _build_spans(ln)
+            started = True
+            detected_style = "fixed_columns" if spans else "heuristic"
+            continue
+
+        if not started:
+            continue
+
+        if set(ln.strip()) <= {"-", " "}:
+            continue
+        if lnl.startswith(("capability codes", "capability code", "total lldp entries", "total entries", "lldp neighbors")):
+            continue
+
+        if spans:
+            parsed: Dict[str, str] = {}
+            padded = ln + (" " * 4)
+            for key, start, end in spans:
+                parsed[key] = padded[start:end].strip()
+
+            ht = parsed.get("hold_time", "").strip()
+            if not ht.isdigit():
+                continue
+
+            cap = parsed.get("capability", "").strip()
+            row = {
+                "device_id": parsed.get("device_id", "").strip(),
+                "local_interface": parsed.get("local_interface", "").strip(),
+                "hold_time": int(ht),
+                "capability": cap,
+                "capability_tokens": _capability_tokens(cap),
+                "port_id": parsed.get("port_id", "").strip(),
+                "raw": ln.strip(),
+                "source_os": device_type or "",
+            }
+            rows[count] = row
+            count += 1
+            continue
+
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+
+        ht_idx = None
+        for i in range(2, len(parts)):
+            if parts[i].isdigit():
+                ht_idx = i
+                break
+        if ht_idx is None:
+            continue
+
+        device_id = parts[0]
+        local_interface = " ".join(parts[1:ht_idx])
+        hold_time = int(parts[ht_idx])
+
+        tail = parts[ht_idx + 1 :]
+        if not tail:
+            continue
+
+        port_id = tail[-1]
+        capability = " ".join(tail[:-1]).strip()
+
+        row = {
+            "device_id": device_id,
+            "local_interface": local_interface,
+            "hold_time": hold_time,
+            "capability": capability,
+            "capability_tokens": _capability_tokens(capability),
+            "port_id": port_id,
+            "raw": ln.strip(),
+            "source_os": device_type or "",
+        }
+        rows[count] = row
+        count += 1
+
+    if return_envelope:
+        return {
+            "rows": rows,
+            "meta": {"detected_style": detected_style, "device_type": device_type, "count": count},
+            "error": parse_error,
+        }
+
+    return rows if rows else ({"error": parse_error} if parse_error else {})
+
+
+def cisco_parse_show_lldp_neighbors_xr(
+    output: str,
+    *,
+    return_envelope: bool = False,
+) -> Dict:
+    """Best-effort IOS-XR LLDP neighbor parser.
+
+    IOS-XR LLDP output varies. This parser looks for a common neighbor table:
+      - device id / chassis id
+      - local interface
+      - hold-time
+      - port id / port description
+
+    """
+    raw = "" if output is None else str(output)
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+        "LLDP is not enabled",
+        "lldp is not enabled",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    started = False
+    spans: Optional[List[Tuple[str, int, int]]] = None
+
+    def _build_spans(header: str) -> Optional[List[Tuple[str, int, int]]]:
+        labels: List[Tuple[str, Sequence[str]]] = [
+            ("device_id", ("Device ID", "Chassis ID", "System Name", "Neighbor")),
+            ("local_interface", ("Local Intf", "Local Interface", "Local Port")),
+            ("hold_time", ("Hold-time", "Hold Time", "Holdtime", "Holdtme")),
+            ("port_id", ("Port ID", "Port Description", "PortID")),
+        ]
+        found: List[Tuple[str, int]] = []
+        for key, variants in labels:
+            pos = -1
+            for v in variants:
+                p = header.find(v)
+                if p >= 0:
+                    pos = p
+                    break
+            if pos >= 0:
+                found.append((key, pos))
+        keys = {k for k, _ in found}
+        if not {"device_id", "local_interface", "hold_time", "port_id"}.issubset(keys):
+            return None
+        found.sort(key=lambda x: x[1])
+        spans: List[Tuple[str, int, int]] = []
+        for i, (key, start) in enumerate(found):
+            end = found[i + 1][1] if i + 1 < len(found) else len(header)
+            spans.append((key, start, end))
+        return spans
+
+    for line in raw.splitlines():
+        ln = (line or "").rstrip("\n")
+        if not ln.strip():
+            continue
+        lnl = ln.lower().strip()
+
+        if not started and ("device id" in lnl or "chassis id" in lnl or "system name" in lnl) and ("local" in lnl) and ("port" in lnl):
+            spans = _build_spans(ln)
+            started = True
+            continue
+
+        if not started:
+            continue
+
+        if set(ln.strip()) <= {"-", " "}:
+            continue
+        if lnl.startswith(("capability", "total", "entries", "lldp")):
+            continue
+
+        if spans:
+            parsed: Dict[str, str] = {}
+            padded = ln + (" " * 4)
+            for key, start, end in spans:
+                parsed[key] = padded[start:end].strip()
+            ht = parsed.get("hold_time", "").strip()
+            if not ht.isdigit():
+                continue
+            rows[count] = {
+                "device_id": parsed.get("device_id", "").strip(),
+                "local_interface": parsed.get("local_interface", "").strip(),
+                "hold_time": int(ht),
+                "port_id": parsed.get("port_id", "").strip(),
+                "raw": ln.strip(),
+                "source_os": "cisco_xr",
+            }
+            count += 1
+            continue
+
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+        ht_idx = None
+        for i in range(1, len(parts)):
+            if parts[i].isdigit():
+                ht_idx = i
+                break
+        if ht_idx is None:
+            continue
+        device_id = parts[0]
+        local_interface = " ".join(parts[1:ht_idx])
+        hold_time = int(parts[ht_idx])
+        port_id = " ".join(parts[ht_idx + 1 :]).strip()
+        rows[count] = {
+            "device_id": device_id,
+            "local_interface": local_interface,
+            "hold_time": hold_time,
+            "port_id": port_id,
+            "raw": ln.strip(),
+            "source_os": "cisco_xr",
+        }
+        count += 1
+
+    if return_envelope:
+        return {
+            "rows": rows,
+            "meta": {"detected_style": "xr_fixed_columns" if spans else "xr_heuristic", "count": count},
+            "error": parse_error,
+        }
+
+    return rows if rows else ({"error": parse_error} if parse_error else {})

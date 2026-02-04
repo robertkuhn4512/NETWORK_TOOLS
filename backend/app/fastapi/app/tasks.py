@@ -53,10 +53,20 @@ from app.shared_functions.helpers.helpers_netmiko import (
 from app.shared_functions.helpers.helpers_cisco import (
     cisco_allowed_show_version_commands,
     cisco_allowed_show_mac_address_table_commands,
-    parse_cisco_show_version,
+    cisco_parse_show_version,
     cisco_allowed_backup_commands,
     cisco_hostname,
-    cisco_map_device_type_os_type
+    cisco_map_device_type_os_type,
+    cisco_parse_show_mac_address_table,
+    cisco_allowed_show_ip_arp_table_commands,
+    cisco_parse_show_ip_arp_table,
+    cisco_parse_show_ip_arp_table_xr,
+    cisco_allowed_show_cdp_neighbor_commands,
+    cisco_allowed_show_lldp_neighbor_commands,
+    cisco_parse_show_cdp_neighbors,
+    cisco_parse_show_cdp_neighbors_xr,
+    cisco_parse_show_lldp_neighbors,
+    cisco_parse_show_lldp_neighbors_xr
 )
 
 from app.shared_functions.helpers.helpers_generic import (
@@ -364,6 +374,9 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             device_backup_location = ''
                                             show_version_parsed = {}
                                             show_mac_address_table_output = {}
+                                            show_mac_address_table_output_parsed = {}
+                                            show_ip_arp_table_output = {}
+                                            show_ip_arp_table_output_parsed = {}
 
                                         if show_version_command is not None:
                                             show_version_command_output = await netmiko_fetch_command_output(
@@ -377,7 +390,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             )
 
                                             if 'cisco' in ad.get("device_type"):
-                                                show_version_parsed = parse_cisco_show_version(show_version_command_output.get('output', ''))
+                                                show_version_parsed = cisco_parse_show_version(show_version_command_output.get('output', ''))
 
                                         # Perform a backup of the device
 
@@ -402,7 +415,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 # Fetch the mac address table snapshot
 
                                                 show_mac_address_table_command = cisco_allowed_show_mac_address_table_commands(ad.get("device_type"))
-                                                logger.info(f"show_mac_address_table_command: {show_mac_address_table_command}")
+
                                                 if show_mac_address_table_command is not None:
                                                     show_mac_address_table_output = await netmiko_fetch_command_output(
                                                         host=target_ip,
@@ -413,7 +426,48 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                         device_type=ad.get("device_type"),
                                                         command=show_mac_address_table_command
                                                     )
-                                                    logger.info(f"show_mac_address_table_output: {show_mac_address_table_output}")
+
+                                                    dt = (ad.get("device_type") or "").strip().lower()
+
+                                                    parsers = {
+                                                        "cisco_ios": cisco_parse_show_mac_address_table,
+                                                        "cisco_xe": cisco_parse_show_mac_address_table,
+                                                        "cisco_nxos": cisco_parse_show_mac_address_table,
+                                                    }
+
+                                                    fn = parsers.get(dt)
+
+                                                    if fn:
+                                                        show_mac_address_table_output_parsed = fn(show_mac_address_table_output.get('output', {}), dt)
+
+                                                # Fetch the ip arp table snapshot
+
+                                                show_ip_arp_table_command = cisco_allowed_show_ip_arp_table_commands(ad.get("device_type"))
+
+                                                if show_ip_arp_table_command is not None:
+                                                    show_ip_arp_table_output = await netmiko_fetch_command_output(
+                                                        host=target_ip,
+                                                        username=p.get("username", ""),
+                                                        password=p.get("password", ""),
+                                                        port=int(p.get("ssh_port", 22)),
+                                                        enable_secret=p.get("enable_password"),
+                                                        device_type=ad.get("device_type"),
+                                                        command=show_ip_arp_table_command
+                                                    )
+
+                                                    dt = (ad.get("device_type") or "").strip().lower()
+
+                                                    parsers = {
+                                                        "cisco_ios": cisco_parse_show_ip_arp_table,
+                                                        "cisco_xe": cisco_parse_show_ip_arp_table,
+                                                        "cisco_nxos": cisco_parse_show_ip_arp_table,
+                                                        "cisco_xr": cisco_parse_show_ip_arp_table_xr,
+                                                    }
+
+                                                    fn = parsers.get(dt)
+
+                                                    if fn:
+                                                        show_ip_arp_table_output_parsed = fn(show_ip_arp_table_output.get('output', {}), dt)
 
                                             # Save the raw configuration backup
                                             now = datetime.now()
@@ -502,8 +556,10 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 "encryption_warning_message": encryption_warning_message,
                                                 "encryption_task": encryption_task,
                                                 "decrypt_task": ({**decrypt_task, "content": "Redacted - This was a test to see if the file could be decrypted"} if isinstance(decrypt_task, dict) and "content" in decrypt_task else decrypt_task),
-                                                "show_mac_address_table_output": show_mac_address_table_output #Temporary
-                                                "show_mac_address_table_output_parsed"
+                                                "show_mac_address_table_output": show_mac_address_table_output, #Temporary
+                                                "show_mac_address_table_output_parsed": show_mac_address_table_output_parsed, #Temporary
+                                                "show_ip_arp_table_output": show_ip_arp_table_output, #Temporary
+                                                "show_ip_arp_table_output_parsed": show_ip_arp_table_output_parsed, #Temporary
                                             },
                                             information_detail={}
                                         )
