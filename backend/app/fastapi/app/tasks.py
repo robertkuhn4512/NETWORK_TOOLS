@@ -445,6 +445,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         show_interface_description_output_parsed = cisco_parse_show_interface_description_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_interface_description_command, None))
 
                                         # Parse CDP output
+                                        show_cdp_neighbors_output = batch_commands_output['outputs'].get(show_cdp_neighbors_command, None)
                                         show_cdp_neighbors_output_parsed = cisco_parse_show_cdp_neighbors_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_cdp_neighbors_command, None), show_cdp_neighbors_command_flag)
 
                                         # Parse LLDP output
