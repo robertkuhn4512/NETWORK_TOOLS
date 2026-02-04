@@ -51,22 +51,21 @@ from app.shared_functions.helpers.helpers_netmiko import (
 )
 
 from app.shared_functions.helpers.helpers_cisco import (
-    cisco_allowed_show_version_commands,
-    cisco_allowed_show_mac_address_table_commands,
+    cisco_allowed_commands,
     cisco_parse_show_version,
-    cisco_allowed_backup_commands,
     cisco_hostname,
-    cisco_map_device_type_os_type,
-    cisco_parse_show_mac_address_table,
-    cisco_allowed_show_ip_arp_table_commands,
     cisco_parse_show_ip_arp_table,
     cisco_parse_show_ip_arp_table_xr,
-    cisco_allowed_show_cdp_neighbor_commands,
-    cisco_allowed_show_lldp_neighbor_commands,
     cisco_parse_show_cdp_neighbors,
     cisco_parse_show_cdp_neighbors_xr,
     cisco_parse_show_lldp_neighbors,
-    cisco_parse_show_lldp_neighbors_xr
+    cisco_parse_show_lldp_neighbors_xr,
+    cisco_parse_show_cdp_neighbors_auto,
+    cisco_parse_show_lldp_neighbors_auto,
+    cisco_parse_device_json_from_string,
+    cisco_parse_show_interface_description_auto,
+    cisco_parse_show_ip_arp_table_auto,
+    cisco_parse_show_mac_address_table_auto
 )
 
 from app.shared_functions.helpers.helpers_generic import (
@@ -361,36 +360,102 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         # https://ktbyers.github.io/netmiko/PLATFORMS.html
                                         # TODO - Find a cleaner way to impliment this check.
 
-                                        if 'cisco' in ad.get("device_type"):
-                                            show_version_command = cisco_allowed_show_version_commands(ad['device_type'])
-                                            backup_commands = cisco_allowed_backup_commands(ad['device_type'])
-                                            os_name = cisco_map_device_type_os_type(ad['device_type'])
-                                        else:
-                                            os_name = None
-                                            hostname = None
-                                            backup_commands = None
-                                            show_version_command = None
-                                            show_version_command_output = ''
-                                            device_backup_location = ''
-                                            show_version_parsed = {}
-                                            show_mac_address_table_output = {}
-                                            show_mac_address_table_output_parsed = {}
-                                            show_ip_arp_table_output = {}
-                                            show_ip_arp_table_output_parsed = {}
+                                        # Batch commands to run in the same session
+                                        batch_commands = []
+                                        batch_commands_output = {}
+                                        show_version_command = cisco_allowed_commands(ad['device_type']).get('show_version', None)
+                                        backup_commands = cisco_allowed_commands(ad['device_type']).get('allowed_backup_commands', None)
+                                        os_name = cisco_allowed_commands(ad.get("device_type")).get('os_name_by_device', None)
+                                        show_interface_description_command = cisco_allowed_commands(ad.get("device_type")).get('show_interface_description', None)
+                                        hostname = None
+                                        show_version_command_output = ''
+                                        device_backup_location = ''
+                                        show_version_parsed = {}
+                                        show_mac_address_table_output = {}
+                                        show_mac_address_table_output_parsed = {}
+                                        show_interface_description_output = {}
+                                        show_interface_description_output_parsed = {}
+                                        show_cdp_neighbors_output = {}
+                                        show_cdp_neighbors_output_parsed = {}
+                                        show_lldp_neighbors_output = {}
+                                        show_lldp_neighbors_output_parsed = {}
+                                        show_ip_arp_output = {}
+                                        show_ip_arp_output_parsed = {}
+
+                                        # Add commands to the batch commands list if they are present in the
+                                        # device dictionary
 
                                         if show_version_command is not None:
-                                            show_version_command_output = await netmiko_fetch_command_output(
-                                                host=target_ip,
-                                                username=p.get("username", ""),
-                                                password=p.get("password", ""),
-                                                port=int(p.get("ssh_port", 22)),
-                                                enable_secret=p.get("enable_password"),
-                                                device_type=ad.get("device_type"),
-                                                command=show_version_command
-                                            )
+                                            batch_commands.append(show_version_command)
 
-                                            if 'cisco' in ad.get("device_type"):
-                                                show_version_parsed = cisco_parse_show_version(show_version_command_output.get('output', ''))
+                                        if show_interface_description_command is not None:
+                                            batch_commands.append(show_interface_description_command)
+
+                                        show_cdp_neighbors_command = cisco_allowed_commands(ad.get("device_type")).get('show_cdp_neighbors', None)
+                                        show_cdp_neighbors_command_flag = cisco_allowed_commands(ad.get("device_type")).get('show_cdp_neighbors_output_type', 'cli')
+
+                                        if show_cdp_neighbors_command is not None:
+                                            batch_commands.append(show_cdp_neighbors_command)
+
+                                        show_lldp_neighbors_command = cisco_allowed_commands(ad.get("device_type")).get('show_lldp_neighbors', None)
+                                        show_lldp_neighbors_command_flag = cisco_allowed_commands(ad.get("device_type")).get('show_lldp_neighbors_output_type', 'cli')
+
+                                        if show_lldp_neighbors_command is not None:
+                                            batch_commands.append(show_lldp_neighbors_command)
+
+                                        show_mac_address_table_command = cisco_allowed_commands(ad.get("device_type")).get('show_mac_address_table', None)
+                                        show_mac_address_command_flag = cisco_allowed_commands(ad.get("device_type")).get('show_mac_address_table_output_type', 'cli')
+
+                                        if show_mac_address_table_command is not None:
+                                            batch_commands.append(show_mac_address_table_command)
+
+                                        show_ip_arp_table_command = cisco_allowed_commands(ad.get("device_type")).get('show_ip_arp_table', None)
+                                        show_ip_arp_command_flag = cisco_allowed_commands(ad.get("device_type")).get('show_ip_arp_table_output_type', 'cli')
+
+                                        if show_ip_arp_table_command is not None:
+                                            batch_commands.append(show_ip_arp_table_command)
+
+
+
+                                        # Run all batch commands
+
+                                        batch_commands_output = await netmiko_fetch_command_output(
+                                            host=target_ip,
+                                            username=p.get("username", ""),
+                                            password=p.get("password", ""),
+                                            port=int(p.get("ssh_port", 22)),
+                                            enable_secret=p.get("enable_password"),
+                                            device_type=ad.get("device_type"),
+                                            command=batch_commands
+                                        )
+
+                                        # Process all batch commands output
+                                        logger.info(json.dumps(batch_commands_output, indent=4))
+
+                                        show_version_command_output = batch_commands_output['outputs'].get(show_version_command, None)
+                                        show_version_command_output_type = cisco_allowed_commands(ad.get("device_type")).get('show_version_output_type', None)
+
+                                        if show_version_command_output_type is not None:
+                                            if show_version_command_output_type == 'json':
+                                                show_version_parsed = cisco_parse_device_json_from_string(ad.get("device_type"), show_version_command_output)
+                                            elif show_version_command_output_type == 'cli':
+                                                show_version_parsed = cisco_parse_show_version(show_version_command_output)
+
+                                        show_interface_description_output = batch_commands_output['outputs'].get(show_interface_description_command, None)
+                                        show_interface_description_output_parsed = cisco_parse_show_interface_description_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_interface_description_command, None))
+
+                                        # Parse CDP output
+                                        show_cdp_neighbors_output_parsed = cisco_parse_show_cdp_neighbors_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_cdp_neighbors_command, None), show_cdp_neighbors_command_flag)
+
+                                        # Parse LLDP output
+                                        show_lldp_neighbors_output_parsed = cisco_parse_show_lldp_neighbors_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_lldp_neighbors_command, None), show_lldp_neighbors_command_flag)
+
+                                        # Parse ip arp output
+                                        show_ip_arp_output = batch_commands_output['outputs'].get(show_interface_description_command, None)
+                                        show_ip_arp_output_parsed = cisco_parse_show_ip_arp_table_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_ip_arp_table_command, None), show_ip_arp_command_flag)
+
+                                        # Parse mac address table output
+                                        show_mac_address_table_output_parsed = cisco_parse_show_mac_address_table_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_mac_address_table_command, None), show_mac_address_command_flag)
 
                                         # Perform a backup of the device
 
@@ -406,68 +471,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 command=backup_commands
                                             )
 
-                                            # Fetch specific items based on device type. Some devices may have
-                                            # different ways of saving X data.
-
-                                            if 'cisco' in ad.get("device_type"):
-                                                hostname = cisco_hostname(backup_commands_output.get('output', '')).get('hostname', 'Unable to determine hostname')
-
-                                                # Fetch the mac address table snapshot
-
-                                                show_mac_address_table_command = cisco_allowed_show_mac_address_table_commands(ad.get("device_type"))
-
-                                                if show_mac_address_table_command is not None:
-                                                    show_mac_address_table_output = await netmiko_fetch_command_output(
-                                                        host=target_ip,
-                                                        username=p.get("username", ""),
-                                                        password=p.get("password", ""),
-                                                        port=int(p.get("ssh_port", 22)),
-                                                        enable_secret=p.get("enable_password"),
-                                                        device_type=ad.get("device_type"),
-                                                        command=show_mac_address_table_command
-                                                    )
-
-                                                    dt = (ad.get("device_type") or "").strip().lower()
-
-                                                    parsers = {
-                                                        "cisco_ios": cisco_parse_show_mac_address_table,
-                                                        "cisco_xe": cisco_parse_show_mac_address_table,
-                                                        "cisco_nxos": cisco_parse_show_mac_address_table,
-                                                    }
-
-                                                    fn = parsers.get(dt)
-
-                                                    if fn:
-                                                        show_mac_address_table_output_parsed = fn(show_mac_address_table_output.get('output', {}), dt)
-
-                                                # Fetch the ip arp table snapshot
-
-                                                show_ip_arp_table_command = cisco_allowed_show_ip_arp_table_commands(ad.get("device_type"))
-
-                                                if show_ip_arp_table_command is not None:
-                                                    show_ip_arp_table_output = await netmiko_fetch_command_output(
-                                                        host=target_ip,
-                                                        username=p.get("username", ""),
-                                                        password=p.get("password", ""),
-                                                        port=int(p.get("ssh_port", 22)),
-                                                        enable_secret=p.get("enable_password"),
-                                                        device_type=ad.get("device_type"),
-                                                        command=show_ip_arp_table_command
-                                                    )
-
-                                                    dt = (ad.get("device_type") or "").strip().lower()
-
-                                                    parsers = {
-                                                        "cisco_ios": cisco_parse_show_ip_arp_table,
-                                                        "cisco_xe": cisco_parse_show_ip_arp_table,
-                                                        "cisco_nxos": cisco_parse_show_ip_arp_table,
-                                                        "cisco_xr": cisco_parse_show_ip_arp_table_xr,
-                                                    }
-
-                                                    fn = parsers.get(dt)
-
-                                                    if fn:
-                                                        show_ip_arp_table_output_parsed = fn(show_ip_arp_table_output.get('output', {}), dt)
+                                            hostname = cisco_hostname(backup_commands_output.get('output', '')).get('hostname', 'Unable to determine hostname')
 
                                             # Save the raw configuration backup
                                             now = datetime.now()
@@ -550,16 +554,24 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 "show_version_command_output": "Redacted - Only saved in the file system",
                                                 "show_version_command_output_parsed": show_version_parsed,
                                                 "backup_commands_output": ({**backup_commands_output, "output": "Redacted - Only saved in the file system"} if isinstance(backup_commands_output, dict) and "output" in backup_commands_output else backup_commands_output),
+                                                "batch_commands": batch_commands,
+                                                "batch_commands_output": batch_commands_output,
                                                 "backup_task": backup_task,
                                                 "original_backup_file_path": original_backup_file_path,
                                                 "compress_task": compress_task,
                                                 "encryption_warning_message": encryption_warning_message,
                                                 "encryption_task": encryption_task,
                                                 "decrypt_task": ({**decrypt_task, "content": "Redacted - This was a test to see if the file could be decrypted"} if isinstance(decrypt_task, dict) and "content" in decrypt_task else decrypt_task),
-                                                "show_mac_address_table_output": show_mac_address_table_output, #Temporary
-                                                "show_mac_address_table_output_parsed": show_mac_address_table_output_parsed, #Temporary
-                                                "show_ip_arp_table_output": show_ip_arp_table_output, #Temporary
-                                                "show_ip_arp_table_output_parsed": show_ip_arp_table_output_parsed, #Temporary
+                                                "show_mac_address_table_output": show_mac_address_table_output,
+                                                "show_mac_address_table_output_parsed": show_mac_address_table_output_parsed,
+                                                "show_interface_description_output": show_interface_description_output,
+                                                "show_interface_description_output_parsed": show_interface_description_output_parsed,
+                                                "show_cdp_neighbors_output": show_cdp_neighbors_output,
+                                                "show_cdp_neighbors_output_parsed": show_cdp_neighbors_output_parsed,
+                                                "show_lldp_neighbors_output": show_lldp_neighbors_output,
+                                                "show_lldp_neighbors_output_parsed": show_lldp_neighbors_output_parsed,
+                                                "show_ip_arp_output": show_ip_arp_output,
+                                                "show_ip_arp_output_parsed": show_ip_arp_output_parsed,
                                             },
                                             information_detail={}
                                         )
