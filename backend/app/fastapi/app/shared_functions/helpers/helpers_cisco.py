@@ -3402,149 +3402,107 @@ def cisco_parse_show_mac_address_table_cli(
     device_type: str = "",
     return_envelope: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Notes / How to run:
-      - Input is CLI text for `show mac address-table` (or similar).
-      - Returns either:
-          - rows dict: {0: {...}, 1: {...}}
-          - or envelope: {"rows": ..., "meta": ..., "error": ...} if return_envelope=True
-    """
-
-    def _wrap(rows: Dict[int, Dict[str, Any]], meta: Dict[str, Any], error: Optional[str]) -> Dict[str, Any]:
+    def _wrap(rows, meta, error):
         if return_envelope:
             return {"rows": rows, "meta": meta, "error": error}
         return rows if error is None else {"error": error}
 
-    def _as_int(v: Any) -> Optional[int]:
-        try:
-            if v is None:
-                return None
-            s = str(v).strip()
-            if s == "" or s == "-":
-                return None
-            return int(s)
-        except Exception:
-            return None
+    raw = "" if output is None else str(output)
 
-    def _boolish(v: Any) -> Optional[bool]:
-        if v is None:
-            return None
-        s = str(v).strip().lower()
-        if s in ("t", "true", "1", "yes", "y"):
-            return True
-        if s in ("f", "false", "0", "no", "n"):
-            return False
-        if s in ("-", ""):
-            return None
-        return None
+    err_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+    )
+    if any(m in raw for m in err_markers):
+        return _wrap({}, {"device_type": device_type, "detected_command": "show_mac_address_table"}, "command_not_supported_or_invalid")
 
-    if not isinstance(output, str):
-        return _wrap({}, {"device_type": device_type, "output_type": "cli"}, "invalid_payload: expected cli string")
-
-    rows_out: Dict[int, Dict[str, Any]] = {}
+    rows: Dict[int, Dict[str, Any]] = {}
     i = 0
 
-    try:
-        for line in output.splitlines():
-            ln = line.strip()
-            if not ln:
-                continue
+    for line in raw.splitlines():
+        ln = (line or "").strip()
+        if not ln:
+            continue
 
-            lnl = ln.lower()
-            # Common headers / noise
-            if "mac address" in lnl and "table" in lnl:
-                continue
-            if lnl.startswith(("legend", "total", "count")):
-                continue
-            if ("vlan" in lnl and "mac" in lnl and ("port" in lnl or "ports" in lnl)):
-                continue
+        lnl = ln.lower()
 
-            # Must contain a MAC token
-            m = _MAC_TOKEN.search(ln)
-            if not m:
-                continue
+        # skip prompts / legends / footers
+        if lnl.startswith(("show ", "switch#", "router#", "nxos#", "ios#", "xr#")):
+            continue
+        if "total mac address" in lnl:
+            continue
+        if lnl.startswith(("legend:", "mac entries", "----")):
+            continue
 
-            parts = ln.split()
-            # Find exact token index for the MAC (best effort)
-            mac_idx = None
-            mac_token = None
-            for idx, p in enumerate(parts):
-                if _MAC_TOKEN.fullmatch(p):
-                    mac_idx = idx
-                    mac_token = p
-                    break
+        parts = ln.split()
+        if len(parts) < 3:
+            continue
 
-            if mac_idx is None or mac_token is None:
-                # fallback: use regex match token
-                mac_token = m.group(0)
-                # find approximate position
-                try:
-                    mac_idx = parts.index(mac_token)
-                except Exception:
-                    mac_idx = None
+        # Handle common IOS/XE: VLAN MAC TYPE PORT
+        vlan = None
+        mac = None
+        typ = None
+        port = None
+        age = None
 
-            # VLAN usually appears before MAC
-            vlan_val: Optional[Union[int, str]] = None
-            if mac_idx is not None:
-                for j in range(mac_idx - 1, -1, -1):
-                    vj = _as_int(parts[j])
-                    if vj is not None:
-                        vlan_val = vj
-                        break
-            if vlan_val is None:
-                # try first token
-                v0 = _as_int(parts[0])
-                vlan_val = v0 if v0 is not None else None
+        # Remove leading '*' markers if present
+        if parts and parts[0].startswith("*") and len(parts[0]) > 1:
+            parts[0] = parts[0].lstrip("*")
 
-            mac_norm = _cisco_normalize_mac(str(mac_token))
+        # pattern A: vlan mac type port...
+        if parts[0].isdigit() and _MAC_TOKEN.match(parts[1]):
+            vlan, mac = parts[0], parts[1]
+            # could be: vlan mac type port
+            # or: vlan mac age type port
+            if len(parts) >= 4 and parts[2].upper() in ("DYNAMIC", "STATIC", "SECURE", "SELF", "DROP"):
+                typ = parts[2]
+                port = parts[3]
+            elif len(parts) >= 5 and _AGE_TOKEN.match(parts[2]) and parts[3].isalpha():
+                age = parts[2]
+                typ = parts[3]
+                port = parts[4]
+            elif len(parts) >= 5:
+                # last-resort: assume type is 3rd, port is last
+                typ = parts[2]
+                port = parts[-1]
 
-            # Type is typically token after MAC
-            typ = ""
-            if mac_idx is not None and mac_idx + 1 < len(parts):
-                typ = parts[mac_idx + 1]
+        # pattern B: mac vlan type port... (some platforms / variants)
+        elif _MAC_TOKEN.match(parts[0]) and parts[1].isdigit():
+            mac, vlan = parts[0], parts[1]
+            if len(parts) >= 4:
+                typ = parts[2]
+                port = parts[3]
 
-            # Port/interface is typically last token
-            port = parts[-1] if parts else ""
+        else:
+            continue
 
-            # NX-OS sometimes: VLAN MAC TYPE AGE SECURE NTFY PORT
-            age = ""
-            age_i: Optional[int] = None
-            sec: Optional[bool] = None
-            ntfy: Optional[bool] = None
+        if not mac or not port:
+            continue
 
-            if mac_idx is not None:
-                mid = parts[mac_idx + 2 : -1]  # between TYPE and PORT
-                if len(mid) >= 1:
-                    age = mid[0]
-                    age_i = _as_int(age)
-                if len(mid) >= 2:
-                    sec = _boolish(mid[1])
-                if len(mid) >= 3:
-                    ntfy = _boolish(mid[2])
+        mac_norm = _cisco_normalize_mac(mac)
 
-            rows_out[i] = {
-                "vlan": vlan_val if vlan_val is not None else "",
-                **mac_norm,
-                "mac_raw": str(mac_token).strip(),
-                "type": str(typ).strip(),
-                "interface": str(port).strip(),
-                "age": str(age).strip(),
-                "age_int": age_i,
-                "is_secure": sec,
-                "is_notify": ntfy,
-                "raw": ln,
-            }
-            i += 1
-
-        meta = {
-            "device_type": device_type,
-            "detected_command": "show_mac_address_table",
-            "row_count": len(rows_out),
+        rows[i] = {
+            "vlan": int(vlan) if vlan and vlan.isdigit() else vlan,
+            **mac_norm,
+            "mac_raw": mac,
+            "type": (typ or "").strip(),
+            "interface": port.strip(),
+            "age": (age or "").strip(),
+            "source_os": (device_type or "").strip() or "cisco",
+            "raw": ln,
         }
-        return _wrap(rows_out, meta, None)
+        i += 1
 
-    except Exception as exc:
-        return _wrap({}, {"device_type": device_type, "detected_command": "show_mac_address_table"}, f"parse_failed: {type(exc).__name__}: {exc}")
+    meta = {
+        "device_type": device_type,
+        "detected_command": "show_mac_address_table",
+        "row_count": len(rows),
+        "parsed_without_header_dependency": True,
+    }
+    return _wrap(rows, meta, None)
 
 def cisco_parse_show_mac_address_table_auto(
     device_type: str,
@@ -4406,72 +4364,7 @@ if __name__ == "__main__":
     #print(json.dumps(parsed, indent=2))
 
     output = """
-lab-109-a4-3000#show mac address-table
-          Mac Address Table
--------------------------------------------
-
-Vlan    Mac Address       Type        Ports
-----    -----------       --------    -----
- All    0100.0ccc.cccc    STATIC      CPU
- All    0100.0ccc.cccd    STATIC      CPU
- All    0180.c200.0000    STATIC      CPU
- All    0180.c200.0001    STATIC      CPU
- All    0180.c200.0002    STATIC      CPU
- All    0180.c200.0003    STATIC      CPU
- All    0180.c200.0004    STATIC      CPU
- All    0180.c200.0005    STATIC      CPU
- All    0180.c200.0006    STATIC      CPU
- All    0180.c200.0007    STATIC      CPU
- All    0180.c200.0008    STATIC      CPU
- All    0180.c200.0009    STATIC      CPU
- All    0180.c200.000a    STATIC      CPU
- All    0180.c200.000b    STATIC      CPU
- All    0180.c200.000c    STATIC      CPU
- All    0180.c200.000d    STATIC      CPU
- All    0180.c200.000e    STATIC      CPU
- All    0180.c200.000f    STATIC      CPU
- All    0180.c200.0010    STATIC      CPU
- All    0180.c200.0021    STATIC      CPU
- All    ffff.ffff.ffff    STATIC      CPU
-   1    84eb.efd9.9381    DYNAMIC     Po1
-  10    000c.2920.ebc4    DYNAMIC     Te1/0/15
-  10    001d.a2cf.bf08    DYNAMIC     Te1/0/10
-  10    00c0.b7d8.afb0    DYNAMIC     Te1/0/13
-  10    00c0.b7d8.afb1    DYNAMIC     Te1/0/14
-  10    00e4.21c0.bd5f    DYNAMIC     Te1/0/21
-  10    0c75.bd90.f746    STATIC      Vl10 
-  10    0ec1.b0ce.2706    DYNAMIC     Te1/0/22
-  10    1020.ba3d.ccb8    DYNAMIC     Te1/0/21
-  10    1498.775b.71e3    DYNAMIC     Te1/0/15
-  10    18cc.18dd.1eea    DYNAMIC     Te1/0/21
-  10    18e8.29bf.0a34    DYNAMIC     Te1/0/24
-  10    3cef.8c96.e934    DYNAMIC     Te1/0/1
-  10    3cef.8c96.ea86    DYNAMIC     Te1/0/11
-  10    4831.7703.5578    DYNAMIC     Te1/0/22
-  10    4c11.bff5.0360    DYNAMIC     Te1/0/21
-  10    603e.5f4d.f1f6    DYNAMIC     Te1/0/21
-  10    6479.f0ec.e6bd    DYNAMIC     Te1/0/22
-  10    7483.c202.c627    DYNAMIC     Te1/0/22
-  10    8095.3a9f.06d8    DYNAMIC     Te1/0/21
-  10    8ae1.f974.815d    DYNAMIC     Te1/0/22
-  10    9c8e.cd00.1cdb    DYNAMIC     Te1/0/8
-  10    9c8e.cd19.407a    DYNAMIC     Te1/0/5
-  10    9c8e.cd21.b298    DYNAMIC     Te1/0/18
-  10    9c8e.cd2b.bb6a    DYNAMIC     Te1/0/2
-  10    9c8e.cd2b.bb80    DYNAMIC     Te1/0/3
-  10    9c8e.cd2b.bb83    DYNAMIC     Te1/0/6
-  10    9c8e.cd2b.bb87    DYNAMIC     Te1/0/4
-  10    9c8e.cd2d.0c35    DYNAMIC     Te1/0/17
-  10    dccd.2f41.3b28    DYNAMIC     Te1/0/21
-  10    e063.da30.fb4a    DYNAMIC     Te1/0/21
-  10    e063.da3c.c279    DYNAMIC     Te1/0/22
- 440    0c75.bd90.f75d    STATIC      Vl440 
- 440    84eb.efd9.9381    DYNAMIC     Po1
- 500    0c75.bd90.f750    STATIC      Vl500 
-1000    0c75.bd90.f75f    STATIC      Vl1000 
-1000    18e8.29bf.0a35    DYNAMIC     Te1/0/9
-1000    84eb.efd9.93df    DYNAMIC     Po1
-Total Mac Addresses for this criterion: 59
+Mac Address Table\n-------------------------------------------\n\nVlan Mac Address Type Ports\n---- ----------- -------- -----\n All 0100.0ccc.cccc STATIC CPU\n All 0100.0ccc.cccd STATIC CPU\n All 0180.c200.0000 STATIC CPU\n All 0180.c200.0001 STATIC CPU\n All 0180.c200.0002 STATIC CPU\n All 0180.c200.0003 STATIC CPU\n All 0180.c200.0004 STATIC CPU\n All 0180.c200.0005 STATIC CPU\n All 0180.c200.0006 STATIC CPU\n All 0180.c200.0007 STATIC CPU\n All 0180.c200.0008 STATIC CPU\n All 0180.c200.0009 STATIC CPU\n All 0180.c200.000a STATIC CPU\n All 0180.c200.000b STATIC CPU\n All 0180.c200.000c STATIC CPU\n All 0180.c200.000d STATIC CPU\n All 0180.c200.000e STATIC CPU\n All 0180.c200.000f STATIC CPU\n All 0180.c200.0010 STATIC CPU\n All 0180.c200.0021 STATIC CPU\n All ffff.ffff.ffff STATIC CPU\n 1 84eb.efd9.9381 DYNAMIC Po1\n 10 000c.2920.ebc4 DYNAMIC Te1/0/15\n 10 001d.a2cf.bf08 DYNAMIC Te1/0/10\n 10 00c0.b7d8.afb0 DYNAMIC Te1/0/13\n 10 00c0.b7d8.afb1 DYNAMIC Te1/0/14\n 10 00e4.21c0.bd5f DYNAMIC Te1/0/21\n 10 0c75.bd90.f746 STATIC Vl10 \n 10 0ec1.b0ce.2706 DYNAMIC Te1/0/22\n 10 1020.ba3d.ccb8 DYNAMIC Te1/0/21\n 10 1498.775b.71e3 DYNAMIC Te1/0/15\n 10 18cc.18dd.1eea DYNAMIC Te1/0/21\n 10 18e8.29bf.0a34 DYNAMIC Te1/0/24\n 10 3cef.8c96.e934 DYNAMIC Te1/0/1\n 10 3cef.8c96.ea86 DYNAMIC Te1/0/11\n 10 4831.7703.5578 DYNAMIC Te1/0/22\n 10 4c11.bff5.0360 DYNAMIC Te1/0/21\n 10 603e.5f4d.f1f6 DYNAMIC Te1/0/21\n 10 7483.c202.c627 DYNAMIC Te1/0/22\n 10 8095.3a9f.06d8 DYNAMIC Te1/0/21\n 10 8ae1.f974.815d DYNAMIC Te1/0/22\n 10 9c8e.cd00.1cdb DYNAMIC Te1/0/8\n 10 9c8e.cd19.407a DYNAMIC Te1/0/5\n 10 9c8e.cd21.b298 DYNAMIC Te1/0/18\n 10 9c8e.cd2b.bb6a DYNAMIC Te1/0/2\n 10 9c8e.cd2b.bb80 DYNAMIC Te1/0/3\n 10 9c8e.cd2b.bb83 DYNAMIC Te1/0/6\n 10 9c8e.cd2b.bb87 DYNAMIC Te1/0/4\n 10 9c8e.cd2d.0c35 DYNAMIC Te1/0/17\n 10 e063.da30.fb4a DYNAMIC Te1/0/21\n 10 e063.da3c.c279 DYNAMIC Te1/0/22\n 440 0c75.bd90.f75d STATIC Vl440 \n 440 84eb.efd9.9381 DYNAMIC Po1\n 500 0c75.bd90.f750 STATIC Vl500 \n1000 0c75.bd90.f75f STATIC Vl1000 \n1000 18e8.29bf.0a35 DYNAMIC Te1/0/9\n1000 84eb.efd9.93df DYNAMIC Po1\nTotal Mac Addresses for this criterion: 57
     """
-    print(cisco_parse_show_mac_address_table_auto('cisco_xe', output, 'cli'))
-    print(cisco_parse_show_mac_address_table_cli(output, device_type='cisco_xe'))
+    print(cisco_parse_show_mac_address_table_auto('cisco_xe', output, 'cli', return_envelope=True))
+    print(cisco_parse_show_mac_address_table_cli(output, device_type='cisco_xe', return_envelope=True))

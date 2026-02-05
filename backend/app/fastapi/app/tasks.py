@@ -449,6 +449,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         show_cdp_neighbors_output_parsed = cisco_parse_show_cdp_neighbors_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_cdp_neighbors_command, None), show_cdp_neighbors_command_flag)
 
                                         # Parse LLDP output
+                                        show_lldp_neighbors_output = batch_commands_output['outputs'].get(show_lldp_neighbors_command, None)
                                         show_lldp_neighbors_output_parsed = cisco_parse_show_lldp_neighbors_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_lldp_neighbors_command, None), show_lldp_neighbors_command_flag)
 
                                         # Parse ip arp output
@@ -456,6 +457,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         show_ip_arp_output_parsed = cisco_parse_show_ip_arp_table_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_ip_arp_table_command, None), show_ip_arp_command_flag)
 
                                         # Parse mac address table output
+                                        show_mac_address_table_output = batch_commands_output['outputs'].get(show_mac_address_table_command, None)
                                         show_mac_address_table_output_parsed = cisco_parse_show_mac_address_table_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_mac_address_table_command, None), show_mac_address_command_flag)
 
                                         # Perform a backup of the device
@@ -556,22 +558,22 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 "show_version_command_output_parsed": show_version_parsed,
                                                 "backup_commands_output": ({**backup_commands_output, "output": "Redacted - Only saved in the file system"} if isinstance(backup_commands_output, dict) and "output" in backup_commands_output else backup_commands_output),
                                                 "batch_commands": batch_commands,
-                                                "batch_commands_output": batch_commands_output,
+                                                #"batch_commands_output": batch_commands_output,
                                                 "backup_task": backup_task,
                                                 "original_backup_file_path": original_backup_file_path,
                                                 "compress_task": compress_task,
                                                 "encryption_warning_message": encryption_warning_message,
                                                 "encryption_task": encryption_task,
                                                 "decrypt_task": ({**decrypt_task, "content": "Redacted - This was a test to see if the file could be decrypted"} if isinstance(decrypt_task, dict) and "content" in decrypt_task else decrypt_task),
-                                                "show_mac_address_table_output": show_mac_address_table_output,
+                                                #"show_mac_address_table_output": show_mac_address_table_output,
                                                 "show_mac_address_table_output_parsed": show_mac_address_table_output_parsed,
-                                                "show_interface_description_output": show_interface_description_output,
+                                                #"show_interface_description_output": show_interface_description_output,
                                                 "show_interface_description_output_parsed": show_interface_description_output_parsed,
-                                                "show_cdp_neighbors_output": show_cdp_neighbors_output,
+                                                #"show_cdp_neighbors_output": show_cdp_neighbors_output,
                                                 "show_cdp_neighbors_output_parsed": show_cdp_neighbors_output_parsed,
-                                                "show_lldp_neighbors_output": show_lldp_neighbors_output,
+                                                #"show_lldp_neighbors_output": show_lldp_neighbors_output,
                                                 "show_lldp_neighbors_output_parsed": show_lldp_neighbors_output_parsed,
-                                                "show_ip_arp_output": show_ip_arp_output,
+                                                #"show_ip_arp_output": show_ip_arp_output,
                                                 "show_ip_arp_output_parsed": show_ip_arp_output_parsed,
                                             },
                                             information_detail={}
