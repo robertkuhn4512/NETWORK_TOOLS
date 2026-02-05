@@ -144,17 +144,36 @@ async def netmiko_fetch_command_output(
     conn_timeout: int = 10,
 ) -> Dict[str, Any]:
     """
-    Fetch output from one or more Netmiko commands.
+    Notes / How to run:
+      - Call with either a single command or a list of commands:
+            res = await netmiko_fetch_command_output(
+                host="10.0.0.1",
+                username="u",
+                password="p",
+                device_type="cisco_nxos",
+                command=["show version", "show cdp neighbors"],
+            )
+      - Success returns BOTH:
+          * res["output"]   -> combined output (single string)
+          * res["outputs"]  -> dict mapping each command -> its output
 
-    command:
-      - "show version"
-      - ["show version", "show inventory", ...]
+    Returns (success):
+      {
+        "ok": True,
+        "host": "...",
+        "device_type": "...",
+        "commands": ["...", "..."],
+        "output": "<combined string>",
+        "outputs": {
+          "show version": "<output>",
+          "show cdp neighbors": "<output>",
+          # if a command repeats: value becomes a list[str]
+        }
+      }
 
-    Returns:
-      - {"ok": True, "host": ..., "device_type": ..., "commands": [...], "output": "..."}
-      - {"error": "<code>", ...}
+    Returns (error):
+      {"error": "<code>", ...}
     """
-
     if not device_type:
         return {"error": "netmiko_device_type_missing", "host": host}
 
@@ -186,22 +205,47 @@ async def netmiko_fetch_command_output(
     if enable_secret:
         base["secret"] = enable_secret
 
-    try:
-        # Use the shared context manager for clean session lifecycle
+    def _run_sync() -> Dict[str, Any]:
+        # outputs: command -> output (or list of outputs if cmd repeated)
+        outputs_map: Dict[str, Any] = {}
+        combined_parts: List[str] = []
+
+        # One session, many commands
         with ssh_session(enable=bool(enable_secret), **base) as conn:
-            combined_output_parts: List[str] = []
             for cmd in commands:
                 out = conn.send_command(cmd)
-                combined_output_parts.append(f"### COMMAND: {cmd}\n{out}".rstrip())
 
-        combined_output = "\n\n".join(combined_output_parts).strip()
+                # Store per-command output (support duplicates)
+                if cmd not in outputs_map:
+                    outputs_map[cmd] = out
+                else:
+                    existing = outputs_map[cmd]
+                    if isinstance(existing, list):
+                        existing.append(out)
+                    else:
+                        outputs_map[cmd] = [existing, out]
+
+                combined_parts.append(f"### COMMAND: {cmd}\n{out}".rstrip())
+
+        combined_output = "\n\n".join(combined_parts).strip()
 
         return {
+            "ok": True,
             "host": host,
             "device_type": device_type,
-            "command": commands,
+            "commands": commands,
             "output": combined_output,
+            "outputs": outputs_map,
         }
+
+    try:
+        # Avoid blocking the event loop with Netmiko I/O
+        try:
+            import anyio  # FastAPI stack typically includes this
+            return await anyio.to_thread.run_sync(_run_sync)
+        except Exception:
+            # fallback if anyio isn't available or thread call fails for some reason
+            return _run_sync()
 
     except NetmikoAuthenticationException as exc:
         return {"error": "netmiko_auth_failed", "host": host, "detail": str(exc)}

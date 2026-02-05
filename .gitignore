@@ -17,8 +17,10 @@ logs/
 
 # Local test files
 test/
+test_payloads/
 test*.py
 **/test/
+**/test_payloads/
 
 var/
 vendor/
