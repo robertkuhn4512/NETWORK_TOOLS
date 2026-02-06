@@ -1,0 +1,134 @@
+{# templates/layout/_sidebar.html.twig #}
+{% set route = app.request.attributes.get('_route')|default('') %}
+{% set is_devices = route starts with 'app_devices' %}
+{% set is_admin = route starts with 'app_admin' %}
+{% set is_jobs = route starts with 'app_jobs' %}
+{% set is_compliance = route starts with 'app_compliance' %}
+
+<div class="offcanvas-lg offcanvas-start app-sidebar border-end bg-body"
+     tabindex="-1" id="sidebar" aria-labelledby="sidebarLabel">
+    <div class="offcanvas-header border-bottom">
+        <h5 class="offcanvas-title" id="sidebarLabel">Navigation</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+    </div>
+
+    <div class="offcanvas-body d-flex flex-column p-3">
+        <div class="mb-3">
+            <div class="small text-secondary text-uppercase fw-semibold mb-2">Workspace</div>
+            <div class="d-flex align-items-center justify-content-between">
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge text-bg-success rounded-pill">Online</span>
+                    <span class="fw-semibold">Prod</span>
+                </div>
+                <button class="btn btn-sm btn-outline-secondary" type="button" aria-label="Refresh">
+                    <i class="bi bi-arrow-repeat"></i>
+                </button>
+            </div>
+        </div>
+
+        <ul class="nav nav-pills flex-column gap-1 mb-3" id="sideNav">
+            <li class="nav-item">
+                <a class="nav-link {{ route == 'app_dashboard' ? 'active' : '' }}"
+                   href="">
+                    <i class="bi bi-speedometer2 me-2"></i>Dashboard
+                </a>
+            </li>
+
+            {# Devices group #}
+            <li class="nav-item">
+                <button
+                    class="nav-link w-100 text-start d-flex align-items-center justify-content-between {{ is_devices ? 'active' : '' }}"
+                    type="button"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#navDevices"
+                    aria-expanded="{{ is_devices ? 'true' : 'false' }}"
+                    aria-controls="navDevices"
+                >
+                    <span><i class="bi bi-hdd-network me-2"></i>Devices</span>
+                    <i class="bi bi-chevron-down small"></i>
+                </button>
+
+                <div class="collapse {{ is_devices ? 'show' : '' }} ps-4 mt-1" id="navDevices" data-bs-parent="#sideNav">
+                    <ul class="nav nav-pills flex-column gap-1">
+                        <li class="nav-item">
+                            <a class="nav-link {{ route == 'app_devices_index' ? 'active' : '' }}"
+                               href="">
+                                <i class="bi bi-list-ul me-2"></i>Inventory
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {{ route == 'app_devices_discovery' ? 'active' : '' }}"
+                               href="">
+                                <i class="bi bi-search me-2"></i>Discovery
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {{ route == 'app_devices_neighbors' ? 'active' : '' }}"
+                               href="">
+                                <i class="bi bi-diagram-3 me-2"></i>Neighbors
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </li>
+
+            <li class="nav-item">
+                <a class="nav-link {{ is_compliance ? 'active' : '' }}" href="">
+                    <i class="bi bi-shield-check me-2"></i>Compliance
+                </a>
+            </li>
+
+            <li class="nav-item">
+                <a class="nav-link {{ is_jobs ? 'active' : '' }}" href="">
+                    <i class="bi bi-clock-history me-2"></i>Jobs
+                </a>
+            </li>
+
+            {# Admin group #}
+            <li class="nav-item mt-2">
+                <div class="small text-secondary text-uppercase fw-semibold mb-2 ps-2">Admin</div>
+
+                <button
+                    class="nav-link w-100 text-start d-flex align-items-center justify-content-between {{ is_admin ? 'active' : '' }}"
+                    type="button"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#navAdmin"
+                    aria-expanded="{{ is_admin ? 'true' : 'false' }}"
+                    aria-controls="navAdmin"
+                >
+                    <span><i class="bi bi-gear me-2"></i>Administration</span>
+                    <i class="bi bi-chevron-down small"></i>
+                </button>
+
+                <div class="collapse {{ is_admin ? 'show' : '' }} ps-4 mt-1" id="navAdmin" data-bs-parent="#sideNav">
+                    <ul class="nav nav-pills flex-column gap-1">
+                        <li class="nav-item">
+                            <a class="nav-link {{ route == 'app_admin_vault' ? 'active' : '' }}" href="">
+                                <i class="bi bi-key me-2"></i>Vault
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {{ route == 'app_admin_keycloak' ? 'active' : '' }}" href="">
+                                <i class="bi bi-person-badge me-2"></i>Keycloak
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {{ route == 'app_admin_audit' ? 'active' : '' }}" href="">
+                                <i class="bi bi-journal-text me-2"></i>Audit logs
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </li>
+        </ul>
+
+        <div class="mt-auto pt-3 border-top">
+            <div class="d-flex align-items-start gap-2">
+                <i class="bi bi-info-circle mt-1 text-secondary"></i>
+                <div class="small text-secondary">
+                    Enterprise UX: keep nav groups shallow, highlight the current route, and persist theme preference.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

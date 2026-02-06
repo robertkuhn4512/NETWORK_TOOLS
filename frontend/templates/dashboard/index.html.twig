@@ -1,0 +1,44 @@
+{# templates/dashboard/index.html.twig #}
+{% extends 'base.html.twig' %}
+
+{% block title %}Dashboard · Network Tools{% endblock %}
+{% block page_title %}Operational Overview{% endblock %}
+{% block page_subtitle %}Last updated: just now{% endblock %}
+
+{% block body %}
+    <div class="row g-3">
+        <div class="col-12 col-md-6 col-xl-3">
+            <div class="card content-card">
+                <div class="card-body">
+                    <div class="text-secondary small">Devices managed</div>
+                    <div class="h3 fw-bold mb-0">1,248</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-md-6 col-xl-9">
+            <div class="card content-card">
+                <div class="card-header bg-body fw-semibold">Recent activity</div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table align-middle mb-0">
+                            <thead>
+                            <tr>
+                                <th>Time</th><th>Event</th><th>Target</th><th class="text-end">Status</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            <tr>
+                                <td class="text-secondary">09:12</td>
+                                <td>Inventory sync completed</td>
+                                <td class="text-secondary">core-switch-01</td>
+                                <td class="text-end"><span class="badge text-bg-success">Success</span></td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
