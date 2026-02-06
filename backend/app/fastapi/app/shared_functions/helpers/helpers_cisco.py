@@ -440,7 +440,13 @@ def cisco_parse_show_interface_description_cli(
 
         lnl = ln.strip().lower()
 
-        # header-ish detection
+        # header-ish detection        # IOS-XR (and occasionally other platforms) may emit a leading timestamp line, e.g.
+        #   Fri Feb  6 02:35:18.310 UTC
+        # which is not a table row.
+        if re.match(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\w+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\w+", ln.strip()):
+            continue
+
+
         if ("interface" in lnl and "description" in lnl) or lnl.startswith(("interface", "port", "----")):
             started = True
             continue
@@ -498,6 +504,7 @@ def cisco_parse_show_interface_description_cli(
         "error": ({"error": parse_error} if parse_error else None),
     }
     return out if return_envelope else (rows if rows else ({"error": parse_error} if parse_error else {}))
+
 
 
 def cisco_parse_show_interface_description_auto(
@@ -1104,21 +1111,21 @@ def cisco_allowed_commands(device_type) -> Dict[str, str]:
             "allowed_backup_commands": [
                 "show version",
                 "show interface description",
-                "show interfaces status",
+                "show interfaces brief",
                 "show running-config",
                 "show mac address-table count",
             ]
         },
         "cisco_nxos": {
-            "show_interface_description": "show interface description | json",
+            "show_interface_description": "show interface description | json-pretty",
             "show_interface_description_output_type": "json",  # json | cli - Change the parsing type depending on this flag
-            "show_cdp_neighbors": "show cdp neighbors | json",
+            "show_cdp_neighbors": "show cdp neighbors | json-pretty",
             "show_cdp_neighbors_output_type": "json",  # json | cli - Change the parsing type depending on this flag
-            "show_lldp_neighbors": "show lldp neighbors | json",
+            "show_lldp_neighbors": "show lldp neighbors | json-pretty",
             "show_lldp_neighbors_output_type": "json",  # json | cli - Change the parsing type depending on this flag
-            "show_ip_arp_table": "show ip arp | json",
+            "show_ip_arp_table": "show ip arp | json-pretty",
             "show_ip_arp_table_output_type": "json",  # json | cli - Change the parsing type depending on this flag
-            "show_mac_address_table": "show mac address-table | json",
+            "show_mac_address_table": "show mac address-table | json-pretty",
             "show_mac_address_table_output_type": "json",
             "show_version": "show version | json-pretty",
             "show_version_output_type": "json",  # json | cli - Change the parsing type depending on this flag
@@ -1270,15 +1277,314 @@ def cisco_parse_show_version(output: str) -> Dict[str, str]:
 
 def cisco_parse_show_version_xr(output: str, *, return_envelope: bool = False) -> Dict[str, Any]:
     """
-    Stub/placeholder for IOS-XR show version parsing.
-    Keep this separate because XR output varies significantly by platform.
+    Parse IOS XR "show version" output (best-effort, supports XRd and hardware).
+
+    Extracts (when present):
+      - software_version
+      - chassis_model
+      - system_serial_number
+      - uptime
+      - build_label
+
+    If return_envelope=True, wraps in {"data": ..., "meta": ..., "error": None}.
     """
     raw = "" if output is None else str(output)
-    err = "not_implemented: provide IOS-XR 'show version' sample to build exact parser"
-    if return_envelope:
-        return {"data": {}, "meta": {"device_type": "cisco_xr", "detected_style": "xr"}, "error": err}
-    return {"error": err}
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
 
+    data: Dict[str, Any] = {}
+
+    # --- software version ---
+    for ln in lines:
+        m = re.search(r"^Cisco\s+IOS\s+XR\s+Software,\s*Version\s+(?P<v>.+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["software_version"] = m.group("v").strip()
+            break
+
+    if not data.get("software_version"):
+        for ln in lines:
+            # Generic fallback: "... Version 25.3.1 LNT"
+            m = re.search(r"\bVersion\s+(?P<v>\d+(?:\.[0-9A-Za-z]+)+(?:\s+\S+)?)\b", ln, flags=re.IGNORECASE)
+            if m:
+                data["software_version"] = m.group("v").strip()
+                break
+
+    # --- build label ---
+    for ln in lines:
+        m = re.search(r"^Label\s*:\s*(?P<label>.+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["build_label"] = m.group("label").strip()
+            break
+
+    # --- chassis model ---
+    # Prefer the "processor" line (commonly present on XRd and hardware)
+    for ln in lines:
+        m = re.search(r"^cisco\s+(?P<model>.+?)\s+processor\b", ln, flags=re.IGNORECASE)
+        if m:
+            data["chassis_model"] = m.group("model").strip()
+            break
+
+    # Other common XR variants
+    if not data.get("chassis_model"):
+        for ln in lines:
+            m = re.search(r"^Platform\s*:\s*(?P<model>.+)$", ln, flags=re.IGNORECASE)
+            if m:
+                data["chassis_model"] = m.group("model").strip()
+                break
+
+    # XRd often includes a friendly platform line e.g. "cisco XRd Control Plane"
+    if not data.get("chassis_model"):
+        for ln in lines:
+            m = re.search(r"^cisco\s+(?P<model>[A-Za-z0-9][A-Za-z0-9\-\s/]+)$", ln, flags=re.IGNORECASE)
+            if m:
+                cand = m.group("model").strip()
+                if cand and all(x not in cand.lower() for x in ("software", "copyright", "build information")):
+                    data["chassis_model"] = cand
+                    break
+
+    # --- system serial number ---
+    for ln in lines:
+        m = re.search(r"^Processor\s+board\s+ID\s+(?P<sn>[A-Za-z0-9\-]+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["system_serial_number"] = m.group("sn").strip()
+            break
+
+    if not data.get("system_serial_number"):
+        for ln in lines:
+            m = re.search(r"^System\s+Serial\s+Number\s*:\s*(?P<sn>[A-Za-z0-9\-]+)$", ln, flags=re.IGNORECASE)
+            if m:
+                data["system_serial_number"] = m.group("sn").strip()
+                break
+
+    # --- uptime ---
+    for ln in lines:
+        m = re.search(r"\buptime\s+is\s+(?P<uptime>.+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["uptime"] = m.group("uptime").strip()
+            break
+
+    if return_envelope:
+        return {"data": data, "meta": {"device_type": "cisco_xr", "detected_style": "iosxr_cli"}, "error": None}
+
+    return data
+
+
+def cisco_parse_show_version_auto(
+    output: Any,
+    *,
+    device_type: Optional[str] = None,
+    output_type: str = "auto",
+) -> Dict[str, Any]:
+    """
+    Parse "show version" across supported Cisco OS families.
+
+    - If output_type is "json" (or "auto" and the payload looks like JSON),
+      tries the NX-OS JSON parser pipeline (cisco_parse_device_json_from_string).
+      If JSON parsing fails, it falls back to CLI parsing.
+    - If output_type is "cli" (or JSON not detected), uses a device-specific
+      CLI parser:
+        * cisco_xr   -> cisco_parse_show_version_xr
+        * cisco_nxos -> cisco_parse_show_version_nxos_cli
+        * else       -> cisco_parse_show_version (IOS/IOS-XE)
+
+    Returns the parser's native dict. For NX-OS JSON, that is the normalized
+    structure returned by _parse_cisco_nxos_show_version (raw + normalized).
+    """
+    dt = (device_type or "").strip().lower().replace("-", "_")
+    ot = (output_type or "auto").strip().lower()
+    raw = "" if output is None else (output if isinstance(output, str) else str(output))
+    raw_strip = raw.lstrip()
+
+    # --- JSON path (best-effort) ---
+    if ot in ("json", "auto") and raw_strip.startswith(("{", "[")):
+        # NX-OS json-pretty is the common case; the parser auto-detects show-version keys.
+        parsed = cisco_parse_device_json_from_string(dt or "cisco_nxos", raw)
+        if isinstance(parsed, dict) and not parsed.get("error"):
+            return parsed
+        # If the caller explicitly asked for json and we couldn't parse, fall through to CLI.
+
+    # --- CLI path ---
+    if dt in ("cisco_xr", "iosxr", "cisco_iosxr"):
+        return cisco_parse_show_version_xr(raw, return_envelope=False)
+
+    if dt in ("cisco_nxos", "nxos", "cisco_nexus"):
+        return cisco_parse_show_version_nxos_cli(raw, return_envelope=False)
+
+    # Default: IOS / IOS-XE style
+    return cisco_parse_show_version(raw)
+
+
+
+def cisco_parse_show_version_nxos_cli(output: str, *, return_envelope: bool = False) -> Dict[str, Any]:
+    """
+    Parse NX-OS "show version" CLI (best-effort).
+
+    Many NX-OS devices support JSON via "| json-pretty", but some do not.
+    This function is used as a fallback when JSON parsing fails or when the
+    device is configured to return CLI output.
+
+    Extracts (when present):
+      - software_version (NX-OS)
+      - chassis_model
+      - system_serial_number
+      - uptime
+    """
+    raw = "" if output is None else str(output)
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+
+    data: Dict[str, Any] = {}
+
+    # NXOS: version 10.3(8)
+    for ln in lines:
+        m = re.search(r"\bNXOS\s*:\s*version\s+(?P<v>\S+)", ln, flags=re.IGNORECASE)
+        if m:
+            data["software_version"] = m.group("v").strip()
+            break
+
+    # system: version 10.3(8)
+    if not data.get("software_version"):
+        for ln in lines:
+            m = re.search(r"\bsystem\s*:\s*version\s+(?P<v>\S+)", ln, flags=re.IGNORECASE)
+            if m:
+                data["software_version"] = m.group("v").strip()
+                break
+
+    # fallback generic "Version X"
+    if not data.get("software_version"):
+        for ln in lines:
+            m = re.search(r"\bVersion\s+(?P<v>\S+)", ln, flags=re.IGNORECASE)
+            if m:
+                data["software_version"] = m.group("v").strip()
+                break
+
+    # chassis model line: "cisco Nexus9000 C9300v Chassis"
+    for ln in lines:
+        m = re.search(r"^cisco\s+(?P<model>.+?)\s+Chassis\b", ln, flags=re.IGNORECASE)
+        if m:
+            data["chassis_model"] = f"cisco {m.group('model').strip()} Chassis"
+            break
+
+    # serial: "Processor Board ID FOC..."
+    for ln in lines:
+        m = re.search(r"^Processor\s+Board\s+ID\s+(?P<sn>\S+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["system_serial_number"] = m.group("sn").strip()
+            break
+
+    # uptime: "Kernel uptime is 12 day(s), 3 hour(s), 4 minute(s), 5 second(s)"
+    for ln in lines:
+        m = re.search(r"Kernel\s+uptime\s+is\s+(?P<uptime>.+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["uptime"] = m.group("uptime").strip()
+            break
+
+    if return_envelope:
+        return {"data": data, "meta": {"device_type": "cisco_nxos", "detected_style": "nxos_cli"}, "error": None}
+
+    return data
+
+
+def cisco_extract_show_version_fields(
+    *,
+    device_type: Optional[str],
+    show_version_parsed: Any,
+    raw_output: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Extract canonical fields for DB/device inventory from various show-version schemas.
+
+    Returns a flat dict (keys may be absent if not found):
+      - software_version
+      - chassis_model
+      - system_serial_number
+      - base_ethernet_mac_address  (when available)
+
+    Notes:
+    - NX-OS JSON parsing returns {"normalized": {...}, "raw": {...}}.
+    - IOS/IOS-XE parsing returns flat keys like "software_version", "model_number".
+    - IOS-XR parsing returns flat keys like "software_version", "chassis_model".
+    """
+    dt = (device_type or "").strip().lower().replace("-", "_")
+    parsed = show_version_parsed if isinstance(show_version_parsed, dict) else {}
+
+    out: Dict[str, Any] = {}
+
+    # --- NX-OS normalized schema ---
+    norm = parsed.get("normalized") if isinstance(parsed.get("normalized"), dict) else None
+    raw = parsed.get("raw") if isinstance(parsed.get("raw"), dict) else None
+
+    if norm:
+        sv = (
+            (((norm.get("software") or {}).get("versions") or {}).get("nxos"))
+            or (((norm.get("software") or {}).get("versions") or {}).get("kickstart"))
+        )
+        if sv:
+            out["software_version"] = sv
+
+        chassis = norm.get("chassis")
+        if chassis:
+            out["chassis_model"] = chassis
+
+        serial = norm.get("serial")
+        if serial:
+            out["system_serial_number"] = serial
+
+        # NX-OS parser may not always include MAC; keep hook if added later.
+        mac = norm.get("base_ethernet_mac_address") or norm.get("mac_address")
+        if mac:
+            out["base_ethernet_mac_address"] = mac
+
+    # --- raw fallback keys (NX-OS) ---
+    if raw and "software_version" not in out:
+        if raw.get("nxos_ver_str"):
+            out["software_version"] = _as_str(raw.get("nxos_ver_str")) or out.get("software_version")
+        if raw.get("kickstart_ver_str") and "software_version" not in out:
+            out["software_version"] = _as_str(raw.get("kickstart_ver_str")) or out.get("software_version")
+
+    if raw and "chassis_model" not in out:
+        if raw.get("chassis_id"):
+            out["chassis_model"] = _as_str(raw.get("chassis_id"))
+
+    if raw and "system_serial_number" not in out:
+        if raw.get("proc_board_id"):
+            out["system_serial_number"] = _as_str(raw.get("proc_board_id"))
+
+    # --- flat schema (IOS/IOS-XE/IOS-XR) ---
+    if not out.get("software_version"):
+        sv = parsed.get("software_version") or parsed.get("version")
+        if sv:
+            out["software_version"] = _as_str(sv)
+
+    if not out.get("chassis_model"):
+        cm = parsed.get("chassis_model") or parsed.get("model_number") or parsed.get("platform")
+        if cm:
+            out["chassis_model"] = _as_str(cm)
+
+    if not out.get("system_serial_number"):
+        sn = parsed.get("system_serial_number")
+        if sn:
+            out["system_serial_number"] = _as_str(sn)
+
+    if not out.get("base_ethernet_mac_address"):
+        mac = parsed.get("base_ethernet_mac_address") or parsed.get("system_mac") or parsed.get("base_mac_address")
+        if mac:
+            out["base_ethernet_mac_address"] = _as_str(mac)
+
+    # --- final fallback: if XR/NX-OS chassis missing but we have raw CLI ---
+    if raw_output and dt in ("cisco_xr", "iosxr", "cisco_iosxr") and not out.get("chassis_model"):
+        extra = cisco_parse_show_version_xr(raw_output, return_envelope=False)
+        if isinstance(extra, dict):
+            out["chassis_model"] = out.get("chassis_model") or extra.get("chassis_model")
+            out["system_serial_number"] = out.get("system_serial_number") or extra.get("system_serial_number")
+
+    if raw_output and dt in ("cisco_nxos", "nxos", "cisco_nexus") and not out.get("software_version"):
+        extra = cisco_parse_show_version_nxos_cli(raw_output, return_envelope=False)
+        if isinstance(extra, dict):
+            out["software_version"] = out.get("software_version") or extra.get("software_version")
+            out["chassis_model"] = out.get("chassis_model") or extra.get("chassis_model")
+            out["system_serial_number"] = out.get("system_serial_number") or extra.get("system_serial_number")
+
+    # Clean empty strings
+    return {k: v for k, v in out.items() if v not in (None, "", "None")}
 
 def cisco_parse_show_interface_capabilities(output: str) -> Dict[str, Dict]:
     """

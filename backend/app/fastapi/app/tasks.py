@@ -53,6 +53,8 @@ from app.shared_functions.helpers.helpers_netmiko import (
 from app.shared_functions.helpers.helpers_cisco import (
     cisco_allowed_commands,
     cisco_parse_show_version,
+    cisco_parse_show_version_auto,
+    cisco_extract_show_version_fields,
     cisco_hostname,
     cisco_parse_show_ip_arp_table,
     cisco_parse_show_ip_arp_table_xr,
@@ -435,11 +437,17 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         show_version_command_output = batch_commands_output['outputs'].get(show_version_command, None)
                                         show_version_command_output_type = cisco_allowed_commands(ad.get("device_type")).get('show_version_output_type', None)
 
-                                        if show_version_command_output_type is not None:
-                                            if show_version_command_output_type == 'json':
-                                                show_version_parsed = cisco_parse_device_json_from_string(ad.get("device_type"), show_version_command_output)
-                                            elif show_version_command_output_type == 'cli':
-                                                show_version_parsed = cisco_parse_show_version(show_version_command_output)
+                                        show_version_parsed = cisco_parse_show_version_auto(
+                                            show_version_command_output,
+                                            device_type=ad.get("device_type"),
+                                            output_type=show_version_command_output_type or "auto",
+                                        )
+
+                                        show_version_fields = cisco_extract_show_version_fields(
+                                            device_type=ad.get("device_type"),
+                                            show_version_parsed=show_version_parsed,
+                                            raw_output=show_version_command_output if isinstance(show_version_command_output, str) else None,
+                                        )
 
                                         show_interface_description_output = batch_commands_output['outputs'].get(show_interface_description_command, None)
                                         show_interface_description_output_parsed = cisco_parse_show_interface_description_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_interface_description_command, None))
@@ -453,7 +461,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         show_lldp_neighbors_output_parsed = cisco_parse_show_lldp_neighbors_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_lldp_neighbors_command, None), show_lldp_neighbors_command_flag)
 
                                         # Parse ip arp output
-                                        show_ip_arp_output = batch_commands_output['outputs'].get(show_interface_description_command, None)
+                                        show_ip_arp_output = batch_commands_output['outputs'].get(show_ip_arp_table_command, None)
                                         show_ip_arp_output_parsed = cisco_parse_show_ip_arp_table_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_ip_arp_table_command, None), show_ip_arp_command_flag)
 
                                         # Parse mac address table output
@@ -483,7 +491,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             backup_task = save_device_backup_text(
                                                 target_ip=target_ip,
                                                 raw_text=backup_commands_output.get('output', 'No output found'),
-                                                subfolder=f"{ad.get("device_type")}/{day_folder}/{target_ip}",
+                                                subfolder=f"{ad.get('device_type')}/{day_folder}/{target_ip}",
                                             )
 
                                             if backup_task.get("error"):
@@ -512,7 +520,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                         input_gz_path=compress_task.get('output_path', None),
                                                     )
 
-                                                    device_backup_location = encryption_task.get('output_path', 'Error fetching file location')
+                                                    device_backup_location = (encryption_task.get('output_path') if isinstance(encryption_task, dict) else None) or compress_task.get('output_path', None) or 'Error fetching file location'
 
                                                     decrypt_task = read_backup_enc_gz_text(
                                                         enc_path=encryption_task.get('output_path', None),
@@ -526,7 +534,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                     encryption_warning_message = "File encryption variable missing or set to false. No encryption task is being run"
                                                     encryption_task = False
                                                     decrypt_task = False
-                                                    device_backup_location = encryption_task.get('output_path', 'Error fetching file location')
+                                                    device_backup_location = (encryption_task.get('output_path') if isinstance(encryption_task, dict) else None) or compress_task.get('output_path', None) or 'Error fetching file location'
 
                                                 # Save the location of the backup file if present
                                                 await insert_device_backup_location(
@@ -545,8 +553,8 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             hub_id=None, # Need to update eventually - per user case - requires custom checks
                                             site_abbreviation=None, # Need to update eventually - per user case - requires custom checks
                                             os_name=os_name,
-                                            version=show_version_parsed.get('software_version', None),
-                                            chassis_model=show_version_parsed.get('model_number', None),
+                                            version=show_version_fields.get('software_version', None),
+                                            chassis_model=show_version_fields.get('chassis_model', None),
                                             information={
                                                 "event": "device_discovery.start_device_discovery.finished_ssh.success",
                                                 "result": {**scrub_secrets(result), "device_profiles": {}},
