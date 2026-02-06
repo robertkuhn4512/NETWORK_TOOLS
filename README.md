@@ -304,23 +304,31 @@ ciscos apix reporting, or file encryption for device backups. See the file backe
 
 *(Step 2 must create the AppRole auth method or the following will fail will fail.)*
 
+>NOTE: Run the below steps (4-7) to create new secret_ids one at a time for an individual service, or run the command below to create / recreate them all.
+> The current plan is to use this script to rotate all the secret ids on a cron, Or switch to a trust build between vault and the vault agent containers.
+
+```bash
+bash ./backend/build_scripts/approle_setup_all.sh bootstrap --token-file $HOME/NETWORK_TOOLS/backend/app/security/configuration_files/vault/bootstrap/root_token
+```
+
 4. 
 ```bash
 chmod +x ./backend/build_scripts/keycloak_approle_setup.sh
 ROLE_NAME=keycloak_agent ./backend/build_scripts/keycloak_approle_setup.sh
 ```
 
-
 5. 
 ```bash
 chmod +x ./backend/build_scripts/postgress_approle_setup.sh
 ROLE_NAME=postgres_pgadmin_agent ./backend/build_scripts/postgress_approle_setup.sh
 ```
+
 6. 
 ```bash
 chmod +x ./backend/build_scripts/fastapi_approle_setup.sh
 ROLE_NAME=fastapi_agent ./backend/build_scripts/fastapi_approle_setup.sh
 ```
+
 7. 
 ```bash
 chmod +x ./backend/build_scripts/frontend_approle_setup.sh
@@ -871,12 +879,22 @@ docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recrea
 ```
 
 ### 2.9.1.5.1 (Development mode - Enable symfony debugging tools / packages for developing locally)
+
+#### Remove the containers completely then rebuild
+```bash
+docker stop frontend_php_fpm frontend_nginx
+```
+
+```bash
+docker rm frontend_php_fpm frontend_nginx
+```
+
 ```bash
 docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate vault_agent_frontend
 ```
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.dev up -d --no-deps --build --force-recreate frontend_php_fpm
+docker compose -f docker-compose.prod.yml --env-file .env.dev up -d --no-deps --build --force-recreate frontend_php_fpm frontend_nginx
 ```
 
 

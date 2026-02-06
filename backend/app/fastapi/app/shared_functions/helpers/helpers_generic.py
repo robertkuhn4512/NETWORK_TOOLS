@@ -253,6 +253,82 @@ def _nxos_duration_to_seconds(value: Any) -> Optional[int]:
 
     return None
 
+def _escape_controls_inside_json_strings(s: str) -> str:
+    """
+    Notes / How to run:
+    - This is a pre-sanitizer for device JSON that sometimes gets corrupted by terminal line-wrapping /
+      copy-paste (raw newlines inside quoted strings, or a backslash followed by a newline).
+    - Call this before json.loads.
+
+    What it fixes:
+    - Raw control chars inside JSON strings: \n \r \t etc -> escaped forms
+    - Backslash + raw newline inside a JSON string (invalid JSON) -> coerces into a valid \\n escape
+    """
+    in_str = False
+    esc = False
+    out: list[str] = []
+
+    for ch in s:
+        if not in_str:
+            out.append(ch)
+            if ch == '"':
+                in_str = True
+            continue
+
+        if esc:
+            # If the input was line-wrapped, you can end up with: \"as is,\ <newline> "
+            # JSON does NOT allow backslash-newline escapes. Convert that newline into a legal \n.
+            if ch == '\n':
+                # replace the previously appended "\" with "\n"
+                if out and out[-1] == '\\':
+                    out[-1] = '\\n'
+                else:
+                    out.append('\\n')
+                esc = False
+                continue
+            if ch == '\r':
+                if out and out[-1] == '\\':
+                    out[-1] = '\\r'
+                else:
+                    out.append('\\r')
+                esc = False
+                continue
+            if ch == '\t':
+                if out and out[-1] == '\\':
+                    out[-1] = '\\t'
+                else:
+                    out.append('\\t')
+                esc = False
+                continue
+
+            out.append(ch)
+            esc = False
+            continue
+
+        if ch == '\\':
+            out.append(ch)
+            esc = True
+            continue
+
+        if ch == '"':
+            out.append(ch)
+            in_str = False
+            continue
+
+        o = ord(ch)
+        if o < 0x20:  # illegal control char in JSON string
+            if ch == '\n':
+                out.append('\\n')
+            elif ch == '\r':
+                out.append('\\r')
+            elif ch == '\t':
+                out.append('\\t')
+            else:
+                out.append(f'\\u{o:04x}')
+        else:
+            out.append(ch)
+
+    return ''.join(out)
 
 def _json_load_dict_best_effort(output: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Best-effort JSON object loader for command outputs.

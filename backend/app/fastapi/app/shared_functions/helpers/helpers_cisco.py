@@ -14,7 +14,8 @@ if __name__=='__main__':
         _parse_dt_best_effort,
         _ensure_list,
         _nxos_duration_to_seconds,
-        _json_load_dict_best_effort
+        _json_load_dict_best_effort,
+        _escape_controls_inside_json_strings
     )
 else:
     from app.shared_functions.helpers.helpers_generic import (
@@ -24,7 +25,8 @@ else:
         _parse_dt_best_effort,
         _ensure_list,
         _nxos_duration_to_seconds,
-        _json_load_dict_best_effort
+        _json_load_dict_best_effort,
+        _escape_controls_inside_json_strings
     )
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Tuple, Sequence, Union
@@ -49,6 +51,1282 @@ _MAC_COLON_RX = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _MAC_DOT_RX = re.compile(r"^(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}$")
 _MAC_PLAIN_RX = re.compile(r"^[0-9A-Fa-f]{12}$")
 
+# Main function in regards to allowed commands that can be sent to devices for processing
+
+# This is a profile dict that's used to tell the program what it can run, how to run it etc.
+# Based on the netmiko device types when a device is auto discovered.
+def cisco_allowed_commands(device_type) -> Dict[str, str]:
+    """
+
+        :param device_type (cisco_ios | cisco_xe | cisco_xr) etc:
+        :return: allowed commands that can be sent to a device for discovery / backup / etc purposes
+
+        Device types are based off what netmiko uses to describe a device using the autodiscover process
+        The list can be found here
+        https://ktbyers.github.io/netmiko/PLATFORMS.html
+
+
+        To add more device profiles, follow the following layout
+
+        "device_type": {
+            "the_command_name_you_want_to_use": "The correct associated command to run for this command - Examples below",
+            "show_interface_description_output_type": "cli",  # json | cli | xml (WIP) - Change the parsing type depending on this flag
+            "show_cdp_neighbors": "show cdp neighbors", -> Currently commands like these have dedicated functions to process them. If you add a new one
+            "show_cdp_neighbors_output_type": "cli",       you will need to make sure there's a function built to process them. Feel free if you want, and submit a PR
+            "show_lldp_neighbors": "show lldp neighbors",  if you think it's useful and would like to add it to the main repo.
+            "show_lldp_neighbors_output_type": "cli",
+            "show_ip_arp_table": "show ip arp",
+            "show_ip_arp_table_output_type": "cli",
+            "show_mac_address_table": "show mac address-table",
+            "show_mac_address_table_output_type": "cli",
+            "show_version": "show version",
+            "show_version_output_type": "cli",
+            "os_name_by_device": "ios",
+            "show_mac_address_table": "show mac address-table",
+            "allowed_backup_commands": [ -> Allowed backup commands should be a list of commands you want to run on a backup job.
+                "show version",
+                "show interface description",
+                "show interfaces status",
+                "show running-config",
+                "show mac address-table count",
+            ]
+        }
+
+        """
+
+    _SHOW_CMD_BY_DEVICE: Mapping[str, str] = {
+        "cisco_ios": {
+            "show_interface_description": "show interface description",
+            "show_interface_description_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_cdp_neighbors": "show cdp neighbors",
+            "show_cdp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_lldp_neighbors": "show lldp neighbors",
+            "show_lldp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_ip_arp_table": "show ip arp",
+            "show_ip_arp_table_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_mac_address_table": "show mac address-table",
+            "show_mac_address_table_output_type": "cli",
+            "show_mac_address_table_count": "show mac address-table count",
+            "show_mac_address_table_count_output_type": "cli",
+            "show_version": "show version",
+            "show_version_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "os_name_by_device": "ios",
+            "show_mac_address_table": "show mac address-table",
+            "allowed_backup_commands": [
+                "show version",
+                "show interface description",
+                "show interfaces status",
+                "show running-config",
+                "show mac address-table count",
+            ]
+        },
+        "cisco_xe": {
+            "show_interface_description": "show interface description",
+            "show_interface_description_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_cdp_neighbors": "show cdp neighbors",
+            "show_cdp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_lldp_neighbors": "show lldp neighbors",
+            "show_lldp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_ip_arp_table": "show ip arp",
+            "show_ip_arp_table_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_mac_address_table": "show mac address-table",
+            "show_mac_address_table_output_type": "cli",
+            "show_mac_address_table_count": "show mac address-table count",
+            "show_mac_address_table_count_output_type": "cli",
+            "show_version": "show version",
+            "show_version_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "os_name_by_device": "iosxe",
+            "allowed_backup_commands": [
+                "show version",
+                "show interface description",
+                "show interfaces status",
+                "show running-config",
+                "show mac address-table count",
+            ]
+        },
+        "cisco_xr": {
+            "show_interface_description": "show interface description",
+            "show_interface_description_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_cdp_neighbors": "show cdp neighbors",
+            "show_cdp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_lldp_neighbors": "show lldp neighbors",
+            "show_lldp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_ip_arp_table": "show arp",
+            "show_ip_arp_table_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_mac_address_table": None,
+            "show_mac_address_table_output_type": None,
+            "show_mac_address_table_count": None,
+            "show_mac_address_table_count_output_type": None,
+            "show_version": "show version",
+            "show_version_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "os_name_by_device": "iosxr",
+            "allowed_backup_commands": [
+                "show version",
+                "show interface description",
+                "show interfaces brief",
+                "show running-config",
+                "show mac address-table count",
+            ]
+        },
+        "cisco_nxos": {
+            "show_interface_description": "show interface description | json-pretty",
+            "show_interface_description_output_type": "json",  # json | cli - Change the parsing type depending on this flag
+            "show_cdp_neighbors": "show cdp neighbors | json-pretty",
+            "show_cdp_neighbors_output_type": "json",  # json | cli - Change the parsing type depending on this flag
+            "show_lldp_neighbors": "show lldp neighbors | json-pretty",
+            "show_lldp_neighbors_output_type": "json",  # json | cli - Change the parsing type depending on this flag
+            "show_ip_arp_table": "show ip arp | json-pretty",
+            "show_ip_arp_table_output_type": "json",  # json | cli - Change the parsing type depending on this flag
+            "show_mac_address_table": "show mac address-table | json-pretty",
+            "show_mac_address_table_output_type": "json",
+            "show_mac_address_table_count": "show mac address-table count | json-pretty",
+            "show_mac_address_table_count_output_type": "json",
+            "show_version": "show version | json-pretty",
+            "show_version_output_type": "json",  # json | cli - Change the parsing type depending on this flag
+            "os_name_by_device": "nxos",
+            "allowed_backup_commands": [
+                "show version",
+                "show inventory",
+                "show interface description",
+                "show interface status",
+                "show running-config",
+                # "show startup-config",
+                "show mac address-table count",
+            ]
+        },
+        "cisco_asa": {
+            "show_interface_description": "show interface description",
+            "show_interface_description_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_cdp_neighbors": "show cdp neighbors",
+            "show_cdp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_lldp_neighbors": "show lldp neighbors",
+            "show_lldp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_ip_arp_table": "show arp",
+            "show_ip_arp_table_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "show_mac_address_table": None,  # TODO Need to research this. I believe it's show arp for routed mode
+            "show_mac_address_table_output_type": None,
+            "show_mac_address_table_count": None,
+            "show_mac_address_table_count_output_type": None,
+            "show_version": "show version",
+            "show_version_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
+            "os_name_by_device": "asa",
+            "allowed_backup_commands": [
+                "show version",
+                "show inventory",
+                "show interface description",
+                "show interfaces status",
+                "show running-config"
+            ]
+        },
+    }
+
+    return _SHOW_CMD_BY_DEVICE.get(device_type)
+
+
+# Basic Helper Functions for cisco use only
+# Any other basic helpers should be located in the helpers_generic.py file
+
+# TODO - Transfer over functionality that uses this to generate port profile maps for cisco switches
+# To be used in device templating / device conversions etc.
+
+def cisco_parse_show_capabilities(output: str) -> Dict[str, Dict]:
+    """
+    Parse the output of `show capabilities` and return a dict keyed by
+    interface long name, each containing:
+      - long_name: full interface name
+      - short_name: abbreviated interface name
+      - model: device model
+      - type: list of supported media types
+      - speed: list of supported speeds
+      - duplex: list of supported duplex modes
+      - trunk_encap_type: trunk encapsulation type
+      - trunk_mode: list of allowed trunk modes
+    """
+    # mapping of full interface prefixes to their short forms
+    prefix_map = {
+        'TenGigabitEthernet': 'Te',
+        'GigabitEthernet':    'Gi',
+        'FastEthernet':       'Fa',
+        'Ethernet':           'Et',
+        'Port-Channel':       'Po',
+        'Vlan':               'Vl',
+    }
+
+    def short_name(long_name: str) -> str:
+        for full, abbr in sorted(prefix_map.items(), key=lambda kv: -len(kv[0])):
+            if long_name.startswith(full):
+                return abbr + long_name[len(full):]
+        return long_name
+
+    # build a regex that matches any of the prefixes + port numbers (e.g. 1, 1/0, 1/0/1)
+    prefixes = sorted(prefix_map.keys(), key=lambda x: -len(x))
+    prefix_pattern = r'(?:' + '|'.join(re.escape(p) for p in prefixes) + r')'
+    if_hdr = re.compile(
+        rf'^\s*'                    # optional leading space
+        rf'(?P<intf>{prefix_pattern}\d+(?:/\d+){0,2})\s*$'
+    )
+
+    # field patterns
+    patterns = {
+        'model': re.compile(r'^\s*Model:\s*(\S+)'),
+        'type': re.compile(r'^\s*Type:\s*(.+)'),
+        'speed': re.compile(r'^\s*Speed:\s*(.+)'),
+        'duplex': re.compile(r'^\s*Duplex:\s*(.+)'),
+        'trunk_encap_type': re.compile(r'^\s*Trunk encap\. type:\s*(.+)'),
+        'trunk_mode': re.compile(r'^\s*Trunk mode:\s*(.+)'),
+    }
+
+    interfaces: Dict[str, Dict] = {}
+    current = None
+
+    for line in output.splitlines():
+        m_hdr = if_hdr.match(line)
+        if m_hdr:
+            current = m_hdr.group('intf')
+            interfaces[current] = {
+                'long_name': current,
+                'short_name': short_name(current),
+                'model': None,
+                'type': [],
+                'speed': [],
+                'duplex': [],
+                'trunk_encap_type': None,
+                'trunk_mode': [],
+            }
+            continue
+
+        if not current:
+            continue
+
+        for key, pat in patterns.items():
+            m = pat.match(line)
+            if not m:
+                continue
+            val = m.group(1).strip()
+            if key in ('type', 'speed', 'duplex', 'trunk_mode'):
+                delim = ',' if ',' in val else '/'
+                items = [v.strip() for v in val.split(delim) if v.strip()]
+                interfaces[current][key] = items
+            else:
+                interfaces[current][key] = val
+            break
+
+    return interfaces
+
+def cisco_parse_show_ip_arp_table(
+    output: str,
+    device_type: Optional[str] = None,
+    *,
+    include_incomplete: bool = True,
+    return_envelope: bool = False,
+) -> Dict:
+    """Parse Cisco ARP table output (IOS/IOS-XE/NX-OS best-effort).
+
+    Supported formats (best-effort):
+      - IOS / IOS-XE: `show ip arp`
+        Protocol  Address  Age (min)  Hardware Addr  Type  Interface
+        Internet  10.0.0.1        3    18e8.29bf.0a34 ARPA  Vlan10
+
+      - NX-OS: `show ip arp`
+        Address  Age  MAC Address  Interface  Flags
+        10.23.6.21  00:06:29  08f3.fbd6.3c3f  Vlan123
+
+    If device_type indicates XR, returns an error and you should call
+    `cisco_parse_show_ip_arp_table_xr(...)`.
+
+    Returns:
+      - default: dict[int, dict]
+      - if return_envelope=True: {'rows': <dict[int,dict]>, 'meta': {...}, 'error': <str|None>}
+    """
+    raw = '' if output is None else str(output)
+
+    dt = (device_type or '').strip().lower()
+    if dt in ('cisco_xr', 'xr', 'iosxr', 'cisco-iosxr'):
+        err = 'unsupported_device_type: cisco_xr; use cisco_parse_show_ip_arp_table_xr'
+        if return_envelope:
+            return {'rows': {}, 'meta': {'device_type': device_type}, 'error': err}
+        return {'error': err}
+
+    error_markers = (
+        'Invalid input detected',
+        '% Invalid input',
+        'Incomplete command',
+        'Ambiguous command',
+        'Unknown command',
+    )
+    parse_error = 'command_not_supported_or_invalid' if any(m in raw for m in error_markers) else None
+
+    def _is_ipv4_token(tok: str) -> bool:
+        t = (tok or '').strip()
+        if not t or t.count('.') != 3:
+            return False
+        try:
+            return ipaddress.ip_address(t).version == 4
+        except Exception:
+            return False
+
+    def _looks_like_interface(tok: str) -> bool:
+        t = (tok or '').strip()
+        if not t:
+            return False
+        tl = t.lower()
+        return (
+            '/' in t
+            or tl.startswith(('vlan', 'ethernet', 'port-channel', 'po', 'gi', 'te', 'fa', 'twe', 'tw', 'mgmt'))
+        )
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+
+    detected_style = None
+    if dt in ('cisco_nxos', 'nxos') or 'ip arp table for context' in raw.lower():
+        detected_style = 'nxos'
+    elif 'protocol' in raw.lower() and 'hardware' in raw.lower():
+        detected_style = 'ios'
+
+    for line in raw.splitlines():
+        ln = (line or '').strip()
+        if not ln:
+            continue
+
+        lnl = ln.lower()
+        if (
+            lnl.startswith(('protocol', 'address', 'ip arp table', 'total number', '----', 'flags'))
+            or 'hardware addr' in lnl
+            or ('mac address' in lnl and 'table' not in lnl)
+        ):
+            continue
+
+        parts = ln.split()
+        if len(parts) < 3:
+            continue
+
+        # Find IPv4 token
+        ip_idx = None
+        for i, tok in enumerate(parts):
+            if _is_ipv4_token(tok):
+                ip_idx = i
+                break
+        if ip_idx is None:
+            continue
+
+        protocol = parts[ip_idx - 1] if ip_idx >= 1 and parts[ip_idx - 1].isalpha() else ''
+        ipv4 = parts[ip_idx]
+
+        # Age token (optional)
+        age = ''
+        nxt = ip_idx + 1
+        if nxt < len(parts) and _AGE_TOKEN.match(parts[nxt]):
+            age = parts[nxt]
+            nxt += 1
+
+        # MAC token
+        if nxt >= len(parts):
+            continue
+        mac_tok = parts[nxt]
+        if not (_MAC_TOKEN.match(mac_tok) or mac_tok.upper() == 'INCOMPLETE'):
+            continue
+        nxt += 1
+
+        if mac_tok.upper() == 'INCOMPLETE':
+            if not include_incomplete:
+                continue
+            mac_norm = {'mac_address': 'INCOMPLETE', 'mac_address_condensed': ''}
+        else:
+            mac_norm = _cisco_normalize_mac(mac_tok)
+
+        # Next token might be Type (ARPA) or Interface (NX-OS)
+        type_tok = ''
+        interface = ''
+        flags = ''
+
+        if nxt < len(parts) and not _looks_like_interface(parts[nxt]):
+            type_tok = parts[nxt]
+            nxt += 1
+
+        if nxt < len(parts):
+            interface = parts[nxt]
+            nxt += 1
+
+        if nxt < len(parts):
+            tail = ' '.join(parts[nxt:]).strip()
+            if tail:
+                flags = tail
+
+        row: Dict[str, Any] = {
+            'ipv4_address': ipv4,
+            'age': age,
+            **mac_norm,
+            'interface': interface,
+            'protocol': protocol,
+            'type': type_tok,
+            'flags': flags,
+            'raw': ln,
+            'source_os': device_type or '',
+        }
+
+        if row.get('interface'):
+            toks = []
+            for chunk in str(row['interface']).split(','):
+                toks.extend([t for t in chunk.strip().split() if t])
+            row['interfaces'] = toks
+
+        rows[count] = row
+        count += 1
+
+    if return_envelope:
+        return {'rows': rows, 'meta': {'detected_style': detected_style, 'device_type': device_type}, 'error': parse_error}
+
+    return rows if rows else ({'error': parse_error} if parse_error else {})
+
+def cisco_parse_show_cdp_neighbors(
+    output: str,
+    device_type: Optional[str] = None,
+    *,
+    return_envelope: bool = False,
+) -> Dict:
+    """Parse `show cdp neighbors` output (IOS / IOS-XE / NX-OS best-effort).
+
+    Notes
+    - For IOS-XR, this function returns an error and you should call
+      `cisco_parse_show_cdp_neighbors_xr(...)`.
+    - This parser targets the common tabular output:
+
+        Device ID        Local Intrfce     Holdtme    Capability  Platform  Port ID
+
+    Returns
+    - default: dict[int, dict]
+    - if return_envelope=True: {'rows': <dict>, 'meta': {...}, 'error': <str|None>}
+    """
+    raw = "" if output is None else str(output)
+    dt = (device_type or "").strip().lower()
+
+    if dt in ("cisco_xr", "xr", "iosxr", "cisco-iosxr"):
+        err = "unsupported_device_type: cisco_xr; use cisco_parse_show_cdp_neighbors_xr"
+        if return_envelope:
+            return {"rows": {}, "meta": {"device_type": device_type}, "error": err}
+        return {"error": err}
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    def _capability_tokens(val: str) -> List[str]:
+        s = (val or "").strip()
+        if not s:
+            return []
+        s = s.replace(",", " ").replace("/", " ")
+        toks = [t for t in s.split() if t]
+        return toks
+
+    _IF_PREFIX_RX = re.compile(r"^[A-Za-z]{1,6}$")
+    _IF_NUM_RX = re.compile(r"^\d+(?:/\d+)+$")
+
+    def _is_split_iface_tail(tail: List[str]) -> bool:
+        return (
+            len(tail) >= 3
+            and bool(_IF_PREFIX_RX.match(tail[-2]))
+            and bool(_IF_NUM_RX.match(tail[-1]))
+        )
+
+    def _build_spans(header: str) -> Optional[List[Tuple[str, int, Optional[int]]]]:
+        labels: List[Tuple[str, Sequence[str]]] = [
+            ("device_id", ("Device ID", "Device-ID", "Device")),
+            ("local_interface", ("Local Intrfce", "Local Interface", "Local Intf")),
+            ("hold_time", ("Holdtme", "Holdtime", "Hold-time", "Hold Time")),
+            ("capability", ("Capability", "Capabilities")),
+            ("platform", ("Platform",)),
+            ("port_id", ("Port ID", "PortID")),
+        ]
+        found: List[Tuple[str, int]] = []
+        for key, variants in labels:
+            pos = -1
+            for v in variants:
+                p = header.find(v)
+                if p >= 0:
+                    pos = p
+                    break
+            if pos >= 0:
+                found.append((key, pos))
+
+        keys = {k for k, _ in found}
+        if not {"device_id", "local_interface", "hold_time", "port_id"}.issubset(keys):
+            return None
+
+        found.sort(key=lambda x: x[1])
+        spans: List[Tuple[str, int, Optional[int]]] = []
+        for i, (key, start) in enumerate(found):
+            end = found[i + 1][1] if i + 1 < len(found) else None  # last column: slice to end of line
+            spans.append((key, start, end))
+        return spans
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    spans: Optional[List[Tuple[str, int, Optional[int]]]] = None
+    started = False
+    detected_style = None
+
+    # Handle IOS/XE line-wrapping where Device ID appears on its own line
+    pending_device_id: Optional[str] = None
+
+    for line in raw.splitlines():
+        ln = (line or "").rstrip("\n")
+        if not ln.strip():
+            continue
+
+        lnl = ln.lower().strip()
+
+        if not started and "device id" in lnl and ("local" in lnl) and ("port" in lnl):
+            spans = _build_spans(ln)
+            started = True
+            detected_style = "fixed_columns" if spans else "heuristic"
+            continue
+
+        if not started:
+            continue
+
+        if set(ln.strip()) <= {"-", " "}:
+            continue
+        if lnl.startswith(("capability codes", "capability code", "total cdp entries", "total entries")):
+            continue
+
+        if spans:
+            parsed: Dict[str, str] = {}
+            padded = ln + (" " * 4)
+            for key, start, end in spans:
+                parsed[key] = padded[start:end].strip()
+
+            ht = parsed.get("hold_time", "").strip()
+
+            # IOS/XE sometimes wraps the Device ID onto its own line.
+            # Example:
+            #   lab-109-a450-80000.syr.edu
+            #                  Ten 1/0/12  133  R S I  C9300-48P  Gig 1/0/1
+            if not ht.isdigit():
+                # IOS/XE can wrap the device-id onto its own line. In that case the device-id may
+                # "spill" into other fixed-width slices, so treat the *whole line* as the device-id
+                # when the other columns are empty.
+                if (
+                    ln
+                    and not ln.startswith((" ", "\t"))
+                    and not parsed.get("capability", "").strip()
+                    and not parsed.get("platform", "").strip()
+                    and not parsed.get("port_id", "").strip()
+                    and not lnl.startswith(("device id", "capability", "total"))
+                ):
+                    pending_device_id = ln.strip()
+                continue
+
+            device_id = parsed.get("device_id", "").strip()
+            if not device_id and pending_device_id:
+                device_id = pending_device_id
+            pending_device_id = None
+
+            row = {
+                "device_id": device_id,
+                "local_interface": parsed.get("local_interface", "").strip(),
+                "hold_time": int(ht),
+                "capability": parsed.get("capability", "").strip(),
+                "capability_tokens": _capability_tokens(parsed.get("capability", "")),
+                "platform": parsed.get("platform", "").strip(),
+                "port_id": parsed.get("port_id", "").strip(),
+                "raw": ln.strip(),
+                "source_os": device_type or "",
+            }
+            rows[count] = row
+            count += 1
+            continue
+
+        # heuristic fallback
+        parts = ln.split()
+        if not parts:
+            continue
+
+        # device-id-only wrapped line
+        if len(parts) == 1 and not any(ch.isdigit() for ch in parts[0]) and "." in parts[0]:
+            pending_device_id = parts[0]
+            continue
+
+        if len(parts) < 4:
+            continue
+
+        ht_idx = None
+        for i in range(2, len(parts)):
+            if parts[i].isdigit():
+                ht_idx = i
+                break
+        if ht_idx is None:
+            continue
+
+        device_id = parts[0]
+        local_interface = " ".join(parts[1:ht_idx])
+        hold_time = int(parts[ht_idx])
+
+        tail = parts[ht_idx + 1 :]
+        if not tail:
+            continue
+
+        if _is_split_iface_tail(tail):
+            port_id = f"{tail[-2]} {tail[-1]}"
+            platform = tail[-3]
+            capability = " ".join(tail[:-3]).strip()
+        else:
+            platform = tail[-2] if len(tail) >= 2 else ""
+            port_id = tail[-1] if len(tail) >= 1 else ""
+            capability = " ".join(tail[:-2]).strip() if len(tail) >= 2 else ""
+
+        if pending_device_id and not device_id:
+            device_id = pending_device_id
+        pending_device_id = None
+
+        row = {
+            "device_id": device_id,
+            "local_interface": local_interface,
+            "hold_time": hold_time,
+            "capability": capability,
+            "capability_tokens": _capability_tokens(capability),
+            "platform": platform,
+            "port_id": port_id,
+            "raw": ln.strip(),
+            "source_os": device_type or "",
+        }
+        rows[count] = row
+        count += 1
+
+    if return_envelope:
+        return {
+            "rows": rows,
+            "meta": {"detected_style": detected_style, "device_type": device_type, "count": count},
+            "error": parse_error,
+        }
+
+    return rows if rows else ({"error": parse_error} if parse_error else {})
+
+
+def cisco_parse_show_mac_address_table_auto(
+    device_type: str,
+    output: Union[str, Dict[str, Any]],
+    output_type_flag: str = "cli",  # cli | json | auto
+    *,
+    return_envelope: bool = False,
+) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - Call with (device_type, output, output_type_flag)
+      - output_type_flag:
+          - "cli": treat output as CLI text
+          - "json": treat output as NX-OS JSON (dict or JSON string)
+          - "auto": try JSON first for NX-OS if it looks like JSON, else CLI
+    """
+
+    dt_raw = (device_type or "").strip()
+    dt = dt_raw.lower()
+    flag = (output_type_flag or "cli").strip().lower()
+
+    is_nxos = dt in ("cisco_nxos", "nxos")
+
+    def _wrap(rows: Dict[int, Dict[str, Any]], meta: Dict[str, Any], error: Optional[str]) -> Dict[str, Any]:
+        if return_envelope:
+            return {"rows": rows, "meta": meta, "error": error}
+        return rows if error is None else {"error": error}
+
+    # -------------------------
+    # Forced JSON
+    # -------------------------
+    if flag == "json":
+        if not is_nxos:
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
+
+        if isinstance(output, dict):
+            nx = cisco_nxos_parse_show_mac_address_table_json(output)
+        else:
+            raw = "" if output is None else str(output)
+            d = _json_load_dict_best_effort(raw)
+            if isinstance(d, dict) and d.get("error"):
+                return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(d.get("error")))
+            nx = cisco_nxos_parse_show_mac_address_table_json(d)
+
+        if isinstance(nx, dict) and nx.get("error"):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
+
+        rows = ((nx or {}).get("normalized") or {}).get("mac_address_table")
+        if not isinstance(rows, dict):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_mac_address_table")
+
+        meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
+        meta.setdefault("device_type", dt_raw)
+        meta.setdefault("detected_command", "show_mac_address_table")
+        meta["output_type"] = "json"
+        return _wrap(rows, meta, None)
+
+    # -------------------------
+    # Forced CLI
+    # -------------------------
+    if flag == "cli":
+        if not isinstance(output, str):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "cli"}, "invalid_payload: expected cli string")
+        return cisco_parse_show_mac_address_table_cli(output, device_type=dt_raw, return_envelope=return_envelope)
+
+    # -------------------------
+    # Auto
+    # -------------------------
+    if isinstance(output, dict):
+        if not is_nxos:
+            return _wrap({}, {"device_type": dt_raw, "output_type": "auto"}, "json_payload_only_supported_for_nxos_today")
+        nx = cisco_nxos_parse_show_mac_address_table_json(output)
+        rows = ((nx or {}).get("normalized") or {}).get("mac_address_table")
+        if not isinstance(rows, dict):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_mac_address_table")
+        meta = nx.get("meta") or {}
+        meta.setdefault("device_type", dt_raw)
+        meta.setdefault("detected_command", "show_mac_address_table")
+        meta["output_type"] = "json"
+        return _wrap(rows, meta, None)
+
+    raw = "" if output is None else str(output)
+    raw_l = raw.lstrip()
+
+    # NX-OS: if it looks like JSON, try JSON first
+    if is_nxos and raw_l.startswith(("{", "[")):
+        d = _json_load_dict_best_effort(raw)
+        if isinstance(d, dict) and not d.get("error"):
+            nx = cisco_nxos_parse_show_mac_address_table_json(d)
+            if isinstance(nx, dict) and not nx.get("error"):
+                rows = ((nx or {}).get("normalized") or {}).get("mac_address_table")
+                if isinstance(rows, dict):
+                    meta = nx.get("meta") or {}
+                    meta.setdefault("device_type", dt_raw)
+                    meta.setdefault("detected_command", "show_mac_address_table")
+                    meta["output_type"] = "json"
+                    return _wrap(rows, meta, None)
+
+    # fallback to CLI
+    return cisco_parse_show_mac_address_table_cli(raw, device_type=dt_raw, return_envelope=return_envelope)
+
+def cisco_parse_show_mac_address_table_cli(
+    output: str,
+    *,
+    device_type: str = "",
+    return_envelope: bool = False,
+) -> Dict[str, Any]:
+    def _wrap(rows, meta, error):
+        if return_envelope:
+            return {"rows": rows, "meta": meta, "error": error}
+        return rows if error is None else {"error": error}
+
+    raw = "" if output is None else str(output)
+
+    err_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+    )
+    if any(m in raw for m in err_markers):
+        return _wrap({}, {"device_type": device_type, "detected_command": "show_mac_address_table"}, "command_not_supported_or_invalid")
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    i = 0
+
+    for line in raw.splitlines():
+        ln = (line or "").strip()
+        if not ln:
+            continue
+
+        lnl = ln.lower()
+
+        # skip prompts / legends / footers
+        if lnl.startswith(("show ", "switch#", "router#", "nxos#", "ios#", "xr#")):
+            continue
+        if "total mac address" in lnl:
+            continue
+        if lnl.startswith(("legend:", "mac entries", "----")):
+            continue
+
+        parts = ln.split()
+        if len(parts) < 3:
+            continue
+
+        # Handle common IOS/XE: VLAN MAC TYPE PORT
+        vlan = None
+        mac = None
+        typ = None
+        port = None
+        age = None
+
+        # Remove leading '*' markers if present
+        if parts and parts[0].startswith("*") and len(parts[0]) > 1:
+            parts[0] = parts[0].lstrip("*")
+
+        # pattern A: vlan mac type port...
+        if parts[0].isdigit() and _MAC_TOKEN.match(parts[1]):
+            vlan, mac = parts[0], parts[1]
+            # could be: vlan mac type port
+            # or: vlan mac age type port
+            if len(parts) >= 4 and parts[2].upper() in ("DYNAMIC", "STATIC", "SECURE", "SELF", "DROP"):
+                typ = parts[2]
+                port = parts[3]
+            elif len(parts) >= 5 and _AGE_TOKEN.match(parts[2]) and parts[3].isalpha():
+                age = parts[2]
+                typ = parts[3]
+                port = parts[4]
+            elif len(parts) >= 5:
+                # last-resort: assume type is 3rd, port is last
+                typ = parts[2]
+                port = parts[-1]
+
+        # pattern B: mac vlan type port... (some platforms / variants)
+        elif _MAC_TOKEN.match(parts[0]) and parts[1].isdigit():
+            mac, vlan = parts[0], parts[1]
+            if len(parts) >= 4:
+                typ = parts[2]
+                port = parts[3]
+
+        else:
+            continue
+
+        if not mac or not port:
+            continue
+
+        mac_norm = _cisco_normalize_mac(mac)
+
+        rows[i] = {
+            "vlan": int(vlan) if vlan and vlan.isdigit() else vlan,
+            **mac_norm,
+            "mac_raw": mac,
+            "type": (typ or "").strip(),
+            "interface": port.strip(),
+            "age": (age or "").strip(),
+            "source_os": (device_type or "").strip() or "cisco",
+            "raw": ln,
+        }
+        i += 1
+
+    meta = {
+        "device_type": device_type,
+        "detected_command": "show_mac_address_table",
+        "row_count": len(rows),
+        "parsed_without_header_dependency": True,
+    }
+    return _wrap(rows, meta, None)
+
+def cisco_parse_show_ip_arp_table_auto(
+    device_type: str,
+    output: Union[str, Dict[str, Any]],
+    output_type_flag: str = "cli",  # cli | json | auto
+    *,
+    include_incomplete: bool = True,
+    return_envelope: bool = False,
+) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - device_type: cisco_ios | cisco_xe | cisco_xr | cisco_nxos
+      - output: cli text, OR dict, OR json-string (nxos)
+      - output_type_flag: cli|json|auto
+    """
+    dt_raw = (device_type or "").strip()
+    dt = dt_raw.lower()
+    flag = (output_type_flag or "cli").strip().lower()
+
+    is_xr = dt in ("cisco_xr", "iosxr", "xr")
+    is_nxos = dt in ("cisco_nxos", "nxos")
+
+    def _wrap(rows: Dict[int, Dict[str, Any]], meta: Dict[str, Any], error: Optional[str]) -> Dict[str, Any]:
+        if return_envelope:
+            return {"rows": rows, "meta": meta, "error": error}
+        return rows if error is None else {"error": error}
+
+    # Forced JSON
+    if flag == "json":
+        if not is_nxos:
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
+        nx = parse_device_json("cisco_nxos", output if isinstance(output, dict) else _json_load_dict_best_effort(str(output)))
+        if isinstance(nx, dict) and nx.get("error"):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
+        rows = ((nx or {}).get("normalized") or {}).get("ip_arp_table")
+        if not isinstance(rows, dict):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_ip_arp_table")
+        if not include_incomplete:
+            rows = {k: v for k, v in rows.items() if isinstance(v, dict) and not v.get("incomplete")}
+        meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
+        meta["row_count"] = len(rows)
+        meta["incomplete_filtered"] = (not include_incomplete)
+        meta.setdefault("device_type", dt_raw)
+        meta.setdefault("detected_command", "show_ip_arp_table")
+        meta["output_type"] = "json"
+        return _wrap(rows, meta, None)
+
+    # Forced CLI
+    if flag == "cli":
+        if not isinstance(output, str):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "cli"}, "invalid_payload: expected cli string")
+        if is_xr:
+            res = cisco_parse_show_ip_arp_table_xr(output, include_incomplete=include_incomplete, return_envelope=return_envelope)
+            if return_envelope and isinstance(res, dict):
+                meta = res.get("meta") or {}
+                meta.setdefault("device_type", dt_raw)
+                meta.setdefault("detected_command", "show_ip_arp_table")
+                meta["output_type"] = "cli"
+                res["meta"] = meta
+            return res
+
+        res = cisco_parse_show_ip_arp_table(output, device_type=dt_raw, include_incomplete=include_incomplete, return_envelope=return_envelope)
+        if return_envelope and isinstance(res, dict):
+            meta = res.get("meta") or {}
+            meta.setdefault("device_type", dt_raw)
+            meta.setdefault("detected_command", "show_ip_arp_table")
+            meta["output_type"] = "cli"
+            res["meta"] = meta
+        return res
+
+    # Auto mode
+    if isinstance(output, dict):
+        if not is_nxos:
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
+        nx = parse_device_json("cisco_nxos", output)
+        if isinstance(nx, dict) and nx.get("error"):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
+        rows = ((nx or {}).get("normalized") or {}).get("ip_arp_table")
+        if not isinstance(rows, dict):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_ip_arp_table")
+        if not include_incomplete:
+            rows = {k: v for k, v in rows.items() if isinstance(v, dict) and not v.get("incomplete")}
+        meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
+        meta["row_count"] = len(rows)
+        meta["incomplete_filtered"] = (not include_incomplete)
+        meta.setdefault("device_type", dt_raw)
+        meta.setdefault("detected_command", "show_ip_arp_table")
+        meta["output_type"] = "json"
+        return _wrap(rows, meta, None)
+
+    raw = "" if output is None else str(output)
+    raw_strip = raw.lstrip()
+
+    if is_nxos and raw_strip.startswith("{"):
+        nx = cisco_parse_device_json_from_string("cisco_nxos", raw)
+        if isinstance(nx, dict) and not nx.get("error"):
+            rows = ((nx or {}).get("normalized") or {}).get("ip_arp_table")
+            if isinstance(rows, dict):
+                if not include_incomplete:
+                    rows = {k: v for k, v in rows.items() if isinstance(v, dict) and not v.get("incomplete")}
+                meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
+                meta["row_count"] = len(rows)
+                meta["incomplete_filtered"] = (not include_incomplete)
+                meta.setdefault("device_type", dt_raw)
+                meta.setdefault("detected_command", "show_ip_arp_table")
+                meta["output_type"] = "json"
+                return _wrap(rows, meta, None)
+
+    # fallback to CLI
+    if is_xr:
+        return cisco_parse_show_ip_arp_table_xr(raw, include_incomplete=include_incomplete, return_envelope=return_envelope)
+    return cisco_parse_show_ip_arp_table(raw, device_type=dt_raw, include_incomplete=include_incomplete, return_envelope=return_envelope)
+
+
+
+def cisco_parse_show_lldp_neighbors(
+    output: str,
+    device_type: Optional[str] = None,
+    *,
+    return_envelope: bool = False,
+) -> Dict:
+    """Parse `show lldp neighbors` output (IOS / IOS-XE / NX-OS best-effort).
+
+    Notes
+    - For IOS-XR, this function returns an error and you should call
+      `cisco_parse_show_lldp_neighbors_xr(...)`.
+    - Targets the common tabular output:
+
+        Device ID           Local Intf     Hold-time  Capability      Port ID
+
+    Returns
+    - default: dict[int, dict]
+    - if return_envelope=True: {'rows': <dict>, 'meta': {...}, 'error': <str|None>}
+    """
+    raw = "" if output is None else str(output)
+    dt = (device_type or "").strip().lower()
+
+    if dt in ("cisco_xr", "xr", "iosxr", "cisco-iosxr"):
+        err = "unsupported_device_type: cisco_xr; use cisco_parse_show_lldp_neighbors_xr"
+        if return_envelope:
+            return {"rows": {}, "meta": {"device_type": device_type}, "error": err}
+        return {"error": err}
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+        "LLDP is not enabled",
+        "lldp is not enabled",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    def _capability_tokens(val: str) -> List[str]:
+        s = (val or "").strip()
+        if not s:
+            return []
+        s = s.replace(",", " ").replace("/", " ")
+        toks = [t for t in s.split() if t]
+        return toks
+
+    def _build_spans(header: str) -> Optional[List[Tuple[str, int, int]]]:
+        labels: List[Tuple[str, Sequence[str]]] = [
+            ("device_id", ("Device ID", "System Name", "Chassis ID", "Device")),
+            ("local_interface", ("Local Intf", "Local Interface", "Local Port", "Local Intrfce")),
+            ("hold_time", ("Hold-time", "Hold Time", "Holdtime", "Holdtme")),
+            ("capability", ("Capability", "Capabilities")),
+            ("port_id", ("Port ID", "PortID", "Port Description", "Port Descr")),
+        ]
+        found: List[Tuple[str, int]] = []
+        for key, variants in labels:
+            pos = -1
+            for v in variants:
+                p = header.find(v)
+                if p >= 0:
+                    pos = p
+                    break
+            if pos >= 0:
+                found.append((key, pos))
+
+        keys = {k for k, _ in found}
+        if not {"device_id", "local_interface", "hold_time", "port_id"}.issubset(keys):
+            return None
+
+        found.sort(key=lambda x: x[1])
+        spans: List[Tuple[str, int, int]] = []
+        for i, (key, start) in enumerate(found):
+            end = found[i + 1][1] if i + 1 < len(found) else len(header)
+            spans.append((key, start, end))
+        return spans
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    spans: Optional[List[Tuple[str, int, int]]] = None
+    started = False
+    detected_style = None
+
+    for line in raw.splitlines():
+        ln = (line or "").rstrip("\n")
+        if not ln.strip():
+            continue
+
+        lnl = ln.lower().strip()
+
+        if not started and ("device id" in lnl or "system name" in lnl) and ("local" in lnl) and ("port" in lnl):
+            spans = _build_spans(ln)
+            started = True
+            detected_style = "fixed_columns" if spans else "heuristic"
+            continue
+
+        if not started:
+            continue
+
+        if set(ln.strip()) <= {"-", " "}:
+            continue
+        if lnl.startswith(("capability codes", "capability code", "total lldp entries", "total entries", "lldp neighbors")):
+            continue
+
+        if spans:
+            parsed: Dict[str, str] = {}
+            padded = ln + (" " * 4)
+            for key, start, end in spans:
+                parsed[key] = padded[start:end].strip()
+
+            ht = parsed.get("hold_time", "").strip()
+            if not ht.isdigit():
+                continue
+
+            cap = parsed.get("capability", "").strip()
+            row = {
+                "device_id": parsed.get("device_id", "").strip(),
+                "local_interface": parsed.get("local_interface", "").strip(),
+                "hold_time": int(ht),
+                "capability": cap,
+                "capability_tokens": _capability_tokens(cap),
+                "port_id": parsed.get("port_id", "").strip(),
+                "raw": ln.strip(),
+                "source_os": device_type or "",
+            }
+            rows[count] = row
+            count += 1
+            continue
+
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+
+        ht_idx = None
+        for i in range(2, len(parts)):
+            if parts[i].isdigit():
+                ht_idx = i
+                break
+        if ht_idx is None:
+            continue
+
+        device_id = parts[0]
+        local_interface = " ".join(parts[1:ht_idx])
+        hold_time = int(parts[ht_idx])
+
+        tail = parts[ht_idx + 1 :]
+        if not tail:
+            continue
+
+        port_id = tail[-1]
+        capability = " ".join(tail[:-1]).strip()
+
+        row = {
+            "device_id": device_id,
+            "local_interface": local_interface,
+            "hold_time": hold_time,
+            "capability": capability,
+            "capability_tokens": _capability_tokens(capability),
+            "port_id": port_id,
+            "raw": ln.strip(),
+            "source_os": device_type or "",
+        }
+        rows[count] = row
+        count += 1
+
+    if return_envelope:
+        return {
+            "rows": rows,
+            "meta": {"detected_style": detected_style, "device_type": device_type, "count": count},
+            "error": parse_error,
+        }
+
+    return rows if rows else ({"error": parse_error} if parse_error else {})
+
+def cisco_parse_show_lldp_neighbors_auto(
+    device_type: str,
+    output: Union[str, Dict[str, Any]],
+    output_type_flag: str = "cli",  # cli | json | auto
+    *,
+    return_envelope: bool = False,
+) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - device_type: cisco_ios | cisco_xe | cisco_xr | cisco_nxos
+      - output: cli text, OR dict, OR json-string (nxos)
+      - output_type_flag: cli|json|auto
+    """
+    dt_raw = (device_type or "").strip()
+    dt = dt_raw.lower()
+    flag = (output_type_flag or "cli").strip().lower()
+
+    is_xr = dt in ("cisco_xr", "iosxr", "xr")
+    is_nxos = dt in ("cisco_nxos", "nxos")
+
+    def _wrap(rows: Dict[int, Dict[str, Any]], meta: Dict[str, Any], error: Optional[str]) -> Dict[str, Any]:
+        if return_envelope:
+            return {"rows": rows, "meta": meta, "error": error}
+        return rows if error is None else {"error": error}
+
+    # Forced JSON
+    if flag == "json":
+        if not is_nxos:
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
+
+        if isinstance(output, dict):
+            nx = cisco_nxos_parse_show_lldp_neighbors_json(output)
+        else:
+            raw = "" if output is None else str(output)
+            d = _json_load_dict_best_effort(raw)
+            if isinstance(d, dict) and d.get("error"):
+                return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(d.get("error")))
+            nx = cisco_nxos_parse_show_lldp_neighbors_json(d)
+
+        if isinstance(nx, dict) and nx.get("error"):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
+
+        neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
+        if not isinstance(neighbors, dict):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_lldp_neighbors")
+
+        meta = nx.get("meta") or {}
+        meta.setdefault("device_type", dt_raw)
+        meta.setdefault("detected_command", "show_lldp_neighbors")
+        meta["output_type"] = "json"
+        return _wrap(neighbors, meta, None)
+
+    raw = "" if output is None else str(output)
+    raw_l = raw.lstrip()
+
+    # Auto: NX-OS JSON if it looks like JSON
+    if is_nxos and raw_l.startswith(("{", "[")):
+        d = _json_load_dict_best_effort(raw)
+        nx = cisco_nxos_parse_show_lldp_neighbors_json(d) if isinstance(d, dict) and not d.get("error") else {"error": str((d or {}).get("error"))}
+        if isinstance(nx, dict) and not nx.get("error"):
+            neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
+            if isinstance(neighbors, dict):
+                meta = nx.get("meta") or {}
+                meta.setdefault("device_type", dt_raw)
+                meta.setdefault("detected_command", "show_lldp_neighbors")
+                meta["output_type"] = "json"
+                return _wrap(neighbors, meta, None)
+
+    # CLI
+    if flag == "cli" or flag == "auto":
+        if is_xr:
+            res = cisco_parse_show_lldp_neighbors_xr(raw, return_envelope=return_envelope)
+            if return_envelope and isinstance(res, dict):
+                meta = res.get("meta") or {}
+                meta.setdefault("device_type", dt_raw)
+                meta.setdefault("detected_command", "show_lldp_neighbors")
+                meta["output_type"] = "cli"
+                res["meta"] = meta
+            return res
+
+        res = cisco_parse_show_lldp_neighbors(raw, device_type=device_type, return_envelope=return_envelope)
+        if return_envelope and isinstance(res, dict):
+            meta = res.get("meta") or {}
+            meta.setdefault("device_type", dt_raw)
+            meta.setdefault("detected_command", "show_lldp_neighbors")
+            meta["output_type"] = "cli"
+            res["meta"] = meta
+        return res
+
+    return _wrap({}, {"device_type": dt_raw, "output_type": str(flag)}, "unsupported_output_type_flag")
+
+
+def cisco_normalize_device_type(device_type: Any) -> str:
+    """
+    Normalize device_type strings across netmiko / internal variants.
+
+    Examples:
+      - cisco_iosxr, iosxr, cisco-iosxr -> cisco_xr
+      - cisco_nexus, nxos -> cisco_nxos
+      - cisco_iosxe, iosxe -> cisco_xe
+    """
+    dt = str(device_type or "").strip().lower().replace("-", "_")
+    if not dt:
+        return ""
+
+    # XR
+    if dt in ("cisco_xr", "iosxr", "cisco_iosxr") or "iosxr" in dt or dt.endswith("_xr"):
+        return "cisco_xr"
+
+    # NX-OS
+    if dt in ("cisco_nxos", "nxos", "nx_os", "cisco_nexus", "cisco_nx_os") or "nxos" in dt or "nexus" in dt:
+        return "cisco_nxos"
+
+    # IOS-XE
+    if dt in ("cisco_xe", "iosxe", "cisco_iosxe") or "iosxe" in dt:
+        return "cisco_xe"
+
+    # IOS (avoid misclassifying XR/XE)
+    if dt in ("cisco_ios", "ios") or (("ios" in dt) and ("iosxe" not in dt) and ("iosxr" not in dt)):
+        return "cisco_ios"
+
+    return dt
+
 def _cisco_normalize_mac(mac: str) -> Dict[str, str]:
     """Return normalized MAC variants for downstream filters/joins."""
     mac_raw = (mac or '').strip()
@@ -60,83 +1338,6 @@ def _cisco_normalize_mac(mac: str) -> Dict[str, str]:
         'mac_address': dotted,
         'mac_address_condensed': condensed,
     }
-
-def _escape_controls_inside_json_strings(s: str) -> str:
-    """
-    Notes / How to run:
-    - This is a pre-sanitizer for device JSON that sometimes gets corrupted by terminal line-wrapping /
-      copy-paste (raw newlines inside quoted strings, or a backslash followed by a newline).
-    - Call this before json.loads (cisco_parse_device_json_from_string already does).
-
-    What it fixes:
-    - Raw control chars inside JSON strings: \n \r \t etc -> escaped forms
-    - Backslash + raw newline inside a JSON string (invalid JSON) -> coerces into a valid \\n escape
-    """
-    in_str = False
-    esc = False
-    out: list[str] = []
-
-    for ch in s:
-        if not in_str:
-            out.append(ch)
-            if ch == '"':
-                in_str = True
-            continue
-
-        if esc:
-            # If the input was line-wrapped, you can end up with: \"as is,\ <newline> "
-            # JSON does NOT allow backslash-newline escapes. Convert that newline into a legal \n.
-            if ch == '\n':
-                # replace the previously appended "\" with "\n"
-                if out and out[-1] == '\\':
-                    out[-1] = '\\n'
-                else:
-                    out.append('\\n')
-                esc = False
-                continue
-            if ch == '\r':
-                if out and out[-1] == '\\':
-                    out[-1] = '\\r'
-                else:
-                    out.append('\\r')
-                esc = False
-                continue
-            if ch == '\t':
-                if out and out[-1] == '\\':
-                    out[-1] = '\\t'
-                else:
-                    out.append('\\t')
-                esc = False
-                continue
-
-            out.append(ch)
-            esc = False
-            continue
-
-        if ch == '\\':
-            out.append(ch)
-            esc = True
-            continue
-
-        if ch == '"':
-            out.append(ch)
-            in_str = False
-            continue
-
-        o = ord(ch)
-        if o < 0x20:  # illegal control char in JSON string
-            if ch == '\n':
-                out.append('\\n')
-            elif ch == '\r':
-                out.append('\\r')
-            elif ch == '\t':
-                out.append('\\t')
-            else:
-                out.append(f'\\u{o:04x}')
-        else:
-            out.append(ch)
-
-    return ''.join(out)
 
 def _none_if_not_advertised(v: Any) -> Optional[str]:
     s = _as_str(v)
@@ -164,6 +1365,1825 @@ def _split_device_id_paren(v: Any) -> Dict[str, Any]:
         serial = right[:-1].strip() or None
 
     return {"raw": raw, "name": name, "serial": serial}
+
+def _cisco_short_ifname(ifname: Any) -> Optional[str]:
+    """
+    Notes / How to run:
+      - Internal helper: convert long interface names to a short-ish form.
+      - Keeps unknown formats unchanged.
+    """
+    name = _as_str(ifname)
+    if not name:
+        return None
+
+    s = name.strip()
+    sl = s.lower()
+
+    # Already-short formats (normalize a few common caps)
+    if re.match(r"^(eth|gi|te|fa|fo|po|vl|lo|mgmt)\d", sl):
+        if sl.startswith("eth"):
+            return "Eth" + s[3:]
+        if sl.startswith("gi"):
+            return "Gi" + s[2:]
+        if sl.startswith("te"):
+            return "Te" + s[2:]
+        if sl.startswith("fa"):
+            return "Fa" + s[2:]
+        if sl.startswith("fo"):
+            return "Fo" + s[2:]
+        if sl.startswith("po"):
+            return "Po" + s[2:]
+        if sl.startswith("vl"):
+            return "Vl" + s[2:]
+        if sl.startswith("lo"):
+            return "Lo" + s[2:]
+        if sl.startswith("mgmt"):
+            return "mgmt" + s[4:]
+        return s
+
+    prefix_map = {
+        "tengigabitethernet": "Te",
+        "twentyfivegigabitethernet": "Twe",
+        "fortygigabitethernet": "Fo",
+        "hundredgigabitethernet": "Hu",
+        "gigabitethernet": "Gi",
+        "ethernet": "Eth",
+        "port-channel": "Po",
+        "portchannel": "Po",
+        "loopback": "Lo",
+        "vlan": "Vlan",
+        "management": "mgmt",
+        "mgmt": "mgmt",
+    }
+
+    for longp, shortp in prefix_map.items():
+        if sl.startswith(longp):
+            return shortp + s[len(longp) :]
+
+    return s
+
+def cisco_parse_show_interface_description_cli(
+    output: str,
+    *,
+    device_type: str = "cisco",
+    return_envelope: bool = True,
+) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - Input: raw CLI output from `show interface description` (IOS/XE/XR/NXOS without JSON)
+      - Goal: parse the common columns: Interface, Status, Protocol, Description
+      - Handles "admin down" / "administratively down" as a 2-token Status
+
+    Returns:
+      - If return_envelope:
+          {"rows": {0: {...}, ...}, "meta": {...}, "error": None|{...}}
+      - Else:
+          rows dict, or {"error": "..."} if parse_error
+    """
+    raw = "" if output is None else str(output)
+
+    err_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+    )
+
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in err_markers) else None
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    interfaces: Dict[str, Dict[str, Any]] = {}
+    count = 0
+    started = False
+
+    for line in raw.splitlines():
+        ln = (line or "").rstrip("\r\n")
+        if not ln.strip():
+            continue
+
+        lnl = ln.strip().lower()
+
+        # header-ish detection        # IOS-XR (and occasionally other platforms) may emit a leading timestamp line, e.g.
+        #   Fri Feb  6 02:35:18.310 UTC
+        # which is not a table row.
+        if re.match(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\w+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\w+", ln.strip()):
+            continue
+
+
+        if ("interface" in lnl and "description" in lnl) or lnl.startswith(("interface", "port", "----")):
+            started = True
+            continue
+        if not started and lnl.startswith(("show ", "router#", "switch#", "nxos#", "ios#", "xr#")):
+            continue
+
+        parts = ln.split()
+        if len(parts) < 3:
+            continue
+
+        intf = parts[0]
+        rest = parts[1:]
+
+        status: Optional[str]
+        protocol: Optional[str]
+        desc: Optional[str]
+
+        # "admin down down ..." or "administratively down down ..."
+        if len(rest) >= 3 and rest[0].lower() in ("admin", "administratively") and rest[1].lower() == "down":
+            status = f"{rest[0]} {rest[1]}"
+            protocol = rest[2]
+            desc = " ".join(rest[3:]).strip() or None
+        else:
+            status = rest[0]
+            protocol = rest[1] if len(rest) >= 2 else None
+            desc = " ".join(rest[2:]).strip() or None
+
+        ifname = _as_str(intf)
+        if not ifname:
+            continue
+
+        entry = {
+            "interface": ifname,
+            "interface_short": _cisco_short_ifname(ifname),
+            "status": _as_str(status),
+            "protocol": _as_str(protocol),
+            "description": _as_str(desc),
+            "source_os": device_type,
+            "raw": ln.strip(),
+        }
+        rows[count] = entry
+        interfaces[ifname] = entry
+        count += 1
+
+    meta = {
+        "detected_style": "cli",
+        "detected_command": "show_interface_description",
+        "count": count,
+    }
+
+    out = {
+        "rows": rows,
+        "interfaces": interfaces,
+        "meta": meta,
+        "error": ({"error": parse_error} if parse_error else None),
+    }
+    return out if return_envelope else (rows if rows else ({"error": parse_error} if parse_error else {}))
+
+def cisco_parse_show_interface_description_auto(
+    device_type: str,
+    output: Union[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - Prefer JSON parsing for NX-OS when the payload is JSON (string or dict).
+      - Fall back to CLI parsing for everything else.
+
+    Example:
+      parsed = cisco_parse_show_interface_description_auto("cisco_nxos", output_string)
+    """
+    dt = (device_type or "").strip().lower()
+
+    # If we already have a dict, try NX-OS JSON structure first
+    if isinstance(output, dict):
+        if dt in ("cisco_nxos", "nxos") and isinstance(output.get("TABLE_interface"), dict):
+            tab = output.get("TABLE_interface") or {}
+            if "ROW_interface" in tab:
+                return cisco_nxos_parse_show_interface_description_json(output, return_envelope=True)
+        # otherwise treat as “not supported here”
+        return {"error": "unsupported_payload_shape_for_interface_description"}
+
+    # string path: if NX-OS, attempt JSON-from-string pipeline, else CLI
+    raw = "" if output is None else str(output)
+    if dt in ("cisco_nxos", "nxos"):
+        attempt = cisco_parse_device_json_from_string("cisco_nxos", raw)
+        if isinstance(attempt, dict) and attempt.get("meta", {}).get("detected_command") == "show_interface_description":
+            return attempt
+
+    return cisco_parse_show_interface_description_cli(raw, device_type=device_type, return_envelope=True)
+
+def cisco_parse_show_cdp_neighbors_auto(
+    device_type: str,
+    output: Union[str, Dict[str, Any]],
+    output_type_flag: str = "cli",  # cli | json | auto
+    *,
+    return_envelope: bool = False,
+) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - device_type: cisco_ios | cisco_xe | cisco_xr | cisco_nxos
+      - output: cli text, OR dict, OR json-string (nxos)
+      - output_type_flag: cli|json|auto
+    """
+    dt_raw = (device_type or "").strip()
+    dt = dt_raw.lower()
+    flag = (output_type_flag or "cli").strip().lower()
+
+    is_xr = dt in ("cisco_xr", "iosxr", "xr")
+    is_nxos = dt in ("cisco_nxos", "nxos")
+
+    def _wrap(rows: Dict[int, Dict[str, Any]], meta: Dict[str, Any], error: Optional[str]) -> Dict[str, Any]:
+        if return_envelope:
+            return {"rows": rows, "meta": meta, "error": error}
+        return rows if error is None else {"error": error}
+
+    # Forced JSON
+    if flag == "json":
+        if not is_nxos:
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
+
+        if isinstance(output, dict):
+            nx = cisco_nxos_parse_show_cdp_neighbors_json(output)
+        else:
+            raw = "" if output is None else str(output)
+            nx = cisco_parse_device_json_from_string("cisco_nxos", raw)
+
+        if isinstance(nx, dict) and nx.get("error"):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
+
+        neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
+        if not isinstance(neighbors, dict):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_cdp_neighbors")
+
+        meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
+        meta.setdefault("device_type", dt_raw)
+        meta.setdefault("detected_command", "show_cdp_neighbors")
+        meta["output_type"] = "json"
+        return _wrap(neighbors, meta, None)
+
+    # Forced CLI
+    if flag == "cli":
+        if not isinstance(output, str):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "cli"}, "invalid_payload: expected cli string")
+
+        if is_xr:
+            res = cisco_parse_show_cdp_neighbors_xr(output, return_envelope=return_envelope)
+            if return_envelope and isinstance(res, dict):
+                meta = res.get("meta") or {}
+                meta.setdefault("device_type", dt_raw)
+                meta.setdefault("detected_command", "show_cdp_neighbors")
+                meta["output_type"] = "cli"
+                res["meta"] = meta
+            return res
+
+        res = cisco_parse_show_cdp_neighbors(output, device_type=device_type, return_envelope=return_envelope)
+        if return_envelope and isinstance(res, dict):
+            meta = res.get("meta") or {}
+            meta.setdefault("device_type", dt_raw)
+            meta.setdefault("detected_command", "show_cdp_neighbors")
+            meta["output_type"] = "cli"
+            res["meta"] = meta
+        return res
+
+    # Auto
+    if isinstance(output, dict):
+        if not is_nxos:
+            return _wrap({}, {"device_type": dt_raw, "output_type": "auto"}, "json_payload_only_supported_for_nxos_today")
+
+        nx = cisco_nxos_parse_show_cdp_neighbors_json(output)
+        neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
+        if not isinstance(neighbors, dict):
+            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_cdp_neighbors")
+
+        meta = nx.get("meta") or {}
+        meta.setdefault("device_type", dt_raw)
+        meta.setdefault("detected_command", "show_cdp_neighbors")
+        meta["output_type"] = "json"
+        return _wrap(neighbors, meta, None)
+
+    raw = "" if output is None else str(output)
+    raw_l = raw.lstrip()
+
+    if is_nxos and raw_l.startswith(("{", "[")):
+        nx = cisco_parse_device_json_from_string("cisco_nxos", raw)
+        if isinstance(nx, dict) and not nx.get("error"):
+            neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
+            if isinstance(neighbors, dict):
+                meta = nx.get("meta") or {}
+                meta.setdefault("device_type", dt_raw)
+                meta.setdefault("detected_command", "show_cdp_neighbors")
+                meta["output_type"] = "json"
+                return _wrap(neighbors, meta, None)
+
+    # fallback: CLI parsing
+    if is_xr:
+        res = cisco_parse_show_cdp_neighbors_xr(raw, return_envelope=return_envelope)
+        if return_envelope and isinstance(res, dict):
+            meta = res.get("meta") or {}
+            meta.setdefault("device_type", dt_raw)
+            meta.setdefault("detected_command", "show_cdp_neighbors")
+            meta["output_type"] = "cli"
+            res["meta"] = meta
+        return res
+
+    res = cisco_parse_show_cdp_neighbors(raw, device_type=device_type, return_envelope=return_envelope)
+    if return_envelope and isinstance(res, dict):
+        meta = res.get("meta") or {}
+        meta.setdefault("device_type", dt_raw)
+        meta.setdefault("detected_command", "show_cdp_neighbors")
+        meta["output_type"] = "cli"
+        res["meta"] = meta
+    return res
+
+def cisco_parse_show_version(output: str) -> Dict[str, str]:
+    """
+    Parse key bits out of Cisco 'show version' output (IOS-XE + older IOS/3x/4xx).
+
+    Rules:
+      - For each field, try regexes in priority order.
+      - For each regex, scan lines top-to-bottom.
+      - First match wins for that field (bail immediately).
+      - Returns a flat dict of discovered fields:
+          software_version, model_number, system_serial_number, base_ethernet_mac_address
+    """
+
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+
+    # Capture everything to a single key: software_version
+    version_patterns: List[re.Pattern] = [
+        # IOS-XE explicit
+        re.compile(
+            r"^Cisco IOS XE Software,\s*Version\s+"
+            r"(?P<software_version>\d+(?:\.[0-9A-Za-z]+)+)",
+            re.IGNORECASE,
+        ),
+        # Many platforms just have "Version X.Y..."
+        re.compile(
+            r"^(?:Cisco IOS XE Software,\s*Version|Version)\s+"
+            r"(?P<software_version>\d+(?:\.[0-9A-Za-z]+)+)",
+            re.IGNORECASE,
+        ),
+        # Older IOS: "Cisco IOS Software, ... Version 15.2(4)E10, ..."
+        re.compile(
+            r"^Cisco IOS Software,.*\bVersion\s+(?P<software_version>[^,]+)",
+            re.IGNORECASE,
+        ),
+        # Fallback: any "Version <until comma>"
+        re.compile(r"\bVersion\s+(?P<software_version>[^,]+)", re.IGNORECASE),
+    ]
+
+    field_patterns: List[Tuple[str, List[re.Pattern]]] = [
+        (
+            "software_version",
+            version_patterns,
+        ),
+        (
+            "model_number",
+            [
+                re.compile(
+                    r"^Model\s+Number\s*:\s*(?P<model_number>[A-Za-z0-9\-]+)$",
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r"^License\s+Information\s+for\s+'(?P<model_number>[A-Za-z0-9\-]+)'$",
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r"^Cisco\s+(?P<model_number>WS-[A-Za-z0-9\-]+)\s*\(",
+                    re.IGNORECASE,
+                ),
+            ],
+        ),
+        (
+            "system_serial_number",
+            [
+                re.compile(
+                    r"^System\s+Serial\s+Number\s*:\s*(?P<system_serial_number>[A-Za-z0-9\-]+)$",
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    r"^Processor\s+board\s+ID\s+(?P<system_serial_number>[A-Za-z0-9\-]+)$",
+                    re.IGNORECASE,
+                ),
+            ],
+        ),
+        (
+            "base_ethernet_mac_address",
+            [
+                re.compile(
+                    r"^Base\s+Ethernet\s+MAC\s+Address\s*:\s*"
+                    r"(?P<base_ethernet_mac_address>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})$",
+                    re.IGNORECASE,
+                )
+            ],
+        ),
+    ]
+
+    results: Dict[str, str] = {}
+    remaining = {field for field, _ in field_patterns}
+
+    for field_name, regex_list in field_patterns:
+        found = False
+        for rx in regex_list:
+            for ln in lines:
+                m = rx.search(ln)
+                if m:
+                    results[field_name] = m.group(field_name).strip()
+                    remaining.discard(field_name)
+                    found = True
+                    break
+            if found:
+                break
+
+        if not remaining:
+            break
+
+    return results
+
+# Cisco iosxr parsers
+
+def cisco_asr_9k_parse_show_hardware_access_list_matches(output):
+
+    """
+    parse the following from the asr 9k devices and return a dict of the information below
+
+    show access-lists <access list id> hardware ingress location 0/0/CPU0
+
+    ipv4 access-list 123
+     50 deny ipv4 10.0.0.0 0.255.255.255 any (3374541 hw matches)
+     60 deny ipv4 172.16.0.0 0.15.255.255 any (775020 hw matches)
+     70 deny ipv4 192.168.0.0 0.0.255.255 any (2958422 hw matches)
+     ...
+     ...
+
+    """
+
+    mac_address_count = {}
+
+    """
+    Regex - show mac address table count
+    """
+
+    regex_access_list_hw_matches = re.compile(
+        r'^(?P<access_list_line>[0-9]+)\s(?P<access_list_rule>.*)\s\((?P<access_list_hw_matches>[0-9]+)\shw\s(matches|match)\)$')
+
+    regex_access_list_none_hw_matches = re.compile(
+        r'^(?P<access_list_line>[0-9]+)\s(?P<access_list_rule>.*)$')
+
+    data = {}
+    count = 0
+    for line in output.splitlines():
+        a = re.search(regex_access_list_hw_matches, line.strip())
+        if a is not None and line.strip() != "":
+            data[count] = {
+                'access_list_line': a.groupdict()['access_list_line'],
+                'access_list_rule': a.groupdict()['access_list_rule'],
+                'access_list_hw_matches': a.groupdict()['access_list_hw_matches']
+            }
+            count = count + 1
+        elif a is None and line.strip() != "":
+            """
+            Does not match the expected output with hw matches involved
+            pull the rule information and 0 the matches
+            """
+            a = re.search(regex_access_list_none_hw_matches, line.strip())
+            if a is not None:
+                data[count] = {
+                    'access_list_line': a.groupdict()['access_list_line'],
+                    'access_list_rule': a.groupdict()['access_list_rule'],
+                    'access_list_hw_matches': 0
+                }
+                count = count + 1
+
+    return data
+
+def cisco_parse_show_ip_arp_table_xr(
+    output: str,
+    *,
+    include_incomplete: bool = True,
+    return_envelope: bool = False,
+) -> Dict:
+    """Best-effort IOS-XR ARP parser (separate on purpose).
+
+    IOS-XR ARP output varies a lot by platform/version/VRF.
+    This parser:
+      - finds an IPv4 token
+      - finds the next MAC token (or INCOMPLETE)
+      - treats the last token as interface when possible
+      - stores middle tokens as state/type/flags-ish fields
+    """
+    raw = '' if output is None else str(output)
+
+    error_markers = (
+        'Invalid input detected',
+        '% Invalid input',
+        'Incomplete command',
+        'Ambiguous command',
+        'Unknown command',
+    )
+    parse_error = 'command_not_supported_or_invalid' if any(m in raw for m in error_markers) else None
+
+    def _is_ipv4_token(tok: str) -> bool:
+        t = (tok or '').strip()
+        if not t or t.count('.') != 3:
+            return False
+        try:
+            return ipaddress.ip_address(t).version == 4
+        except Exception:
+            return False
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+
+    for line in raw.splitlines():
+        ln = (line or '').strip()
+        if not ln:
+            continue
+
+        lnl = ln.lower()
+        if ('address' in lnl and 'hardware' in lnl) or lnl.startswith(('---', '===', 'vrf', 'flags', 'protocol')):
+            continue
+
+        parts = ln.split()
+        if len(parts) < 3:
+            continue
+
+        ip_idx = None
+        for i, tok in enumerate(parts):
+            if _is_ipv4_token(tok):
+                ip_idx = i
+                break
+        if ip_idx is None:
+            continue
+
+        ipv4 = parts[ip_idx]
+        age = parts[ip_idx + 1] if (ip_idx + 1) < len(parts) else ''
+
+        mac_idx = None
+        for j in range(ip_idx + 1, len(parts)):
+            if _MAC_TOKEN.match(parts[j]) or parts[j].upper() == 'INCOMPLETE':
+                mac_idx = j
+                break
+        if mac_idx is None:
+            continue
+
+        mac_tok = parts[mac_idx]
+        if mac_tok.upper() == 'INCOMPLETE':
+            if not include_incomplete:
+                continue
+            mac_norm = {'mac_address': 'INCOMPLETE', 'mac_address_condensed': ''}
+        else:
+            mac_norm = _cisco_normalize_mac(mac_tok)
+
+        interface = parts[-1]
+        middle = parts[mac_idx + 1:-1] if (mac_idx + 1) < (len(parts) - 1) else []
+        state = middle[0] if len(middle) >= 1 else ''
+        type_tok = middle[1] if len(middle) >= 2 else ''
+        flags = ' '.join(middle[2:]).strip() if len(middle) >= 3 else ''
+
+        rows[count] = {
+            'ipv4_address': ipv4,
+            'age': age,
+            **mac_norm,
+            'interface': interface,
+            'state': state,
+            'type': type_tok,
+            'flags': flags,
+            'raw': ln,
+            'source_os': 'cisco_xr',
+        }
+        count += 1
+
+    if return_envelope:
+        return {'rows': rows, 'meta': {'detected_style': 'xr', 'device_type': 'cisco_xr'}, 'error': parse_error}
+
+    return rows if rows else ({'error': parse_error} if parse_error else {})
+
+def cisco_parse_show_cdp_neighbors_xr(
+    output: str,
+    *,
+    return_envelope: bool = False,
+) -> Dict:
+    """Best-effort IOS-XR CDP neighbor parser.
+
+    IOS-XR neighbor outputs can vary by platform/version.
+    This function is intentionally tolerant and extracts:
+      - device_id
+      - local_interface (if present)
+      - hold_time (if present)
+      - port_id (if present)
+      - platform/capability when they appear
+    """
+    raw = "" if output is None else str(output)
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    started = False
+
+    for line in raw.splitlines():
+        ln = (line or "").rstrip("\n")
+        if not ln.strip():
+            continue
+
+        lnl = ln.lower().strip()
+
+        if not started and "device id" in lnl and "local" in lnl and "port" in lnl:
+            started = True
+            continue
+
+        if not started:
+            continue
+
+        if set(ln.strip()) <= {"-", " "}:
+            continue
+        if lnl.startswith(("capability codes", "total", "entries", "capability code")):
+            continue
+
+        parts = ln.split()
+        if len(parts) < 2:
+            continue
+
+        device_id = parts[0]
+
+        ht_idx = None
+        for i in range(1, len(parts)):
+            if parts[i].isdigit():
+                ht_idx = i
+                break
+
+        local_interface = " ".join(parts[1:ht_idx]) if ht_idx else ""
+        hold_time = int(parts[ht_idx]) if ht_idx else None
+
+        tail = parts[ht_idx + 1 :] if ht_idx is not None else []
+        capability = ""
+        platform = ""
+        port_id = ""
+
+        if tail:
+            port_id = tail[-1]
+            platform = tail[-2] if len(tail) >= 2 else ""
+            capability = " ".join(tail[:-2]).strip() if len(tail) >= 2 else ""
+
+        rows[count] = {
+            "device_id": device_id,
+            "local_interface": local_interface,
+            "hold_time": hold_time,
+            "capability": capability,
+            "platform": platform,
+            "port_id": port_id,
+            "raw": ln.strip(),
+            "source_os": "cisco_xr",
+        }
+        count += 1
+
+    if return_envelope:
+        return {"rows": rows, "meta": {"detected_style": "xr_heuristic", "count": count}, "error": parse_error}
+
+    return rows if rows else ({"error": parse_error} if parse_error else {})
+
+def cisco_parse_show_lldp_neighbors_xr(
+    output: str,
+    *,
+    return_envelope: bool = False,
+) -> Dict:
+    """Best-effort IOS-XR LLDP neighbor parser.
+
+    IOS-XR LLDP output varies. This parser looks for a common neighbor table:
+      - device id / chassis id
+      - local interface
+      - hold-time
+      - port id / port description
+
+    """
+    raw = "" if output is None else str(output)
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+        "LLDP is not enabled",
+        "lldp is not enabled",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    rows: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    started = False
+    spans: Optional[List[Tuple[str, int, int]]] = None
+
+    def _build_spans(header: str) -> Optional[List[Tuple[str, int, int]]]:
+        labels: List[Tuple[str, Sequence[str]]] = [
+            ("device_id", ("Device ID", "Chassis ID", "System Name", "Neighbor")),
+            ("local_interface", ("Local Intf", "Local Interface", "Local Port")),
+            ("hold_time", ("Hold-time", "Hold Time", "Holdtime", "Holdtme")),
+            ("port_id", ("Port ID", "Port Description", "PortID")),
+        ]
+        found: List[Tuple[str, int]] = []
+        for key, variants in labels:
+            pos = -1
+            for v in variants:
+                p = header.find(v)
+                if p >= 0:
+                    pos = p
+                    break
+            if pos >= 0:
+                found.append((key, pos))
+        keys = {k for k, _ in found}
+        if not {"device_id", "local_interface", "hold_time", "port_id"}.issubset(keys):
+            return None
+        found.sort(key=lambda x: x[1])
+        spans: List[Tuple[str, int, int]] = []
+        for i, (key, start) in enumerate(found):
+            end = found[i + 1][1] if i + 1 < len(found) else len(header)
+            spans.append((key, start, end))
+        return spans
+
+    for line in raw.splitlines():
+        ln = (line or "").rstrip("\n")
+        if not ln.strip():
+            continue
+        lnl = ln.lower().strip()
+
+        if not started and ("device id" in lnl or "chassis id" in lnl or "system name" in lnl) and ("local" in lnl) and ("port" in lnl):
+            spans = _build_spans(ln)
+            started = True
+            continue
+
+        if not started:
+            continue
+
+        if set(ln.strip()) <= {"-", " "}:
+            continue
+        if lnl.startswith(("capability", "total", "entries", "lldp")):
+            continue
+
+        if spans:
+            parsed: Dict[str, str] = {}
+            padded = ln + (" " * 4)
+            for key, start, end in spans:
+                parsed[key] = padded[start:end].strip()
+            ht = parsed.get("hold_time", "").strip()
+            if not ht.isdigit():
+                continue
+            rows[count] = {
+                "device_id": parsed.get("device_id", "").strip(),
+                "local_interface": parsed.get("local_interface", "").strip(),
+                "hold_time": int(ht),
+                "port_id": parsed.get("port_id", "").strip(),
+                "raw": ln.strip(),
+                "source_os": "cisco_xr",
+            }
+            count += 1
+            continue
+
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+        ht_idx = None
+        for i in range(1, len(parts)):
+            if parts[i].isdigit():
+                ht_idx = i
+                break
+        if ht_idx is None:
+            continue
+        device_id = parts[0]
+        local_interface = " ".join(parts[1:ht_idx])
+        hold_time = int(parts[ht_idx])
+        port_id = " ".join(parts[ht_idx + 1 :]).strip()
+        rows[count] = {
+            "device_id": device_id,
+            "local_interface": local_interface,
+            "hold_time": hold_time,
+            "port_id": port_id,
+            "raw": ln.strip(),
+            "source_os": "cisco_xr",
+        }
+        count += 1
+
+    if return_envelope:
+        return {
+            "rows": rows,
+            "meta": {"detected_style": "xr_fixed_columns" if spans else "xr_heuristic", "count": count},
+            "error": parse_error,
+        }
+
+    return rows if rows else ({"error": parse_error} if parse_error else {})
+
+def cisco_parse_show_version_xr(output: str, *, return_envelope: bool = False) -> Dict[str, Any]:
+    """
+    Parse IOS-XR "show version" CLI (best-effort).
+
+    Extracts (when present):
+      - software_version
+      - chassis_model
+      - system_serial_number (if present)
+      - uptime
+      - build_label (if present)
+
+    Returns:
+      - default: dict
+      - if return_envelope=True: {"data": <dict>, "meta": {...}, "error": <str|None>}
+    """
+    raw = "" if output is None else str(output)
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+
+    data: Dict[str, Any] = {}
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    # Cisco IOS XR Software, Version 25.3.1 LNT
+    for ln in lines:
+        m = re.search(
+            r"^(?:Cisco\s+)?IOS\s+XR\s+Software,\s*Version\s*:?\s*(?P<v>.+?)\s*$",
+            ln,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            data["software_version"] = m.group("v").strip()
+            break
+
+    # Label        : 25.3.1
+    for ln in lines:
+        m = re.search(r"^Label\s*:\s*(?P<label>\S+)\s*$", ln, flags=re.IGNORECASE)
+        if m:
+            data["build_label"] = m.group("label").strip()
+            break
+
+    # cisco XRd-CP-C-01 processor with 24GB of memory
+    for ln in lines:
+        m = re.search(r"^cisco\s+(?P<model>.+?)\s+processor\b", ln, flags=re.IGNORECASE)
+        if m:
+            data["chassis_model"] = m.group("model").strip()
+            break
+
+    # Additional model fallbacks (varies by platform)
+    if not data.get("chassis_model"):
+        for ln in lines:
+            m = re.search(r"^(?:Platform|System\s+Type|Model|Hardware)\s*:\s*(?P<model>.+?)\s*$", ln, flags=re.IGNORECASE)
+            if m:
+                data["chassis_model"] = m.group("model").strip()
+                break
+
+    # xr1 uptime is 1 week, 4 days, 16 hours, 56 minutes
+    for ln in lines:
+        m = re.search(r"\buptime\s+is\s+(?P<uptime>.+?)\s*$", ln, flags=re.IGNORECASE)
+        if m:
+            data["uptime"] = m.group("uptime").strip()
+            break
+
+    # Serial is not always present in XR "show version", but keep a couple of common patterns
+    for ln in lines:
+        m = re.search(r"^(?:Processor\s+Board\s+ID|System\s+serial\s+number)\s*[: ]\s*(?P<sn>\S+)\s*$", ln, flags=re.IGNORECASE)
+        if m:
+            data["system_serial_number"] = m.group("sn").strip()
+            break
+
+    if return_envelope:
+        return {
+            "data": data,
+            "meta": {"device_type": "cisco_xr", "detected_style": "xr_cli"},
+            "error": parse_error,
+        }
+
+    return data if not parse_error else {"error": parse_error, **data}
+
+def cisco_parse_show_version_auto(
+    output: Any,
+    *,
+    device_type: Optional[str] = None,
+    output_type: str = "auto",
+) -> Dict[str, Any]:
+    """
+    Parse 'show version' across supported Cisco OS families.
+
+    - If output_type is "json" (or "auto" and the payload looks JSON-ish),
+      tries the NX-OS JSON parser pipeline (cisco_parse_device_json_from_string).
+    - If output_type is "cli" (or JSON not detected), uses a device-specific CLI parser:
+        * cisco_xr   -> cisco_parse_show_version_xr
+        * cisco_nxos -> cisco_parse_show_version_nxos_cli
+        * else       -> cisco_parse_show_version (IOS/IOS-XE)
+    """
+    dt = cisco_normalize_device_type(device_type)
+    ot = (output_type or "auto").strip().lower()
+    raw = "" if output is None else (output if isinstance(output, str) else str(output))
+    raw_l = raw.lstrip()
+
+    # Best-effort JSON path (NX-OS json-pretty)
+    if ot in ("json", "auto"):
+        # allow a little preamble before the first '{'/'['
+        m = re.search(r"[\{\[]", raw)
+        if m and m.start() < 2000:
+            candidate = raw[m.start():].lstrip()
+            if candidate.startswith(("{", "[")):
+                parsed = cisco_parse_device_json_from_string(dt or "cisco_nxos", candidate)
+                if isinstance(parsed, dict) and not parsed.get("error"):
+                    return parsed
+
+    # CLI path
+    if dt == "cisco_xr":
+        return cisco_parse_show_version_xr(raw, return_envelope=False)
+
+    if dt == "cisco_nxos":
+        return cisco_parse_show_version_nxos_cli(raw, return_envelope=False)
+
+    # Default IOS / IOS-XE style
+    return cisco_parse_show_version(raw)
+
+def cisco_parse_show_version_auto(
+    output: Any,
+    *,
+    device_type: Optional[str] = None,
+    output_type: str = "auto",
+) -> Dict[str, Any]:
+    """
+    Parse "show version" across supported Cisco OS families.
+
+    - If output_type is "json" (or "auto" and the payload looks like JSON),
+      tries the NX-OS JSON parser pipeline (cisco_parse_device_json_from_string).
+      If JSON parsing fails, it falls back to CLI parsing.
+    - If output_type is "cli" (or JSON not detected), uses a device-specific
+      CLI parser:
+        * cisco_xr   -> cisco_parse_show_version_xr
+        * cisco_nxos -> cisco_parse_show_version_nxos_cli
+        * else       -> cisco_parse_show_version (IOS/IOS-XE)
+
+    Returns the parser's native dict. For NX-OS JSON, that is the normalized
+    structure returned by _parse_cisco_nxos_show_version (raw + normalized).
+    """
+    dt = (device_type or "").strip().lower().replace("-", "_")
+    ot = (output_type or "auto").strip().lower()
+    raw = "" if output is None else (output if isinstance(output, str) else str(output))
+    raw_strip = raw.lstrip()
+
+    # --- JSON path (best-effort) ---
+    if ot in ("json", "auto") and raw_strip.startswith(("{", "[")):
+        # NX-OS json-pretty is the common case; the parser auto-detects show-version keys.
+        parsed = cisco_parse_device_json_from_string(dt or "cisco_nxos", raw)
+        if isinstance(parsed, dict) and not parsed.get("error"):
+            return parsed
+        # If the caller explicitly asked for json and we couldn't parse, fall through to CLI.
+
+    # --- CLI path ---
+    if dt in ("cisco_xr", "iosxr", "cisco_iosxr"):
+        return cisco_parse_show_version_xr(raw, return_envelope=False)
+
+    if dt in ("cisco_nxos", "nxos", "cisco_nexus"):
+        return cisco_parse_show_version_nxos_cli(raw, return_envelope=False)
+
+    # Default: IOS / IOS-XE style
+    return cisco_parse_show_version(raw)
+
+def cisco_extract_show_version_fields(
+    *,
+    device_type: Optional[str],
+    show_version_parsed: Dict[str, Any],
+    raw_output: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Normalize 'show version' into a stable, cross-platform field set.
+
+    Output keys (when available):
+      - software_version
+      - chassis_model
+      - system_serial_number
+      - base_ethernet_mac_address
+      - uptime
+    """
+    dt = cisco_normalize_device_type(device_type)
+    parsed = show_version_parsed or {}
+
+    out: Dict[str, Any] = {}
+
+    # NX-OS normalized schema path
+    normalized = parsed.get("normalized") if isinstance(parsed, dict) else None
+    if isinstance(normalized, dict):
+        versions = ((normalized.get("software") or {}).get("versions") or {})
+        if isinstance(versions, dict):
+            if dt == "cisco_nxos":
+                out["software_version"] = _as_str(versions.get("nxos") or versions.get("kickstart") or versions.get("system"))
+        chassis = normalized.get("chassis") or {}
+        if isinstance(chassis, dict):
+            out["chassis_model"] = _as_str(chassis.get("model") or chassis.get("description"))
+            out["system_serial_number"] = _as_str(chassis.get("system_serial_number"))
+            out["base_ethernet_mac_address"] = _as_str(chassis.get("base_mac_address"))
+        if normalized.get("uptime"):
+            out["uptime"] = _as_str(normalized.get("uptime"))
+
+    # NX-OS raw fallback keys (if present)
+    raw = parsed.get("raw") if isinstance(parsed, dict) else None
+    if isinstance(raw, dict):
+        if not out.get("software_version"):
+            if raw.get("nxos_ver_str"):
+                out["software_version"] = _as_str(raw.get("nxos_ver_str"))
+            elif raw.get("kickstart_ver_str"):
+                out["software_version"] = _as_str(raw.get("kickstart_ver_str"))
+
+        if not out.get("chassis_model") and raw.get("chassis_id"):
+            out["chassis_model"] = _as_str(raw.get("chassis_id"))
+
+        if not out.get("system_serial_number") and raw.get("proc_board_id"):
+            out["system_serial_number"] = _as_str(raw.get("proc_board_id"))
+
+    # Flat schema fallback (IOS / IOS-XE / IOS-XR CLI parsers)
+    if not out.get("software_version"):
+        sv = parsed.get("software_version") or parsed.get("version")
+        if sv:
+            out["software_version"] = _as_str(sv)
+
+    if not out.get("chassis_model"):
+        cm = parsed.get("chassis_model") or parsed.get("model_number") or parsed.get("platform") or parsed.get("model") or parsed.get("hardware")
+        if cm:
+            out["chassis_model"] = _as_str(cm)
+
+    if not out.get("system_serial_number"):
+        sn = parsed.get("system_serial_number")
+        if sn:
+            out["system_serial_number"] = _as_str(sn)
+
+    if not out.get("base_ethernet_mac_address"):
+        mac = parsed.get("base_ethernet_mac_address") or parsed.get("system_mac") or parsed.get("base_mac_address")
+        if mac:
+            out["base_ethernet_mac_address"] = _as_str(mac)
+
+    # Final CLI fallback if still missing key fields
+    if raw_output:
+        if dt == "cisco_xr" and not out.get("chassis_model"):
+            extra = cisco_parse_show_version_xr(raw_output, return_envelope=False)
+            if isinstance(extra, dict) and not extra.get("error"):
+                out["chassis_model"] = out.get("chassis_model") or extra.get("chassis_model")
+                out["system_serial_number"] = out.get("system_serial_number") or extra.get("system_serial_number")
+
+        if dt == "cisco_nxos" and not out.get("software_version"):
+            extra = cisco_parse_show_version_nxos_cli(raw_output, return_envelope=False)
+            if isinstance(extra, dict) and not extra.get("error"):
+                out["software_version"] = out.get("software_version") or extra.get("software_version")
+                out["chassis_model"] = out.get("chassis_model") or extra.get("chassis_model")
+                out["system_serial_number"] = out.get("system_serial_number") or extra.get("system_serial_number")
+
+    return {k: v for k, v in out.items() if v not in (None, "", "None")}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Cisco nxos specific functions
+
+
+
+# TODO Incorporate this with the collected nxos data
+def cisco_nxos_parse_show_mac_address_table_count_json(
+    data: Dict[str, Any],
+    *,
+    device_type: Optional[str] = None,
+    return_envelope: bool = False,
+) -> Dict[str, Any]:
+    """
+    NX-OS JSON parser for:
+      show mac address-table count | json / json-pretty
+
+    NX-OS schema example:
+      {
+        "TABLE-macaddtblcount": {
+          "count_str": "MAC Entries for all vlans :",
+          "dyn_cnt": "0",
+          "static_cnt": "0",
+          "secure_cnt": "0",
+          "total_cnt": "0",
+          "otv_cnt": "0",
+          "rvtep_static_cnt": "0"
+        }
+      }
+    """
+
+    def _as_int_local(v: Any) -> Optional[int]:
+        try:
+            if v is None:
+                return None
+            s = str(v).strip()
+            if not s or s == "-":
+                return None
+            return int(s)
+        except Exception:
+            return None
+
+    table = data.get("TABLE-macaddtblcount") or data.get("TABLE_macaddtblcount") or {}
+    if not isinstance(table, dict) or not table:
+        err = {"error": "unsupported_nxos_json_schema_for_mac_count"}
+        if return_envelope:
+            return {"data": {}, "meta": {"device_type": device_type, "output_type": "json"}, "error": err["error"]}
+        return err
+
+    totals: Dict[str, Any] = {}
+
+    # Keep consistent keys with your CLI output where possible
+    dyn = _as_int_local(table.get("dyn_cnt"))
+    sta = _as_int_local(table.get("static_cnt"))
+    tot = _as_int_local(table.get("total_cnt"))
+    sec = _as_int_local(table.get("secure_cnt"))
+    otv = _as_int_local(table.get("otv_cnt"))
+    rvtep_sta = _as_int_local(table.get("rvtep_static_cnt"))
+
+    if dyn is not None:
+        totals["total_dynamic"] = dyn
+    if sta is not None:
+        totals["total_static"] = sta
+    if tot is not None:
+        totals["total_in_use"] = tot  # NX-OS calls this total_cnt (for all VLANs)
+    if sec is not None:
+        totals["total_secure"] = sec
+    if otv is not None:
+        totals["total_otv"] = otv
+    if rvtep_sta is not None:
+        totals["total_rvtep_static"] = rvtep_sta
+
+    out = {
+        "per_vlan": {},  # NX-OS JSON sample is explicitly "all vlans"
+        "totals": totals,
+        "nxos": {
+            "id_out": str(table.get("id-out") or "").strip() or None,
+            "count_str": str(table.get("count_str") or "").strip() or None,
+        },
+    }
+
+    meta = {
+        "device_type": device_type,
+        "detected_command": "show_mac_address_table_count",
+        "output_type": "json",
+        "schema": "nxos_TABLE-macaddtblcount",
+    }
+
+    if return_envelope:
+        return {"data": out, "meta": meta, "error": None}
+    return out
+
+
+def cisco_parse_show_mac_address_table_count_cli(
+    output: str,
+    *,
+    device_type: Optional[str] = None,
+    return_envelope: bool = False,
+) -> Dict[str, Any]:
+    """
+    Parse CLI output of: `show mac address-table count`
+
+    Handles blocks like:
+      Mac Entries for Vlan 123:
+        Dynamic Address Count  : 0
+        Static  Address Count  : 1
+        Total Mac Addresses    : 1
+
+    And totals like:
+      Total Dynamic Address Count  : 27
+      Total Static  Address Count  : 2
+      Total Mac Address In Use     : 29
+      Total Mac Address Space Available: 32739
+
+    Returns:
+      - default: {"per_vlan": {...}, "totals": {...}}
+      - if return_envelope=True: {"data": <dict>, "meta": {...}, "error": <str|None>}
+    """
+    raw = "" if output is None else str(output)
+
+    per_vlan: Dict[str, Dict[str, Any]] = {}
+    totals: Dict[str, Any] = {}
+
+    rx_vlan_hdr = re.compile(r"^Mac\s+Entries\s+for\s+Vlan\s+(?P<vlan>\d+)\s*:\s*$", re.IGNORECASE)
+
+    rx_dyn = re.compile(r"^Dynamic\s+Address\s+Count\s*:\s*(?P<v>\d+)\s*$", re.IGNORECASE)
+    rx_sta = re.compile(r"^Static\s+Address\s+Count\s*:\s*(?P<v>\d+)\s*$", re.IGNORECASE)
+    rx_tot = re.compile(r"^Total\s+Mac\s+Addresses?\s*:\s*(?P<v>\d+)\s*$", re.IGNORECASE)
+
+    rx_total_dyn = re.compile(r"^Total\s+Dynamic\s+Address\s+Count\s*:\s*(?P<v>\d+)\s*$", re.IGNORECASE)
+    rx_total_sta = re.compile(r"^Total\s+Static\s+Address\s+Count\s*:\s*(?P<v>\d+)\s*$", re.IGNORECASE)
+    rx_in_use = re.compile(r"^Total\s+Mac\s+Address(?:es)?\s+In\s+Use\s*:\s*(?P<v>\d+)\s*$", re.IGNORECASE)
+    rx_space = re.compile(r"^Total\s+Mac\s+Address\s+Space\s+Available\s*:\s*(?P<v>\d+)\s*$", re.IGNORECASE)
+
+    current_vlan: Optional[str] = None
+
+    for line in raw.splitlines():
+        ln = (line or "").strip()
+        if not ln:
+            continue
+
+        m = rx_vlan_hdr.match(ln)
+        if m:
+            current_vlan = m.group("vlan")
+            per_vlan.setdefault(current_vlan, {})
+            continue
+
+        # per-vlan lines
+        if current_vlan:
+            md = rx_dyn.match(ln)
+            if md:
+                per_vlan[current_vlan]["dynamic"] = int(md.group("v"))
+                continue
+            ms = rx_sta.match(ln)
+            if ms:
+                per_vlan[current_vlan]["static"] = int(ms.group("v"))
+                continue
+            mt = rx_tot.match(ln)
+            if mt:
+                per_vlan[current_vlan]["total"] = int(mt.group("v"))
+                continue
+
+        # totals lines (outside vlan blocks)
+        md = rx_total_dyn.match(ln)
+        if md:
+            totals["total_dynamic"] = int(md.group("v"))
+            continue
+        ms = rx_total_sta.match(ln)
+        if ms:
+            totals["total_static"] = int(ms.group("v"))
+            continue
+        mu = rx_in_use.match(ln)
+        if mu:
+            totals["total_in_use"] = int(mu.group("v"))
+            continue
+        ma = rx_space.match(ln)
+        if ma:
+            totals["total_space_available"] = int(ma.group("v"))
+            continue
+
+    data = {"per_vlan": per_vlan, "totals": totals}
+
+    meta = {
+        "device_type": device_type,
+        "detected_command": "show_mac_address_table_count",
+        "output_type": "cli",
+        "vlan_blocks": len(per_vlan),
+    }
+
+    if return_envelope:
+        return {"data": data, "meta": meta, "error": None}
+    return data
+
+
+def cisco_parse_show_mac_address_table_count_json(
+    data: Dict[str, Any],
+    *,
+    device_type: Optional[str] = None,
+    return_envelope: bool = False,
+) -> Dict[str, Any]:
+    """
+    JSON parser for `show mac address-table count`.
+
+    - If NX-OS schema TABLE-macaddtblcount is present, use the NX-OS parser.
+    - Otherwise keep best-effort deep-search for common total keys.
+    """
+    if isinstance(data, dict) and ("TABLE-macaddtblcount" in data or "TABLE_macaddtblcount" in data):
+        return cisco_nxos_parse_show_mac_address_table_count_json(
+            data, device_type=device_type, return_envelope=return_envelope
+        )
+
+    # ---- existing best-effort fallback (keep your current logic) ----
+    def _deep_iter(obj: Any):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                yield (k, v)
+                yield from _deep_iter(v)
+        elif isinstance(obj, list):
+            for it in obj:
+                yield from _deep_iter(it)
+
+    def _key_norm(k: Any) -> str:
+        return str(k).strip().lower().replace(" ", "_")
+
+    def _as_int_local(v: Any) -> Optional[int]:
+        try:
+            if v is None:
+                return None
+            s = str(v).strip()
+            if not s or s == "-":
+                return None
+            return int(s)
+        except Exception:
+            return None
+
+    per_vlan: Dict[str, Dict[str, Any]] = {}
+    totals: Dict[str, Any] = {}
+
+    key_map = {
+        "total_mac_address_in_use": "total_in_use",
+        "total_mac_addresses_in_use": "total_in_use",
+        "total_mac_address_in_use_count": "total_in_use",
+        "total_dynamic_address_count": "total_dynamic",
+        "total_static_address_count": "total_static",
+        "total_mac_address_space_available": "total_space_available",
+        "total_mac_address_space_avail": "total_space_available",
+    }
+
+    for k, v in _deep_iter(data):
+        kn = _key_norm(k)
+        if kn in key_map:
+            iv = _as_int_local(v)
+            if iv is not None:
+                totals[key_map[kn]] = iv
+
+    out = {"per_vlan": per_vlan, "totals": totals}
+
+    meta = {
+        "device_type": device_type,
+        "detected_command": "show_mac_address_table_count",
+        "output_type": "json",
+        "schema": "best_effort",
+        "totals_found": sorted(list(totals.keys())),
+    }
+
+    if return_envelope:
+        return {"data": out, "meta": meta, "error": None}
+    return out
+
+
+def cisco_parse_show_mac_address_table_count_auto(
+    device_type: str,
+    output: Union[str, Dict[str, Any]],
+    output_type_flag: str = "cli",   # "cli" | "json" | "auto"
+    *,
+    return_envelope: bool = False,
+) -> Dict[str, Any]:
+    """
+    Auto wrapper for `show mac address-table count`.
+
+    - cli: uses cisco_parse_show_mac_address_table_count_cli
+    - json: loads JSON (dict or string) then uses cisco_parse_show_mac_address_table_count_json
+    - auto:
+        * dict -> json
+        * str starting with "{" -> json
+        * else -> cli
+    """
+    dt_raw = (device_type or "").strip()
+    flag = (output_type_flag or "cli").strip().lower()
+
+    if flag not in ("cli", "json", "auto"):
+        err = {"error": "invalid_output_type_flag"}
+        if return_envelope:
+            return {"data": {}, "meta": {"device_type": dt_raw, "output_type": flag}, "error": err["error"]}
+        return err
+
+    # ---------- json forced / inferred ----------
+    if flag == "json" or (flag == "auto" and isinstance(output, dict)):
+        if isinstance(output, dict):
+            return cisco_parse_show_mac_address_table_count_json(output, device_type=dt_raw, return_envelope=return_envelope)
+
+        raw = "" if output is None else str(output)
+        d = _json_load_dict_best_effort(raw)
+        if isinstance(d, dict) and d.get("error"):
+            if return_envelope:
+                return {"data": {}, "meta": {"device_type": dt_raw, "output_type": "json"}, "error": str(d.get("error"))}
+            return {"error": str(d.get("error"))}
+
+        return cisco_parse_show_mac_address_table_count_json(d, device_type=dt_raw, return_envelope=return_envelope)
+
+    # ---------- auto: try json if it looks like json ----------
+    if flag == "auto" and isinstance(output, str) and output.lstrip().startswith("{"):
+        d = _json_load_dict_best_effort(output)
+        if isinstance(d, dict) and not d.get("error"):
+            return cisco_parse_show_mac_address_table_count_json(d, device_type=dt_raw, return_envelope=return_envelope)
+
+    # ---------- cli ----------
+    if not isinstance(output, str):
+        err = {"error": "invalid_payload: expected cli string"}
+        if return_envelope:
+            return {"data": {}, "meta": {"device_type": dt_raw, "output_type": "cli"}, "error": err["error"]}
+        return err
+
+    return cisco_parse_show_mac_address_table_count_cli(output, device_type=dt_raw, return_envelope=return_envelope)
+
+def cisco_nexus_parse_show_access_list_matches(output):
+    """
+    parse the following from the nexus 9k devices and return a dict of the information below
+
+    show ip access-lists <access list id>
+
+    IP access list 123
+        statistics per-entry
+        10 remark Super Cool Access List
+        20 permit udp any any eq bootps [match=1361373]
+        30 permit udp any any eq bootpc [match=0]
+        40 permit ip any 10.8.0.0/16 [match=433189120]
+        ...
+        ...
+        325 deny ip any any [match=29278]
+
+    """
+
+    mac_address_count = {}
+
+
+    """
+    Regex - show mac address table count
+    """
+
+    regex_access_list_hw_matches = re.compile(
+        r'^(?P<access_list_line>[0-9]+)\s(?P<access_list_rule>(permit|deny)\s.*)\s\[match=(?P<access_list_hw_matches>[0-9]+)\]')
+
+    regex_access_list_none_hw_matches = re.compile(
+        r'^(?P<access_list_line>[0-9]+)\s(?P<access_list_rule>(permit|deny).*)$')
+
+    data = {}
+    count = 0
+    for line in output.splitlines():
+        a = re.search(regex_access_list_hw_matches, line.strip())
+        if a is not None and line.strip() != "":
+            data[count] = {
+                'access_list_line': a.groupdict()['access_list_line'],
+                'access_list_rule': a.groupdict()['access_list_rule'],
+                'access_list_hw_matches': a.groupdict()['access_list_hw_matches']
+            }
+            count = count + 1
+        elif a is None and line.strip() != "":
+            """
+            Does not match the expected output with hw matches involved
+            pull the rule information and 0 the matches
+            """
+            a = re.search(regex_access_list_none_hw_matches, line.strip())
+            if a is not None:
+                data[count] = {
+                    'access_list_line': a.groupdict()['access_list_line'],
+                    'access_list_rule': a.groupdict()['access_list_rule'],
+                    'access_list_hw_matches': 0
+                }
+                count = count + 1
+
+    return data
+
+def cisco_nxos_parse_show_mac_address_table_json(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - Input is NX-OS JSON (dict) for: `show mac address-table | json` (or json-pretty).
+      - Returns:
+          {
+            "device_type": "cisco_nxos",
+            "meta": {...},
+            "normalized": {"mac_address_table": {0:{...}, 1:{...}, ...}},
+            "raw": <original dict>
+          }
+    """
+
+    def _boolish(v: Any) -> Optional[bool]:
+        if v is None:
+            return None
+        s = str(v).strip().lower()
+        if s in ("t", "true", "1", "yes", "y"):
+            return True
+        if s in ("f", "false", "0", "no", "n"):
+            return False
+        if s in ("-", ""):
+            return None
+        return None
+
+    def _as_int(v: Any) -> Optional[int]:
+        try:
+            if v is None:
+                return None
+            s = str(v).strip()
+            if s == "" or s == "-":
+                return None
+            return int(s)
+        except Exception:
+            return None
+
+    try:
+        table = data.get("TABLE_mac_address") or {}
+        rows = _ensure_list(table.get("ROW_mac_address"))
+
+        out: Dict[int, Dict[str, Any]] = {}
+        i = 0
+
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+
+            mac_raw = (
+                r.get("disp_mac_addr")
+                or r.get("mac")
+                or r.get("mac_addr")
+                or r.get("mac-address")
+                or r.get("mac_address")
+            )
+            vlan_raw = r.get("disp_vlan") or r.get("vlan") or r.get("vlan_id")
+            port = r.get("disp_port") or r.get("port") or r.get("interface") or r.get("intf") or ""
+            typ = r.get("disp_type") or r.get("type") or ""
+            age_raw = r.get("disp_age") or r.get("age")
+
+            if not mac_raw or not vlan_raw or not port:
+                # still keep it if it has mac+port; VLAN is typically always present though
+                if not mac_raw or not port:
+                    continue
+
+            mac_norm = _cisco_normalize_mac(str(mac_raw))
+            vlan_i = _as_int(vlan_raw)
+            age_i = _as_int(age_raw)
+
+            out[i] = {
+                "vlan": vlan_i if vlan_i is not None else str(vlan_raw).strip(),
+                **mac_norm,
+                "mac_raw": str(mac_raw).strip(),
+                "type": str(typ).strip(),
+                "interface": str(port).strip(),
+                "age": str(age_raw).strip() if age_raw is not None else "",
+                "age_int": age_i,
+                "is_secure": _boolish(r.get("disp_is_secure")),
+                "is_notify": _boolish(r.get("disp_is_ntfy")),
+                "raw": r,
+                "source_os": "nxos",
+            }
+            i += 1
+
+        meta = {
+            "device_type": "cisco_nxos",
+            "detected_command": "show_mac_address_table",
+            "row_count": len(out),
+        }
+
+        return {
+            "device_type": "cisco_nxos",
+            "meta": meta,
+            "normalized": {"mac_address_table": out},
+            "raw": data,
+        }
+
+    except Exception as exc:
+        return {"error": f"parse_failed: cisco_nxos_show_mac_address_table_json: {type(exc).__name__}: {exc}"}
+
+
+
+
+def cisco_parse_show_version_nxos_cli(output: str, *, return_envelope: bool = False) -> Dict[str, Any]:
+    """
+    Parse NX-OS "show version" CLI (best-effort).
+
+    Many NX-OS devices support JSON via "| json-pretty", but some do not.
+    This function is used as a fallback when JSON parsing fails or when the
+    device is configured to return CLI output.
+
+    Extracts (when present):
+      - software_version (NX-OS)
+      - chassis_model
+      - system_serial_number
+      - uptime
+    """
+    raw = "" if output is None else str(output)
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+
+    data: Dict[str, Any] = {}
+
+    # NXOS: version 10.3(8)
+    for ln in lines:
+        m = re.search(r"\bNXOS\s*:\s*version\s+(?P<v>\S+)", ln, flags=re.IGNORECASE)
+        if m:
+            data["software_version"] = m.group("v").strip()
+            break
+
+    # system: version 10.3(8)
+    if not data.get("software_version"):
+        for ln in lines:
+            m = re.search(r"\bsystem\s*:\s*version\s+(?P<v>\S+)", ln, flags=re.IGNORECASE)
+            if m:
+                data["software_version"] = m.group("v").strip()
+                break
+
+    # fallback generic "Version X"
+    if not data.get("software_version"):
+        for ln in lines:
+            m = re.search(r"\bVersion\s+(?P<v>\S+)", ln, flags=re.IGNORECASE)
+            if m:
+                data["software_version"] = m.group("v").strip()
+                break
+
+    # chassis model line: "cisco Nexus9000 C9300v Chassis"
+    for ln in lines:
+        m = re.search(r"^cisco\s+(?P<model>.+?)\s+Chassis\b", ln, flags=re.IGNORECASE)
+        if m:
+            data["chassis_model"] = f"cisco {m.group('model').strip()} Chassis"
+            break
+
+    # serial: "Processor Board ID FOC..."
+    for ln in lines:
+        m = re.search(r"^Processor\s+Board\s+ID\s+(?P<sn>\S+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["system_serial_number"] = m.group("sn").strip()
+            break
+
+    # uptime: "Kernel uptime is 12 day(s), 3 hour(s), 4 minute(s), 5 second(s)"
+    for ln in lines:
+        m = re.search(r"Kernel\s+uptime\s+is\s+(?P<uptime>.+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["uptime"] = m.group("uptime").strip()
+            break
+
+    if return_envelope:
+        return {"data": data, "meta": {"device_type": "cisco_nxos", "detected_style": "nxos_cli"}, "error": None}
+
+    return data
+
+def cisco_nxos_parse_show_ip_arp_table_json(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+    - Input is NX-OS JSON (dict) for: `show ip arp | json` (or json-pretty)
+    - Returns:
+        {
+          "device_type": "cisco_nxos",
+          "meta": {...},
+          "normalized": {"ip_arp_table": {0:{...}, 1:{...}, ...}},
+          "raw": <original dict>
+        }
+
+    Observed NX-OS schema (example):
+      {
+        "TABLE_vrf": {
+          "ROW_vrf": {
+            "vrf-name-out": "default",
+            "cnt-total": "123",
+            "TABLE_adj": {
+              "ROW_adj": [
+                {"intf-out": "Vlan10", "ip-addr-out": "10.0.0.1", "time-stamp": "PT11S", "mac": "aabb.ccdd.eeff", "flags": null},
+                {"intf-out": "Vlan10", "ip-addr-out": "10.0.0.2", "time-stamp": "PT26S", "incomplete": "true", "flags": null}
+              ]
+            }
+          }
+        }
+      }
+    """
+    table_vrf = data.get("TABLE_vrf") or {}
+    vrf_rows = _ensure_list(table_vrf.get("ROW_vrf"))
+
+    rows_out: Dict[int, Dict[str, Any]] = {}
+    count = 0
+    vrf_names: List[str] = []
+
+    for vrf in vrf_rows:
+        if not isinstance(vrf, dict):
+            continue
+
+        vrf_name = (
+            vrf.get("vrf-name-out")
+            or vrf.get("vrf_name")
+            or vrf.get("vrf-name")
+            or vrf.get("vrf")
+            or ""
+        )
+        if vrf_name and vrf_name not in vrf_names:
+            vrf_names.append(str(vrf_name))
+
+        table_adj = vrf.get("TABLE_adj") or {}
+        adj_rows = _ensure_list(table_adj.get("ROW_adj"))
+
+        for r in adj_rows:
+            if not isinstance(r, dict):
+                continue
+
+            ip = r.get("ip-addr-out") or r.get("ip_addr") or r.get("ip") or r.get("address")
+            if not ip:
+                continue
+
+            ip = str(ip).strip()
+            try:
+                if ipaddress.ip_address(ip).version != 4:
+                    continue
+            except Exception:
+                # skip any weird tokens; NX-OS output should be IPv4 here
+                continue
+
+            intf = r.get("intf-out") or r.get("interface") or r.get("intf") or ""
+            ts = r.get("time-stamp") or r.get("age") or r.get("time_stamp") or ""
+            mac = r.get("mac")
+            incomplete = str(r.get("incomplete") or "").strip().lower() in ("true", "1", "yes")
+
+            if mac:
+                mac_norm = _cisco_normalize_mac(str(mac))
+            else:
+                if not incomplete:
+                    # treat as incomplete if field missing but no explicit marker
+                    incomplete = True
+                mac_norm = {"mac_address": "INCOMPLETE", "mac_address_condensed": ""}
+
+            age_seconds = _nxos_duration_to_seconds(ts)
+
+            rows_out[count] = {
+                "ipv4_address": ip,
+                **mac_norm,
+                "interface": str(intf).strip(),
+                "age": str(ts).strip(),
+                "age_seconds": age_seconds,
+                "flags": r.get("flags"),
+                "vrf": str(vrf_name).strip(),
+                "incomplete": bool(incomplete),
+                "raw": r,
+                "source_os": "nxos",
+            }
+            count += 1
+
+    meta = {
+        "device_type": "cisco_nxos",
+        "detected_command": "show_ip_arp_table",
+        "vrf_names": vrf_names,
+        "vrf_count": len(vrf_names),
+        "row_count": count,
+    }
+
+    return {
+        "device_type": "cisco_nxos",
+        "meta": meta,
+        "normalized": {"ip_arp_table": rows_out},
+        "raw": data,
+    }
+
+
+def cisco_parse_show_version_nxos_cli(output: str, *, return_envelope: bool = False) -> Dict[str, Any]:
+    """
+    Parse NX-OS "show version" CLI (best-effort).
+
+    Extracts (when present):
+      - software_version (NX-OS)
+      - chassis_model
+      - system_serial_number
+      - uptime
+    """
+    raw = "" if output is None else str(output)
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+
+    data: Dict[str, Any] = {}
+
+    error_markers = (
+        "Invalid input detected",
+        "% Invalid input",
+        "Incomplete command",
+        "Ambiguous command",
+        "Unknown command",
+    )
+    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
+
+    # NXOS: version 10.3(8)  OR  NX-OS: version 10.3(8)
+    for ln in lines:
+        m = re.search(r"\bNX-?OS\b\s*:\s*version\s+(?P<v>\S+)", ln, flags=re.IGNORECASE)
+        if m:
+            data["software_version"] = m.group("v").strip()
+            break
+
+    # system: version 10.3(8)
+    if not data.get("software_version"):
+        for ln in lines:
+            m = re.search(r"\bsystem\s*:\s*version\s+(?P<v>\S+)", ln, flags=re.IGNORECASE)
+            if m:
+                data["software_version"] = m.group("v").strip()
+                break
+
+    # fallback generic "Version X"
+    if not data.get("software_version"):
+        for ln in lines:
+            m = re.search(r"\bVersion\s+(?P<v>\S+)", ln, flags=re.IGNORECASE)
+            if m:
+                data["software_version"] = m.group("v").strip()
+                break
+
+    # chassis model line: "cisco Nexus9000 C9300v Chassis"
+    for ln in lines:
+        m = re.search(r"^cisco\s+(?P<model>.+?)\s+Chassis\b", ln, flags=re.IGNORECASE)
+        if m:
+            data["chassis_model"] = f"cisco {m.group('model').strip()} Chassis"
+            break
+
+    # serial: "Processor Board ID FOC..."
+    for ln in lines:
+        m = re.search(r"^Processor\s+Board\s+ID\s+(?P<sn>\S+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["system_serial_number"] = m.group("sn").strip()
+            break
+
+    # uptime: "Kernel uptime is ..."
+    for ln in lines:
+        m = re.search(r"Kernel\s+uptime\s+is\s+(?P<uptime>.+)$", ln, flags=re.IGNORECASE)
+        if m:
+            data["uptime"] = m.group("uptime").strip()
+            break
+
+    if return_envelope:
+        return {"data": data, "meta": {"device_type": "cisco_nxos", "detected_style": "nxos_cli"}, "error": parse_error}
+
+    return data if not parse_error else {"error": parse_error, **data}
+
 
 def cisco_nxos_parse_show_cdp_neighbors_json(data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -215,7 +3235,8 @@ def cisco_nxos_parse_show_cdp_neighbors_json(data: Dict[str, Any]) -> Dict[str, 
         "raw": data,
     }
 
-
+# Parse lldp neighbor output data from an nxos device.
+# The data should be in json format from the switches
 def cisco_nxos_parse_show_lldp_neighbors_json(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Notes / How to run:
@@ -279,62 +3300,6 @@ def cisco_nxos_parse_show_lldp_neighbors_json(data: Dict[str, Any]) -> Dict[str,
         "raw": data,
     }
 
-def _cisco_short_ifname(ifname: Any) -> Optional[str]:
-    """
-    Notes / How to run:
-      - Internal helper: convert long interface names to a short-ish form.
-      - Keeps unknown formats unchanged.
-    """
-    name = _as_str(ifname)
-    if not name:
-        return None
-
-    s = name.strip()
-    sl = s.lower()
-
-    # Already-short formats (normalize a few common caps)
-    if re.match(r"^(eth|gi|te|fa|fo|po|vl|lo|mgmt)\d", sl):
-        if sl.startswith("eth"):
-            return "Eth" + s[3:]
-        if sl.startswith("gi"):
-            return "Gi" + s[2:]
-        if sl.startswith("te"):
-            return "Te" + s[2:]
-        if sl.startswith("fa"):
-            return "Fa" + s[2:]
-        if sl.startswith("fo"):
-            return "Fo" + s[2:]
-        if sl.startswith("po"):
-            return "Po" + s[2:]
-        if sl.startswith("vl"):
-            return "Vl" + s[2:]
-        if sl.startswith("lo"):
-            return "Lo" + s[2:]
-        if sl.startswith("mgmt"):
-            return "mgmt" + s[4:]
-        return s
-
-    prefix_map = {
-        "tengigabitethernet": "Te",
-        "twentyfivegigabitethernet": "Twe",
-        "fortygigabitethernet": "Fo",
-        "hundredgigabitethernet": "Hu",
-        "gigabitethernet": "Gi",
-        "ethernet": "Eth",
-        "port-channel": "Po",
-        "portchannel": "Po",
-        "loopback": "Lo",
-        "vlan": "Vlan",
-        "management": "mgmt",
-        "mgmt": "mgmt",
-    }
-
-    for longp, shortp in prefix_map.items():
-        if sl.startswith(longp):
-            return shortp + s[len(longp) :]
-
-    return s
-
 def cisco_nxos_parse_show_interface_description_json(
     data: Dict[str, Any],
     *,
@@ -396,141 +3361,6 @@ def cisco_nxos_parse_show_interface_description_json(
         "error": None,
     }
     return out if return_envelope else (rows if rows else {})
-
-
-def cisco_parse_show_interface_description_cli(
-    output: str,
-    *,
-    device_type: str = "cisco",
-    return_envelope: bool = True,
-) -> Dict[str, Any]:
-    """
-    Notes / How to run:
-      - Input: raw CLI output from `show interface description` (IOS/XE/XR/NXOS without JSON)
-      - Goal: parse the common columns: Interface, Status, Protocol, Description
-      - Handles "admin down" / "administratively down" as a 2-token Status
-
-    Returns:
-      - If return_envelope:
-          {"rows": {0: {...}, ...}, "meta": {...}, "error": None|{...}}
-      - Else:
-          rows dict, or {"error": "..."} if parse_error
-    """
-    raw = "" if output is None else str(output)
-
-    # quick “this command failed” sniff
-    err_markers = (
-        "Invalid input detected",
-        "% Invalid input",
-        "Incomplete command",
-        "Ambiguous command",
-        "Unknown command",
-    )
-    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in err_markers) else None
-
-    rows: Dict[int, Dict[str, Any]] = {}
-    interfaces: Dict[str, Dict[str, Any]] = {}
-    count = 0
-    started = False
-
-    for line in raw.splitlines():
-        ln = (line or "").rstrip("\r\n")
-        if not ln.strip():
-            continue
-
-        lnl = ln.strip().lower()
-
-        # header-ish detection
-        if ("interface" in lnl and "description" in lnl) or lnl.startswith(("interface", "port", "----")):
-            started = True
-            continue
-        if not started and lnl.startswith(("show ", "router#", "switch#", "nxos#", "ios#", "xr#")):
-            continue
-
-        parts = ln.split()
-        if len(parts) < 3:
-            continue
-
-        intf = parts[0]
-        rest = parts[1:]
-
-        status: Optional[str]
-        protocol: Optional[str]
-        desc: Optional[str]
-
-        # "admin down down ..." or "administratively down down ..."
-        if len(rest) >= 3 and rest[0].lower() in ("admin", "administratively") and rest[1].lower() == "down":
-            status = f"{rest[0]} {rest[1]}"
-            protocol = rest[2]
-            desc = " ".join(rest[3:]).strip() or None
-        else:
-            status = rest[0]
-            protocol = rest[1] if len(rest) >= 2 else None
-            desc = " ".join(rest[2:]).strip() or None
-
-        ifname = _as_str(intf)
-        if not ifname:
-            continue
-
-        entry = {
-            "interface": ifname,
-            "interface_short": _cisco_short_ifname(ifname),
-            "status": _as_str(status),
-            "protocol": _as_str(protocol),
-            "description": _as_str(desc),
-            "source_os": device_type,
-            "raw": ln.strip(),
-        }
-        rows[count] = entry
-        interfaces[ifname] = entry
-        count += 1
-
-    meta = {
-        "detected_style": "cli",
-        "detected_command": "show_interface_description",
-        "count": count,
-    }
-
-    out = {
-        "rows": rows,
-        "interfaces": interfaces,
-        "meta": meta,
-        "error": ({"error": parse_error} if parse_error else None),
-    }
-    return out if return_envelope else (rows if rows else ({"error": parse_error} if parse_error else {}))
-
-
-def cisco_parse_show_interface_description_auto(
-    device_type: str,
-    output: Union[str, Dict[str, Any]],
-) -> Dict[str, Any]:
-    """
-    Notes / How to run:
-      - Prefer JSON parsing for NX-OS when the payload is JSON (string or dict).
-      - Fall back to CLI parsing for everything else.
-
-    Example:
-      parsed = cisco_parse_show_interface_description_auto("cisco_nxos", output_string)
-    """
-    dt = (device_type or "").strip().lower()
-
-    # If we already have a dict, try NX-OS JSON structure first
-    if isinstance(output, dict):
-        if dt in ("cisco_nxos", "nxos") and isinstance(output.get("TABLE_interface"), dict):
-            tab = output.get("TABLE_interface") or {}
-            if "ROW_interface" in tab:
-                return cisco_nxos_parse_show_interface_description_json(output, return_envelope=True)
-        # otherwise treat as “not supported here”
-        return {"error": "unsupported_payload_shape_for_interface_description"}
-
-    # string path: if NX-OS, attempt JSON-from-string pipeline, else CLI
-    raw = "" if output is None else str(output)
-    if dt in ("cisco_nxos", "nxos"):
-        attempt = cisco_parse_device_json_from_string("cisco_nxos", raw)
-        if isinstance(attempt, dict) and attempt.get("meta", {}).get("detected_command") == "show_interface_description":
-            return attempt
-
-    return cisco_parse_show_interface_description_cli(raw, device_type=device_type, return_envelope=True)
 
 def _parse_cisco_nxos_auto(data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -739,17 +3569,6 @@ _PARSERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "cisco_nxos": _parse_cisco_nxos_auto,
 }
 
-def _norm_device_type(device_type: str) -> Optional[str]:
-    s = device_type.strip().lower().replace("-", "_").replace(" ", "_")
-    # common aliases
-    aliases = {
-        "cisco_nx_os": "cisco_nxos",
-        "cisco_nxos": "cisco_nxos",
-        "nx_os": "cisco_nxos",
-        "nxos": "cisco_nxos",
-    }
-    return aliases.get(s)
-
 def parse_device_json(device_type: str, data: Any) -> Dict[str, Any]:
     """
     Parse structured (JSON) command output from a network device into a normalized dict.
@@ -767,7 +3586,7 @@ def parse_device_json(device_type: str, data: Any) -> Dict[str, Any]:
     if not isinstance(device_type, str) or not device_type.strip():
         return {"error": "missing_required_fields: device_type"}
 
-    dev = _norm_device_type(device_type)
+    dev = cisco_normalize_device_type(device_type)
     if dev is None:
         return {"error": "invalid_device_type"}
 
@@ -905,379 +3724,31 @@ def _parse_cisco_nxos_show_version(data: Dict[str, Any]) -> Dict[str, Any]:
 
     return out
 
-def cisco_parse_show_cdp_neighbors_auto(
-    device_type: str,
-    output: Union[str, Dict[str, Any]],
-    output_type_flag: str = "cli",  # cli | json | auto
-    *,
-    return_envelope: bool = False,
-) -> Dict[str, Any]:
-    """
-    Notes / How to run:
-      - device_type: cisco_ios | cisco_xe | cisco_xr | cisco_nxos
-      - output: cli text, OR dict, OR json-string (nxos)
-      - output_type_flag: cli|json|auto
-    """
-    dt_raw = (device_type or "").strip()
-    dt = dt_raw.lower()
-    flag = (output_type_flag or "cli").strip().lower()
-
-    is_xr = dt in ("cisco_xr", "iosxr", "xr")
-    is_nxos = dt in ("cisco_nxos", "nxos")
-
-    def _wrap(rows: Dict[int, Dict[str, Any]], meta: Dict[str, Any], error: Optional[str]) -> Dict[str, Any]:
-        if return_envelope:
-            return {"rows": rows, "meta": meta, "error": error}
-        return rows if error is None else {"error": error}
-
-    # Forced JSON
-    if flag == "json":
-        if not is_nxos:
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
-
-        if isinstance(output, dict):
-            nx = cisco_nxos_parse_show_cdp_neighbors_json(output)
-        else:
-            raw = "" if output is None else str(output)
-            nx = cisco_parse_device_json_from_string("cisco_nxos", raw)
-
-        if isinstance(nx, dict) and nx.get("error"):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
-
-        neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
-        if not isinstance(neighbors, dict):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_cdp_neighbors")
-
-        meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
-        meta.setdefault("device_type", dt_raw)
-        meta.setdefault("detected_command", "show_cdp_neighbors")
-        meta["output_type"] = "json"
-        return _wrap(neighbors, meta, None)
-
-    # Forced CLI
-    if flag == "cli":
-        if not isinstance(output, str):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "cli"}, "invalid_payload: expected cli string")
-
-        if is_xr:
-            res = cisco_parse_show_cdp_neighbors_xr(output, return_envelope=return_envelope)
-            if return_envelope and isinstance(res, dict):
-                meta = res.get("meta") or {}
-                meta.setdefault("device_type", dt_raw)
-                meta.setdefault("detected_command", "show_cdp_neighbors")
-                meta["output_type"] = "cli"
-                res["meta"] = meta
-            return res
-
-        res = cisco_parse_show_cdp_neighbors(output, device_type=device_type, return_envelope=return_envelope)
-        if return_envelope and isinstance(res, dict):
-            meta = res.get("meta") or {}
-            meta.setdefault("device_type", dt_raw)
-            meta.setdefault("detected_command", "show_cdp_neighbors")
-            meta["output_type"] = "cli"
-            res["meta"] = meta
-        return res
-
-    # Auto
-    if isinstance(output, dict):
-        if not is_nxos:
-            return _wrap({}, {"device_type": dt_raw, "output_type": "auto"}, "json_payload_only_supported_for_nxos_today")
-
-        nx = cisco_nxos_parse_show_cdp_neighbors_json(output)
-        neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
-        if not isinstance(neighbors, dict):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_cdp_neighbors")
-
-        meta = nx.get("meta") or {}
-        meta.setdefault("device_type", dt_raw)
-        meta.setdefault("detected_command", "show_cdp_neighbors")
-        meta["output_type"] = "json"
-        return _wrap(neighbors, meta, None)
-
-    raw = "" if output is None else str(output)
-    raw_l = raw.lstrip()
-
-    if is_nxos and raw_l.startswith(("{", "[")):
-        nx = cisco_parse_device_json_from_string("cisco_nxos", raw)
-        if isinstance(nx, dict) and not nx.get("error"):
-            neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
-            if isinstance(neighbors, dict):
-                meta = nx.get("meta") or {}
-                meta.setdefault("device_type", dt_raw)
-                meta.setdefault("detected_command", "show_cdp_neighbors")
-                meta["output_type"] = "json"
-                return _wrap(neighbors, meta, None)
-
-    # fallback: CLI parsing
-    if is_xr:
-        res = cisco_parse_show_cdp_neighbors_xr(raw, return_envelope=return_envelope)
-        if return_envelope and isinstance(res, dict):
-            meta = res.get("meta") or {}
-            meta.setdefault("device_type", dt_raw)
-            meta.setdefault("detected_command", "show_cdp_neighbors")
-            meta["output_type"] = "cli"
-            res["meta"] = meta
-        return res
-
-    res = cisco_parse_show_cdp_neighbors(raw, device_type=device_type, return_envelope=return_envelope)
-    if return_envelope and isinstance(res, dict):
-        meta = res.get("meta") or {}
-        meta.setdefault("device_type", dt_raw)
-        meta.setdefault("detected_command", "show_cdp_neighbors")
-        meta["output_type"] = "cli"
-        res["meta"] = meta
-    return res
-
-
-def cisco_allowed_commands(device_type) -> Dict[str, str]:
-    """
-
-        :param device_type (cisco_ios | cisco_xe | cisco_xr) etc:
-        :return: allowed commands that can be sent to a device for discovery / backup / etc purposes
-
-        Device types are based off what netmiko uses to describe a device using the autodiscover process
-        The list can be found here
-        https://ktbyers.github.io/netmiko/PLATFORMS.html
-
-        """
-
-    _SHOW_CMD_BY_DEVICE: Mapping[str, str] = {
-        "cisco_ios": {
-            "show_interface_description": "show interface description",
-            "show_interface_description_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_cdp_neighbors": "show cdp neighbors",
-            "show_cdp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_lldp_neighbors": "show lldp neighbors",
-            "show_lldp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_ip_arp_table": "show ip arp",
-            "show_ip_arp_table_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_mac_address_table": "show mac address-table",
-            "show_mac_address_table_output_type": "cli",
-            "show_version": "show version",
-            "show_version_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "os_name_by_device": "ios",
-            "show_mac_address_table": "show mac address-table",
-            "allowed_backup_commands": [
-                "show version",
-                "show interface description",
-                "show interfaces status",
-                "show running-config",
-                "show mac address-table count",
-            ]
-        },
-        "cisco_xe": {
-            "show_interface_description": "show interface description",
-            "show_interface_description_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_cdp_neighbors": "show cdp neighbors",
-            "show_cdp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_lldp_neighbors": "show lldp neighbors",
-            "show_lldp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_ip_arp_table": "show ip arp",
-            "show_ip_arp_table_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_mac_address_table": "show mac address-table",
-            "show_mac_address_table_output_type": "cli",
-            "show_version": "show version",
-            "show_version_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "os_name_by_device": "iosxe",
-            "allowed_backup_commands": [
-                "show version",
-                "show interface description",
-                "show interfaces status",
-                "show running-config",
-                "show mac address-table count",
-            ]
-        },
-        "cisco_xr": {
-            "show_interface_description": "show interface description",
-            "show_interface_description_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_cdp_neighbors": "show cdp neighbors",
-            "show_cdp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_lldp_neighbors": "show lldp neighbors",
-            "show_lldp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_ip_arp_table": "show arp",
-            "show_ip_arp_table_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_mac_address_table": None,
-            "show_mac_address_table_output_type": None,
-            "show_version": "show version",
-            "show_version_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "os_name_by_device": "iosxr",
-            "allowed_backup_commands": [
-                "show version",
-                "show interface description",
-                "show interfaces status",
-                "show running-config",
-                "show mac address-table count",
-            ]
-        },
-        "cisco_nxos": {
-            "show_interface_description": "show interface description | json",
-            "show_interface_description_output_type": "json",  # json | cli - Change the parsing type depending on this flag
-            "show_cdp_neighbors": "show cdp neighbors | json",
-            "show_cdp_neighbors_output_type": "json",  # json | cli - Change the parsing type depending on this flag
-            "show_lldp_neighbors": "show lldp neighbors | json",
-            "show_lldp_neighbors_output_type": "json",  # json | cli - Change the parsing type depending on this flag
-            "show_ip_arp_table": "show ip arp | json",
-            "show_ip_arp_table_output_type": "json",  # json | cli - Change the parsing type depending on this flag
-            "show_mac_address_table": "show mac address-table | json",
-            "show_mac_address_table_output_type": "json",
-            "show_version": "show version | json-pretty",
-            "show_version_output_type": "json",  # json | cli - Change the parsing type depending on this flag
-            "os_name_by_device": "nxos",
-            "allowed_backup_commands": [
-                "show version",
-                "show inventory",
-                "show interface description",
-                "show interface status",
-                "show running-config",
-                # "show startup-config",
-                "show mac address-table count",
-            ]
-        },
-        "cisco_asa": {
-            "show_interface_description": "show interface description",
-            "show_interface_description_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_cdp_neighbors": "show cdp neighbors",
-            "show_cdp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_lldp_neighbors": "show lldp neighbors",
-            "show_lldp_neighbors_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_ip_arp_table": "show arp",
-            "show_ip_arp_table_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "show_mac_address_table": None,  # TODO Need to research this. I believe it's show arp for routed mode
-            "show_mac_address_table_output_type": None,
-            "show_version": "show version",
-            "show_version_output_type": "cli",  # json | cli - Change the parsing type depending on this flag
-            "os_name_by_device": "asa",
-            "allowed_backup_commands": [
-                "show version",
-                "show inventory",
-                "show interface description",
-                "show interfaces status",
-                "show running-config"
-            ]
-        },
-    }
-
-    return _SHOW_CMD_BY_DEVICE.get(device_type)
 
 
 
-def cisco_parse_show_version(output: str) -> Dict[str, str]:
-    """
-    Parse key bits out of Cisco 'show version' output (IOS-XE + older IOS/3x/4xx).
-
-    Rules:
-      - For each field, try regexes in priority order.
-      - For each regex, scan lines top-to-bottom.
-      - First match wins for that field (bail immediately).
-      - Returns a flat dict of discovered fields:
-          software_version, model_number, system_serial_number, base_ethernet_mac_address
-    """
-
-    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
-
-    # Capture everything to a single key: software_version
-    version_patterns: List[re.Pattern] = [
-        # IOS-XE explicit
-        re.compile(
-            r"^Cisco IOS XE Software,\s*Version\s+"
-            r"(?P<software_version>\d+(?:\.[0-9A-Za-z]+)+)",
-            re.IGNORECASE,
-        ),
-        # Many platforms just have "Version X.Y..."
-        re.compile(
-            r"^(?:Cisco IOS XE Software,\s*Version|Version)\s+"
-            r"(?P<software_version>\d+(?:\.[0-9A-Za-z]+)+)",
-            re.IGNORECASE,
-        ),
-        # Older IOS: "Cisco IOS Software, ... Version 15.2(4)E10, ..."
-        re.compile(
-            r"^Cisco IOS Software,.*\bVersion\s+(?P<software_version>[^,]+)",
-            re.IGNORECASE,
-        ),
-        # Fallback: any "Version <until comma>"
-        re.compile(r"\bVersion\s+(?P<software_version>[^,]+)", re.IGNORECASE),
-    ]
-
-    field_patterns: List[Tuple[str, List[re.Pattern]]] = [
-        (
-            "software_version",
-            version_patterns,
-        ),
-        (
-            "model_number",
-            [
-                re.compile(
-                    r"^Model\s+Number\s*:\s*(?P<model_number>[A-Za-z0-9\-]+)$",
-                    re.IGNORECASE,
-                ),
-                re.compile(
-                    r"^License\s+Information\s+for\s+'(?P<model_number>[A-Za-z0-9\-]+)'$",
-                    re.IGNORECASE,
-                ),
-                re.compile(
-                    r"^Cisco\s+(?P<model_number>WS-[A-Za-z0-9\-]+)\s*\(",
-                    re.IGNORECASE,
-                ),
-            ],
-        ),
-        (
-            "system_serial_number",
-            [
-                re.compile(
-                    r"^System\s+Serial\s+Number\s*:\s*(?P<system_serial_number>[A-Za-z0-9\-]+)$",
-                    re.IGNORECASE,
-                ),
-                re.compile(
-                    r"^Processor\s+board\s+ID\s+(?P<system_serial_number>[A-Za-z0-9\-]+)$",
-                    re.IGNORECASE,
-                ),
-            ],
-        ),
-        (
-            "base_ethernet_mac_address",
-            [
-                re.compile(
-                    r"^Base\s+Ethernet\s+MAC\s+Address\s*:\s*"
-                    r"(?P<base_ethernet_mac_address>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})$",
-                    re.IGNORECASE,
-                )
-            ],
-        ),
-    ]
-
-    results: Dict[str, str] = {}
-    remaining = {field for field, _ in field_patterns}
-
-    for field_name, regex_list in field_patterns:
-        found = False
-        for rx in regex_list:
-            for ln in lines:
-                m = rx.search(ln)
-                if m:
-                    results[field_name] = m.group(field_name).strip()
-                    remaining.discard(field_name)
-                    found = True
-                    break
-            if found:
-                break
-
-        if not remaining:
-            break
-
-    return results
 
 
 
-def cisco_parse_show_version_xr(output: str, *, return_envelope: bool = False) -> Dict[str, Any]:
-    """
-    Stub/placeholder for IOS-XR show version parsing.
-    Keep this separate because XR output varies significantly by platform.
-    """
-    raw = "" if output is None else str(output)
-    err = "not_implemented: provide IOS-XR 'show version' sample to build exact parser"
-    if return_envelope:
-        return {"data": {}, "meta": {"device_type": "cisco_xr", "detected_style": "xr"}, "error": err}
-    return {"error": err}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def cisco_parse_show_interface_capabilities(output: str) -> Dict[str, Dict]:
@@ -2468,1855 +4939,41 @@ def cisco_asr_9k_show_run_formal_ipv4_access_list(output):
 
     return access_list_data
 
-def cisco_nexus_9xxx_parse_show_mac_address_table_count(output):
-    """
-    parse the following from the nexus 9k devices and return a dict of the information below
-
-    core4-mh# show mac address-table count
-    Legend:
-    DLAC - Dynamic Local Address Count
-    DRAC - Dynamic Remote Address Count
-    SLAC - Static Local Address (User Defined) Count
-    SRAC - Static Remote Address (User Defined) Count
-    SAC - Secure Address Count
-
-    MAC Entries for all VLANS:
-    Dynamic Local Address Count:                                   53013
-    Dynamic Remote Address Count:                                      0
-    Static Remote Address (User-defined) Count:                        0
-    Static Local Address (User-defined) Count:                         0
-    Secure Address Count:                                              0
-    Total MAC Addresses in Use (DLAC + DRAC + SLAC + SRAC + SAC):  53013
-
-    """
-
-    mac_address_count = {}
-
-    """
-    Regex - show mac address table count
-    """
-
-    regex_total_mac_addresses_in_use = re.compile(
-        r'Total\sMAC\sAddresses\sin\sUse\s\(.*\):\s+(?P<total_mac_addresses_in_use>[0-9]+)')
-
-    for line in output.splitlines():
-        total_mac_addresses_in_use_results = re.search(regex_total_mac_addresses_in_use, line.strip())
-        """
-        Fetch Total mac address table count. 
-        This can be modified if other lines need to be added. 
-        Just modify the dictionary and return additional values.
-        """
-        if total_mac_addresses_in_use_results is not None:
-            if total_mac_addresses_in_use_results.groupdict()['total_mac_addresses_in_use']:
-                mac_address_count['total_mac_addresses_in_use'] = total_mac_addresses_in_use_results.groupdict()['total_mac_addresses_in_use']
-
-    return mac_address_count
-
-def cisco_C9xxx_parse_show_mac_address_table_count(output):
-    """
-    parse the following from cisco c9xxx devices and return a dict of the information below
-
-    123testlab-109-a4-3000# show mac address-table count
-    Mac Entries for Vlan 123:
-    ---------------------------
-    Dynamic Address Count  : 0
-    Static  Address Count  : 1
-    Total Mac Addresses    : 1
-
-    Mac Entries for Vlan 10:
-    ---------------------------
-    Dynamic Address Count  : 27
-    Static  Address Count  : 1
-    Total Mac Addresses    : 28
-
-    Total Dynamic Address Count  : 27
-    Total Static  Address Count  : 2
-    Total Mac Address In Use     : 29
-    Total Mac Address Space Available: 32739
-
-    """
-
-    mac_address_count = {}
-
-    """
-    Regex - show mac address table count
-    """
-
-    regex_total_mac_addresses_in_use = re.compile(
-        r'Total\sMac\sAddress\sIn\sUse\s+:\s(?P<total_mac_addresses_in_use>[0-9]+)')
-
-    for line in output.splitlines():
-        total_mac_addresses_in_use_results = re.search(regex_total_mac_addresses_in_use, line.strip())
-        """
-        Fetch Total mac address table count. 
-        This can be modified if other lines need to be added. 
-        Just modify the dictionary and return additional values.
-        """
-        if total_mac_addresses_in_use_results is not None:
-            if total_mac_addresses_in_use_results.groupdict()['total_mac_addresses_in_use']:
-                mac_address_count['total_mac_addresses_in_use'] = total_mac_addresses_in_use_results.groupdict()['total_mac_addresses_in_use']
-
-    return mac_address_count
-
-def cisco_asr_9k_parse_show_hardware_access_list_matches(output):
-
-    """
-    parse the following from the asr 9k devices and return a dict of the information below
-
-    show access-lists <access list id> hardware ingress location 0/0/CPU0
-
-    ipv4 access-list 123
-     50 deny ipv4 10.0.0.0 0.255.255.255 any (3374541 hw matches)
-     60 deny ipv4 172.16.0.0 0.15.255.255 any (775020 hw matches)
-     70 deny ipv4 192.168.0.0 0.0.255.255 any (2958422 hw matches)
-     ...
-     ...
-
-    """
-
-    mac_address_count = {}
-
-    """
-    Regex - show mac address table count
-    """
-
-    regex_access_list_hw_matches = re.compile(
-        r'^(?P<access_list_line>[0-9]+)\s(?P<access_list_rule>.*)\s\((?P<access_list_hw_matches>[0-9]+)\shw\s(matches|match)\)$')
-
-    regex_access_list_none_hw_matches = re.compile(
-        r'^(?P<access_list_line>[0-9]+)\s(?P<access_list_rule>.*)$')
-
-    data = {}
-    count = 0
-    for line in output.splitlines():
-        a = re.search(regex_access_list_hw_matches, line.strip())
-        if a is not None and line.strip() != "":
-            data[count] = {
-                'access_list_line': a.groupdict()['access_list_line'],
-                'access_list_rule': a.groupdict()['access_list_rule'],
-                'access_list_hw_matches': a.groupdict()['access_list_hw_matches']
-            }
-            count = count + 1
-        elif a is None and line.strip() != "":
-            """
-            Does not match the expected output with hw matches involved
-            pull the rule information and 0 the matches
-            """
-            a = re.search(regex_access_list_none_hw_matches, line.strip())
-            if a is not None:
-                data[count] = {
-                    'access_list_line': a.groupdict()['access_list_line'],
-                    'access_list_rule': a.groupdict()['access_list_rule'],
-                    'access_list_hw_matches': 0
-                }
-                count = count + 1
-
-    return data
-
-def cisco_nexus_parse_show_access_list_matches(output):
-    """
-    parse the following from the nexus 9k devices and return a dict of the information below
-
-    show ip access-lists <access list id>
-
-    IP access list 123
-        statistics per-entry
-        10 remark Super Cool Access List
-        20 permit udp any any eq bootps [match=1361373]
-        30 permit udp any any eq bootpc [match=0]
-        40 permit ip any 10.8.0.0/16 [match=433189120]
-        ...
-        ...
-        325 deny ip any any [match=29278]
-
-    """
-
-    mac_address_count = {}
-
-
-    """
-    Regex - show mac address table count
-    """
-
-    regex_access_list_hw_matches = re.compile(
-        r'^(?P<access_list_line>[0-9]+)\s(?P<access_list_rule>(permit|deny)\s.*)\s\[match=(?P<access_list_hw_matches>[0-9]+)\]')
-
-    regex_access_list_none_hw_matches = re.compile(
-        r'^(?P<access_list_line>[0-9]+)\s(?P<access_list_rule>(permit|deny).*)$')
-
-    data = {}
-    count = 0
-    for line in output.splitlines():
-        a = re.search(regex_access_list_hw_matches, line.strip())
-        if a is not None and line.strip() != "":
-            data[count] = {
-                'access_list_line': a.groupdict()['access_list_line'],
-                'access_list_rule': a.groupdict()['access_list_rule'],
-                'access_list_hw_matches': a.groupdict()['access_list_hw_matches']
-            }
-            count = count + 1
-        elif a is None and line.strip() != "":
-            """
-            Does not match the expected output with hw matches involved
-            pull the rule information and 0 the matches
-            """
-            a = re.search(regex_access_list_none_hw_matches, line.strip())
-            if a is not None:
-                data[count] = {
-                    'access_list_line': a.groupdict()['access_list_line'],
-                    'access_list_rule': a.groupdict()['access_list_rule'],
-                    'access_list_hw_matches': 0
-                }
-                count = count + 1
-
-    return data
-
-def cisco_nexus_parse_show_ip_arp_matches(output):
-    """
-    parse the following from the nexus 9k devices and return a dict of the information below
-
-    show ip arp
-
-    IP ARP Table for context default
-    Total number of entries: 25288
-    Address         Age       MAC Address     Interface       Flags
-    10.23.6.21      00:06:29  08f3.fbd6.3c3f  Vlan123
-    10.23.6.22      00:00:19  INCOMPLETE      Vlan123
-    ...
-    10.2.8.6        00:00:25  INCOMPLETE      Ethernet1/2
-    10.2.8.6        00:00:25  INCOMPLETE      Gi1/0/2
-    """
-
-    regex_show_ip_arp_matches = re.compile(
-        r'^(?P<ipv4_address>([0-9]{1,3}\.){3}[0-9]{1,3})\s+(?P<age>(-|(([0-9]{1,2}:){2}[0-9]{1,2})))\s+(?P<mac_address>(INCOMPLETE|([a-fA-F0-9]{4}\.){2}[a-fA-F0-9]{4}))\s+(?P<interface>[a-zA-Z0-9\/]+)(\s+([a-zA-Z\*\+#]+)$|$)')
-
-    data = {}
-    count = 0
-    for line in output.splitlines():
-        a = re.search(regex_show_ip_arp_matches, line.strip())
-        if a is not None and line.strip() != "":
-            data[count] = {
-                'ipv4_address': a.groupdict()['ipv4_address'],
-                'age': a.groupdict()['age'],
-                'mac_address': a.groupdict()['mac_address'],
-                'mac_address_condensed': a.groupdict()['mac_address'].replace(".", ""),
-                'interface': a.groupdict()['interface']
-            }
-            count = count + 1
-
-
-    return data
-
-
-def cisco_parse_show_capabilities(output: str) -> Dict[str, Dict]:
-    """
-    Parse the output of `show capabilities` and return a dict keyed by
-    interface long name, each containing:
-      - long_name: full interface name
-      - short_name: abbreviated interface name
-      - model: device model
-      - type: list of supported media types
-      - speed: list of supported speeds
-      - duplex: list of supported duplex modes
-      - trunk_encap_type: trunk encapsulation type
-      - trunk_mode: list of allowed trunk modes
-    """
-    # mapping of full interface prefixes to their short forms
-    prefix_map = {
-        'TenGigabitEthernet': 'Te',
-        'GigabitEthernet':    'Gi',
-        'FastEthernet':       'Fa',
-        'Ethernet':           'Et',
-        'Port-Channel':       'Po',
-        'Vlan':               'Vl',
-    }
-
-    def short_name(long_name: str) -> str:
-        for full, abbr in sorted(prefix_map.items(), key=lambda kv: -len(kv[0])):
-            if long_name.startswith(full):
-                return abbr + long_name[len(full):]
-        return long_name
-
-    # build a regex that matches any of the prefixes + port numbers (e.g. 1, 1/0, 1/0/1)
-    prefixes = sorted(prefix_map.keys(), key=lambda x: -len(x))
-    prefix_pattern = r'(?:' + '|'.join(re.escape(p) for p in prefixes) + r')'
-    if_hdr = re.compile(
-        rf'^\s*'                    # optional leading space
-        rf'(?P<intf>{prefix_pattern}\d+(?:/\d+){0,2})\s*$'
-    )
-
-    # field patterns
-    patterns = {
-        'model': re.compile(r'^\s*Model:\s*(\S+)'),
-        'type': re.compile(r'^\s*Type:\s*(.+)'),
-        'speed': re.compile(r'^\s*Speed:\s*(.+)'),
-        'duplex': re.compile(r'^\s*Duplex:\s*(.+)'),
-        'trunk_encap_type': re.compile(r'^\s*Trunk encap\. type:\s*(.+)'),
-        'trunk_mode': re.compile(r'^\s*Trunk mode:\s*(.+)'),
-    }
-
-    interfaces: Dict[str, Dict] = {}
-    current = None
-
-    for line in output.splitlines():
-        m_hdr = if_hdr.match(line)
-        if m_hdr:
-            current = m_hdr.group('intf')
-            interfaces[current] = {
-                'long_name': current,
-                'short_name': short_name(current),
-                'model': None,
-                'type': [],
-                'speed': [],
-                'duplex': [],
-                'trunk_encap_type': None,
-                'trunk_mode': [],
-            }
-            continue
-
-        if not current:
-            continue
-
-        for key, pat in patterns.items():
-            m = pat.match(line)
-            if not m:
-                continue
-            val = m.group(1).strip()
-            if key in ('type', 'speed', 'duplex', 'trunk_mode'):
-                delim = ',' if ',' in val else '/'
-                items = [v.strip() for v in val.split(delim) if v.strip()]
-                interfaces[current][key] = items
-            else:
-                interfaces[current][key] = val
-            break
-
-    return interfaces
-
-
-def cisco_parse_show_ip_arp_table(
-    output: str,
-    device_type: Optional[str] = None,
-    *,
-    include_incomplete: bool = True,
-    return_envelope: bool = False,
-) -> Dict:
-    """Parse Cisco ARP table output (IOS/IOS-XE/NX-OS best-effort).
-
-    Supported formats (best-effort):
-      - IOS / IOS-XE: `show ip arp`
-        Protocol  Address  Age (min)  Hardware Addr  Type  Interface
-        Internet  10.0.0.1        3    18e8.29bf.0a34 ARPA  Vlan10
-
-      - NX-OS: `show ip arp`
-        Address  Age  MAC Address  Interface  Flags
-        10.23.6.21  00:06:29  08f3.fbd6.3c3f  Vlan123
-
-    If device_type indicates XR, returns an error and you should call
-    `cisco_parse_show_ip_arp_table_xr(...)`.
-
-    Returns:
-      - default: dict[int, dict]
-      - if return_envelope=True: {'rows': <dict[int,dict]>, 'meta': {...}, 'error': <str|None>}
-    """
-    raw = '' if output is None else str(output)
-
-    dt = (device_type or '').strip().lower()
-    if dt in ('cisco_xr', 'xr', 'iosxr', 'cisco-iosxr'):
-        err = 'unsupported_device_type: cisco_xr; use cisco_parse_show_ip_arp_table_xr'
-        if return_envelope:
-            return {'rows': {}, 'meta': {'device_type': device_type}, 'error': err}
-        return {'error': err}
-
-    error_markers = (
-        'Invalid input detected',
-        '% Invalid input',
-        'Incomplete command',
-        'Ambiguous command',
-        'Unknown command',
-    )
-    parse_error = 'command_not_supported_or_invalid' if any(m in raw for m in error_markers) else None
-
-    def _is_ipv4_token(tok: str) -> bool:
-        t = (tok or '').strip()
-        if not t or t.count('.') != 3:
-            return False
-        try:
-            return ipaddress.ip_address(t).version == 4
-        except Exception:
-            return False
-
-    def _looks_like_interface(tok: str) -> bool:
-        t = (tok or '').strip()
-        if not t:
-            return False
-        tl = t.lower()
-        return (
-            '/' in t
-            or tl.startswith(('vlan', 'ethernet', 'port-channel', 'po', 'gi', 'te', 'fa', 'twe', 'tw', 'mgmt'))
-        )
-
-    rows: Dict[int, Dict[str, Any]] = {}
-    count = 0
-
-    detected_style = None
-    if dt in ('cisco_nxos', 'nxos') or 'ip arp table for context' in raw.lower():
-        detected_style = 'nxos'
-    elif 'protocol' in raw.lower() and 'hardware' in raw.lower():
-        detected_style = 'ios'
-
-    for line in raw.splitlines():
-        ln = (line or '').strip()
-        if not ln:
-            continue
-
-        lnl = ln.lower()
-        if (
-            lnl.startswith(('protocol', 'address', 'ip arp table', 'total number', '----', 'flags'))
-            or 'hardware addr' in lnl
-            or ('mac address' in lnl and 'table' not in lnl)
-        ):
-            continue
-
-        parts = ln.split()
-        if len(parts) < 3:
-            continue
-
-        # Find IPv4 token
-        ip_idx = None
-        for i, tok in enumerate(parts):
-            if _is_ipv4_token(tok):
-                ip_idx = i
-                break
-        if ip_idx is None:
-            continue
-
-        protocol = parts[ip_idx - 1] if ip_idx >= 1 and parts[ip_idx - 1].isalpha() else ''
-        ipv4 = parts[ip_idx]
-
-        # Age token (optional)
-        age = ''
-        nxt = ip_idx + 1
-        if nxt < len(parts) and _AGE_TOKEN.match(parts[nxt]):
-            age = parts[nxt]
-            nxt += 1
-
-        # MAC token
-        if nxt >= len(parts):
-            continue
-        mac_tok = parts[nxt]
-        if not (_MAC_TOKEN.match(mac_tok) or mac_tok.upper() == 'INCOMPLETE'):
-            continue
-        nxt += 1
-
-        if mac_tok.upper() == 'INCOMPLETE':
-            if not include_incomplete:
-                continue
-            mac_norm = {'mac_address': 'INCOMPLETE', 'mac_address_condensed': ''}
-        else:
-            mac_norm = _cisco_normalize_mac(mac_tok)
-
-        # Next token might be Type (ARPA) or Interface (NX-OS)
-        type_tok = ''
-        interface = ''
-        flags = ''
-
-        if nxt < len(parts) and not _looks_like_interface(parts[nxt]):
-            type_tok = parts[nxt]
-            nxt += 1
-
-        if nxt < len(parts):
-            interface = parts[nxt]
-            nxt += 1
-
-        if nxt < len(parts):
-            tail = ' '.join(parts[nxt:]).strip()
-            if tail:
-                flags = tail
-
-        row: Dict[str, Any] = {
-            'ipv4_address': ipv4,
-            'age': age,
-            **mac_norm,
-            'interface': interface,
-            'protocol': protocol,
-            'type': type_tok,
-            'flags': flags,
-            'raw': ln,
-            'source_os': device_type or '',
-        }
-
-        if row.get('interface'):
-            toks = []
-            for chunk in str(row['interface']).split(','):
-                toks.extend([t for t in chunk.strip().split() if t])
-            row['interfaces'] = toks
-
-        rows[count] = row
-        count += 1
-
-    if return_envelope:
-        return {'rows': rows, 'meta': {'detected_style': detected_style, 'device_type': device_type}, 'error': parse_error}
-
-    return rows if rows else ({'error': parse_error} if parse_error else {})
-
-
-def cisco_parse_show_ip_arp_table_xr(
-    output: str,
-    *,
-    include_incomplete: bool = True,
-    return_envelope: bool = False,
-) -> Dict:
-    """Best-effort IOS-XR ARP parser (separate on purpose).
-
-    IOS-XR ARP output varies a lot by platform/version/VRF.
-    This parser:
-      - finds an IPv4 token
-      - finds the next MAC token (or INCOMPLETE)
-      - treats the last token as interface when possible
-      - stores middle tokens as state/type/flags-ish fields
-    """
-    raw = '' if output is None else str(output)
-
-    error_markers = (
-        'Invalid input detected',
-        '% Invalid input',
-        'Incomplete command',
-        'Ambiguous command',
-        'Unknown command',
-    )
-    parse_error = 'command_not_supported_or_invalid' if any(m in raw for m in error_markers) else None
-
-    def _is_ipv4_token(tok: str) -> bool:
-        t = (tok or '').strip()
-        if not t or t.count('.') != 3:
-            return False
-        try:
-            return ipaddress.ip_address(t).version == 4
-        except Exception:
-            return False
-
-    rows: Dict[int, Dict[str, Any]] = {}
-    count = 0
-
-    for line in raw.splitlines():
-        ln = (line or '').strip()
-        if not ln:
-            continue
-
-        lnl = ln.lower()
-        if ('address' in lnl and 'hardware' in lnl) or lnl.startswith(('---', '===', 'vrf', 'flags', 'protocol')):
-            continue
-
-        parts = ln.split()
-        if len(parts) < 3:
-            continue
-
-        ip_idx = None
-        for i, tok in enumerate(parts):
-            if _is_ipv4_token(tok):
-                ip_idx = i
-                break
-        if ip_idx is None:
-            continue
-
-        ipv4 = parts[ip_idx]
-        age = parts[ip_idx + 1] if (ip_idx + 1) < len(parts) else ''
-
-        mac_idx = None
-        for j in range(ip_idx + 1, len(parts)):
-            if _MAC_TOKEN.match(parts[j]) or parts[j].upper() == 'INCOMPLETE':
-                mac_idx = j
-                break
-        if mac_idx is None:
-            continue
-
-        mac_tok = parts[mac_idx]
-        if mac_tok.upper() == 'INCOMPLETE':
-            if not include_incomplete:
-                continue
-            mac_norm = {'mac_address': 'INCOMPLETE', 'mac_address_condensed': ''}
-        else:
-            mac_norm = _cisco_normalize_mac(mac_tok)
-
-        interface = parts[-1]
-        middle = parts[mac_idx + 1:-1] if (mac_idx + 1) < (len(parts) - 1) else []
-        state = middle[0] if len(middle) >= 1 else ''
-        type_tok = middle[1] if len(middle) >= 2 else ''
-        flags = ' '.join(middle[2:]).strip() if len(middle) >= 3 else ''
-
-        rows[count] = {
-            'ipv4_address': ipv4,
-            'age': age,
-            **mac_norm,
-            'interface': interface,
-            'state': state,
-            'type': type_tok,
-            'flags': flags,
-            'raw': ln,
-            'source_os': 'cisco_xr',
-        }
-        count += 1
-
-    if return_envelope:
-        return {'rows': rows, 'meta': {'detected_style': 'xr', 'device_type': 'cisco_xr'}, 'error': parse_error}
-
-    return rows if rows else ({'error': parse_error} if parse_error else {})
-
-# -----------------------------------------------------------------------------
-# Neighbors: CDP + LLDP
-# -----------------------------------------------------------------------------
-
-def cisco_parse_show_cdp_neighbors(
-    output: str,
-    device_type: Optional[str] = None,
-    *,
-    return_envelope: bool = False,
-) -> Dict:
-    """Parse `show cdp neighbors` output (IOS / IOS-XE / NX-OS best-effort).
-
-    Notes
-    - For IOS-XR, this function returns an error and you should call
-      `cisco_parse_show_cdp_neighbors_xr(...)`.
-    - This parser targets the common tabular output:
-
-        Device ID        Local Intrfce     Holdtme    Capability  Platform  Port ID
-
-    Returns
-    - default: dict[int, dict]
-    - if return_envelope=True: {'rows': <dict>, 'meta': {...}, 'error': <str|None>}
-    """
-    raw = "" if output is None else str(output)
-    dt = (device_type or "").strip().lower()
-
-    if dt in ("cisco_xr", "xr", "iosxr", "cisco-iosxr"):
-        err = "unsupported_device_type: cisco_xr; use cisco_parse_show_cdp_neighbors_xr"
-        if return_envelope:
-            return {"rows": {}, "meta": {"device_type": device_type}, "error": err}
-        return {"error": err}
-
-    error_markers = (
-        "Invalid input detected",
-        "% Invalid input",
-        "Incomplete command",
-        "Ambiguous command",
-        "Unknown command",
-    )
-    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
-
-    def _capability_tokens(val: str) -> List[str]:
-        s = (val or "").strip()
-        if not s:
-            return []
-        s = s.replace(",", " ").replace("/", " ")
-        toks = [t for t in s.split() if t]
-        return toks
-
-    _IF_PREFIX_RX = re.compile(r"^[A-Za-z]{1,6}$")
-    _IF_NUM_RX = re.compile(r"^\d+(?:/\d+)+$")
-
-    def _is_split_iface_tail(tail: List[str]) -> bool:
-        return (
-            len(tail) >= 3
-            and bool(_IF_PREFIX_RX.match(tail[-2]))
-            and bool(_IF_NUM_RX.match(tail[-1]))
-        )
-
-    def _build_spans(header: str) -> Optional[List[Tuple[str, int, Optional[int]]]]:
-        labels: List[Tuple[str, Sequence[str]]] = [
-            ("device_id", ("Device ID", "Device-ID", "Device")),
-            ("local_interface", ("Local Intrfce", "Local Interface", "Local Intf")),
-            ("hold_time", ("Holdtme", "Holdtime", "Hold-time", "Hold Time")),
-            ("capability", ("Capability", "Capabilities")),
-            ("platform", ("Platform",)),
-            ("port_id", ("Port ID", "PortID")),
-        ]
-        found: List[Tuple[str, int]] = []
-        for key, variants in labels:
-            pos = -1
-            for v in variants:
-                p = header.find(v)
-                if p >= 0:
-                    pos = p
-                    break
-            if pos >= 0:
-                found.append((key, pos))
-
-        keys = {k for k, _ in found}
-        if not {"device_id", "local_interface", "hold_time", "port_id"}.issubset(keys):
-            return None
-
-        found.sort(key=lambda x: x[1])
-        spans: List[Tuple[str, int, Optional[int]]] = []
-        for i, (key, start) in enumerate(found):
-            end = found[i + 1][1] if i + 1 < len(found) else None  # last column: slice to end of line
-            spans.append((key, start, end))
-        return spans
-
-    rows: Dict[int, Dict[str, Any]] = {}
-    count = 0
-    spans: Optional[List[Tuple[str, int, Optional[int]]]] = None
-    started = False
-    detected_style = None
-
-    # Handle IOS/XE line-wrapping where Device ID appears on its own line
-    pending_device_id: Optional[str] = None
-
-    for line in raw.splitlines():
-        ln = (line or "").rstrip("\n")
-        if not ln.strip():
-            continue
-
-        lnl = ln.lower().strip()
-
-        if not started and "device id" in lnl and ("local" in lnl) and ("port" in lnl):
-            spans = _build_spans(ln)
-            started = True
-            detected_style = "fixed_columns" if spans else "heuristic"
-            continue
-
-        if not started:
-            continue
-
-        if set(ln.strip()) <= {"-", " "}:
-            continue
-        if lnl.startswith(("capability codes", "capability code", "total cdp entries", "total entries")):
-            continue
-
-        if spans:
-            parsed: Dict[str, str] = {}
-            padded = ln + (" " * 4)
-            for key, start, end in spans:
-                parsed[key] = padded[start:end].strip()
-
-            ht = parsed.get("hold_time", "").strip()
-
-            # IOS/XE sometimes wraps the Device ID onto its own line.
-            # Example:
-            #   lab-109-a450-80000.syr.edu
-            #                  Ten 1/0/12  133  R S I  C9300-48P  Gig 1/0/1
-            if not ht.isdigit():
-                # IOS/XE can wrap the device-id onto its own line. In that case the device-id may
-                # "spill" into other fixed-width slices, so treat the *whole line* as the device-id
-                # when the other columns are empty.
-                if (
-                    ln
-                    and not ln.startswith((" ", "\t"))
-                    and not parsed.get("capability", "").strip()
-                    and not parsed.get("platform", "").strip()
-                    and not parsed.get("port_id", "").strip()
-                    and not lnl.startswith(("device id", "capability", "total"))
-                ):
-                    pending_device_id = ln.strip()
-                continue
-
-            device_id = parsed.get("device_id", "").strip()
-            if not device_id and pending_device_id:
-                device_id = pending_device_id
-            pending_device_id = None
-
-            row = {
-                "device_id": device_id,
-                "local_interface": parsed.get("local_interface", "").strip(),
-                "hold_time": int(ht),
-                "capability": parsed.get("capability", "").strip(),
-                "capability_tokens": _capability_tokens(parsed.get("capability", "")),
-                "platform": parsed.get("platform", "").strip(),
-                "port_id": parsed.get("port_id", "").strip(),
-                "raw": ln.strip(),
-                "source_os": device_type or "",
-            }
-            rows[count] = row
-            count += 1
-            continue
-
-        # heuristic fallback
-        parts = ln.split()
-        if not parts:
-            continue
-
-        # device-id-only wrapped line
-        if len(parts) == 1 and not any(ch.isdigit() for ch in parts[0]) and "." in parts[0]:
-            pending_device_id = parts[0]
-            continue
-
-        if len(parts) < 4:
-            continue
-
-        ht_idx = None
-        for i in range(2, len(parts)):
-            if parts[i].isdigit():
-                ht_idx = i
-                break
-        if ht_idx is None:
-            continue
-
-        device_id = parts[0]
-        local_interface = " ".join(parts[1:ht_idx])
-        hold_time = int(parts[ht_idx])
-
-        tail = parts[ht_idx + 1 :]
-        if not tail:
-            continue
-
-        if _is_split_iface_tail(tail):
-            port_id = f"{tail[-2]} {tail[-1]}"
-            platform = tail[-3]
-            capability = " ".join(tail[:-3]).strip()
-        else:
-            platform = tail[-2] if len(tail) >= 2 else ""
-            port_id = tail[-1] if len(tail) >= 1 else ""
-            capability = " ".join(tail[:-2]).strip() if len(tail) >= 2 else ""
-
-        if pending_device_id and not device_id:
-            device_id = pending_device_id
-        pending_device_id = None
-
-        row = {
-            "device_id": device_id,
-            "local_interface": local_interface,
-            "hold_time": hold_time,
-            "capability": capability,
-            "capability_tokens": _capability_tokens(capability),
-            "platform": platform,
-            "port_id": port_id,
-            "raw": ln.strip(),
-            "source_os": device_type or "",
-        }
-        rows[count] = row
-        count += 1
-
-    if return_envelope:
-        return {
-            "rows": rows,
-            "meta": {"detected_style": detected_style, "device_type": device_type, "count": count},
-            "error": parse_error,
-        }
-
-    return rows if rows else ({"error": parse_error} if parse_error else {})
-
-
-def cisco_nxos_parse_show_mac_address_table_json(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Notes / How to run:
-      - Input is NX-OS JSON (dict) for: `show mac address-table | json` (or json-pretty).
-      - Returns:
-          {
-            "device_type": "cisco_nxos",
-            "meta": {...},
-            "normalized": {"mac_address_table": {0:{...}, 1:{...}, ...}},
-            "raw": <original dict>
-          }
-    """
-
-    def _boolish(v: Any) -> Optional[bool]:
-        if v is None:
-            return None
-        s = str(v).strip().lower()
-        if s in ("t", "true", "1", "yes", "y"):
-            return True
-        if s in ("f", "false", "0", "no", "n"):
-            return False
-        if s in ("-", ""):
-            return None
-        return None
-
-    def _as_int(v: Any) -> Optional[int]:
-        try:
-            if v is None:
-                return None
-            s = str(v).strip()
-            if s == "" or s == "-":
-                return None
-            return int(s)
-        except Exception:
-            return None
-
-    try:
-        table = data.get("TABLE_mac_address") or {}
-        rows = _ensure_list(table.get("ROW_mac_address"))
-
-        out: Dict[int, Dict[str, Any]] = {}
-        i = 0
-
-        for r in rows:
-            if not isinstance(r, dict):
-                continue
-
-            mac_raw = (
-                r.get("disp_mac_addr")
-                or r.get("mac")
-                or r.get("mac_addr")
-                or r.get("mac-address")
-                or r.get("mac_address")
-            )
-            vlan_raw = r.get("disp_vlan") or r.get("vlan") or r.get("vlan_id")
-            port = r.get("disp_port") or r.get("port") or r.get("interface") or r.get("intf") or ""
-            typ = r.get("disp_type") or r.get("type") or ""
-            age_raw = r.get("disp_age") or r.get("age")
-
-            if not mac_raw or not vlan_raw or not port:
-                # still keep it if it has mac+port; VLAN is typically always present though
-                if not mac_raw or not port:
-                    continue
-
-            mac_norm = _cisco_normalize_mac(str(mac_raw))
-            vlan_i = _as_int(vlan_raw)
-            age_i = _as_int(age_raw)
-
-            out[i] = {
-                "vlan": vlan_i if vlan_i is not None else str(vlan_raw).strip(),
-                **mac_norm,
-                "mac_raw": str(mac_raw).strip(),
-                "type": str(typ).strip(),
-                "interface": str(port).strip(),
-                "age": str(age_raw).strip() if age_raw is not None else "",
-                "age_int": age_i,
-                "is_secure": _boolish(r.get("disp_is_secure")),
-                "is_notify": _boolish(r.get("disp_is_ntfy")),
-                "raw": r,
-                "source_os": "nxos",
-            }
-            i += 1
-
-        meta = {
-            "device_type": "cisco_nxos",
-            "detected_command": "show_mac_address_table",
-            "row_count": len(out),
-        }
-
-        return {
-            "device_type": "cisco_nxos",
-            "meta": meta,
-            "normalized": {"mac_address_table": out},
-            "raw": data,
-        }
-
-    except Exception as exc:
-        return {"error": f"parse_failed: cisco_nxos_show_mac_address_table_json: {type(exc).__name__}: {exc}"}
-
-
-
-def cisco_parse_show_mac_address_table_cli(
-    output: str,
-    *,
-    device_type: str = "",
-    return_envelope: bool = False,
-) -> Dict[str, Any]:
-    def _wrap(rows, meta, error):
-        if return_envelope:
-            return {"rows": rows, "meta": meta, "error": error}
-        return rows if error is None else {"error": error}
-
-    raw = "" if output is None else str(output)
-
-    err_markers = (
-        "Invalid input detected",
-        "% Invalid input",
-        "Incomplete command",
-        "Ambiguous command",
-        "Unknown command",
-    )
-    if any(m in raw for m in err_markers):
-        return _wrap({}, {"device_type": device_type, "detected_command": "show_mac_address_table"}, "command_not_supported_or_invalid")
-
-    rows: Dict[int, Dict[str, Any]] = {}
-    i = 0
-
-    for line in raw.splitlines():
-        ln = (line or "").strip()
-        if not ln:
-            continue
-
-        lnl = ln.lower()
-
-        # skip prompts / legends / footers
-        if lnl.startswith(("show ", "switch#", "router#", "nxos#", "ios#", "xr#")):
-            continue
-        if "total mac address" in lnl:
-            continue
-        if lnl.startswith(("legend:", "mac entries", "----")):
-            continue
-
-        parts = ln.split()
-        if len(parts) < 3:
-            continue
-
-        # Handle common IOS/XE: VLAN MAC TYPE PORT
-        vlan = None
-        mac = None
-        typ = None
-        port = None
-        age = None
-
-        # Remove leading '*' markers if present
-        if parts and parts[0].startswith("*") and len(parts[0]) > 1:
-            parts[0] = parts[0].lstrip("*")
-
-        # pattern A: vlan mac type port...
-        if parts[0].isdigit() and _MAC_TOKEN.match(parts[1]):
-            vlan, mac = parts[0], parts[1]
-            # could be: vlan mac type port
-            # or: vlan mac age type port
-            if len(parts) >= 4 and parts[2].upper() in ("DYNAMIC", "STATIC", "SECURE", "SELF", "DROP"):
-                typ = parts[2]
-                port = parts[3]
-            elif len(parts) >= 5 and _AGE_TOKEN.match(parts[2]) and parts[3].isalpha():
-                age = parts[2]
-                typ = parts[3]
-                port = parts[4]
-            elif len(parts) >= 5:
-                # last-resort: assume type is 3rd, port is last
-                typ = parts[2]
-                port = parts[-1]
-
-        # pattern B: mac vlan type port... (some platforms / variants)
-        elif _MAC_TOKEN.match(parts[0]) and parts[1].isdigit():
-            mac, vlan = parts[0], parts[1]
-            if len(parts) >= 4:
-                typ = parts[2]
-                port = parts[3]
-
-        else:
-            continue
-
-        if not mac or not port:
-            continue
-
-        mac_norm = _cisco_normalize_mac(mac)
-
-        rows[i] = {
-            "vlan": int(vlan) if vlan and vlan.isdigit() else vlan,
-            **mac_norm,
-            "mac_raw": mac,
-            "type": (typ or "").strip(),
-            "interface": port.strip(),
-            "age": (age or "").strip(),
-            "source_os": (device_type or "").strip() or "cisco",
-            "raw": ln,
-        }
-        i += 1
-
-    meta = {
-        "device_type": device_type,
-        "detected_command": "show_mac_address_table",
-        "row_count": len(rows),
-        "parsed_without_header_dependency": True,
-    }
-    return _wrap(rows, meta, None)
-
-def cisco_parse_show_mac_address_table_auto(
-    device_type: str,
-    output: Union[str, Dict[str, Any]],
-    output_type_flag: str = "cli",  # cli | json | auto
-    *,
-    return_envelope: bool = False,
-) -> Dict[str, Any]:
-    """
-    Notes / How to run:
-      - Call with (device_type, output, output_type_flag)
-      - output_type_flag:
-          - "cli": treat output as CLI text
-          - "json": treat output as NX-OS JSON (dict or JSON string)
-          - "auto": try JSON first for NX-OS if it looks like JSON, else CLI
-    """
-
-    dt_raw = (device_type or "").strip()
-    dt = dt_raw.lower()
-    flag = (output_type_flag or "cli").strip().lower()
-
-    is_nxos = dt in ("cisco_nxos", "nxos")
-
-    def _wrap(rows: Dict[int, Dict[str, Any]], meta: Dict[str, Any], error: Optional[str]) -> Dict[str, Any]:
-        if return_envelope:
-            return {"rows": rows, "meta": meta, "error": error}
-        return rows if error is None else {"error": error}
-
-    # -------------------------
-    # Forced JSON
-    # -------------------------
-    if flag == "json":
-        if not is_nxos:
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
-
-        if isinstance(output, dict):
-            nx = cisco_nxos_parse_show_mac_address_table_json(output)
-        else:
-            raw = "" if output is None else str(output)
-            d = _json_load_dict_best_effort(raw)
-            if isinstance(d, dict) and d.get("error"):
-                return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(d.get("error")))
-            nx = cisco_nxos_parse_show_mac_address_table_json(d)
-
-        if isinstance(nx, dict) and nx.get("error"):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
-
-        rows = ((nx or {}).get("normalized") or {}).get("mac_address_table")
-        if not isinstance(rows, dict):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_mac_address_table")
-
-        meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
-        meta.setdefault("device_type", dt_raw)
-        meta.setdefault("detected_command", "show_mac_address_table")
-        meta["output_type"] = "json"
-        return _wrap(rows, meta, None)
-
-    # -------------------------
-    # Forced CLI
-    # -------------------------
-    if flag == "cli":
-        if not isinstance(output, str):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "cli"}, "invalid_payload: expected cli string")
-        return cisco_parse_show_mac_address_table_cli(output, device_type=dt_raw, return_envelope=return_envelope)
-
-    # -------------------------
-    # Auto
-    # -------------------------
-    if isinstance(output, dict):
-        if not is_nxos:
-            return _wrap({}, {"device_type": dt_raw, "output_type": "auto"}, "json_payload_only_supported_for_nxos_today")
-        nx = cisco_nxos_parse_show_mac_address_table_json(output)
-        rows = ((nx or {}).get("normalized") or {}).get("mac_address_table")
-        if not isinstance(rows, dict):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_mac_address_table")
-        meta = nx.get("meta") or {}
-        meta.setdefault("device_type", dt_raw)
-        meta.setdefault("detected_command", "show_mac_address_table")
-        meta["output_type"] = "json"
-        return _wrap(rows, meta, None)
-
-    raw = "" if output is None else str(output)
-    raw_l = raw.lstrip()
-
-    # NX-OS: if it looks like JSON, try JSON first
-    if is_nxos and raw_l.startswith(("{", "[")):
-        d = _json_load_dict_best_effort(raw)
-        if isinstance(d, dict) and not d.get("error"):
-            nx = cisco_nxos_parse_show_mac_address_table_json(d)
-            if isinstance(nx, dict) and not nx.get("error"):
-                rows = ((nx or {}).get("normalized") or {}).get("mac_address_table")
-                if isinstance(rows, dict):
-                    meta = nx.get("meta") or {}
-                    meta.setdefault("device_type", dt_raw)
-                    meta.setdefault("detected_command", "show_mac_address_table")
-                    meta["output_type"] = "json"
-                    return _wrap(rows, meta, None)
-
-    # fallback to CLI
-    return cisco_parse_show_mac_address_table_cli(raw, device_type=dt_raw, return_envelope=return_envelope)
-
-
-
-
-def cisco_parse_show_cdp_neighbors_xr(
-    output: str,
-    *,
-    return_envelope: bool = False,
-) -> Dict:
-    """Best-effort IOS-XR CDP neighbor parser.
-
-    IOS-XR neighbor outputs can vary by platform/version.
-    This function is intentionally tolerant and extracts:
-      - device_id
-      - local_interface (if present)
-      - hold_time (if present)
-      - port_id (if present)
-      - platform/capability when they appear
-    """
-    raw = "" if output is None else str(output)
-
-    error_markers = (
-        "Invalid input detected",
-        "% Invalid input",
-        "Incomplete command",
-        "Ambiguous command",
-        "Unknown command",
-    )
-    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
-
-    rows: Dict[int, Dict[str, Any]] = {}
-    count = 0
-    started = False
-
-    for line in raw.splitlines():
-        ln = (line or "").rstrip("\n")
-        if not ln.strip():
-            continue
-
-        lnl = ln.lower().strip()
-
-        if not started and "device id" in lnl and "local" in lnl and "port" in lnl:
-            started = True
-            continue
-
-        if not started:
-            continue
-
-        if set(ln.strip()) <= {"-", " "}:
-            continue
-        if lnl.startswith(("capability codes", "total", "entries", "capability code")):
-            continue
-
-        parts = ln.split()
-        if len(parts) < 2:
-            continue
-
-        device_id = parts[0]
-
-        ht_idx = None
-        for i in range(1, len(parts)):
-            if parts[i].isdigit():
-                ht_idx = i
-                break
-
-        local_interface = " ".join(parts[1:ht_idx]) if ht_idx else ""
-        hold_time = int(parts[ht_idx]) if ht_idx else None
-
-        tail = parts[ht_idx + 1 :] if ht_idx is not None else []
-        capability = ""
-        platform = ""
-        port_id = ""
-
-        if tail:
-            port_id = tail[-1]
-            platform = tail[-2] if len(tail) >= 2 else ""
-            capability = " ".join(tail[:-2]).strip() if len(tail) >= 2 else ""
-
-        rows[count] = {
-            "device_id": device_id,
-            "local_interface": local_interface,
-            "hold_time": hold_time,
-            "capability": capability,
-            "platform": platform,
-            "port_id": port_id,
-            "raw": ln.strip(),
-            "source_os": "cisco_xr",
-        }
-        count += 1
-
-    if return_envelope:
-        return {"rows": rows, "meta": {"detected_style": "xr_heuristic", "count": count}, "error": parse_error}
-
-    return rows if rows else ({"error": parse_error} if parse_error else {})
-
-def cisco_nxos_parse_show_ip_arp_table_json(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Notes / How to run:
-    - Input is NX-OS JSON (dict) for: `show ip arp | json` (or json-pretty)
-    - Returns:
-        {
-          "device_type": "cisco_nxos",
-          "meta": {...},
-          "normalized": {"ip_arp_table": {0:{...}, 1:{...}, ...}},
-          "raw": <original dict>
-        }
-
-    Observed NX-OS schema (example):
-      {
-        "TABLE_vrf": {
-          "ROW_vrf": {
-            "vrf-name-out": "default",
-            "cnt-total": "123",
-            "TABLE_adj": {
-              "ROW_adj": [
-                {"intf-out": "Vlan10", "ip-addr-out": "10.0.0.1", "time-stamp": "PT11S", "mac": "aabb.ccdd.eeff", "flags": null},
-                {"intf-out": "Vlan10", "ip-addr-out": "10.0.0.2", "time-stamp": "PT26S", "incomplete": "true", "flags": null}
-              ]
-            }
-          }
-        }
-      }
-    """
-    table_vrf = data.get("TABLE_vrf") or {}
-    vrf_rows = _ensure_list(table_vrf.get("ROW_vrf"))
-
-    rows_out: Dict[int, Dict[str, Any]] = {}
-    count = 0
-    vrf_names: List[str] = []
-
-    for vrf in vrf_rows:
-        if not isinstance(vrf, dict):
-            continue
-
-        vrf_name = (
-            vrf.get("vrf-name-out")
-            or vrf.get("vrf_name")
-            or vrf.get("vrf-name")
-            or vrf.get("vrf")
-            or ""
-        )
-        if vrf_name and vrf_name not in vrf_names:
-            vrf_names.append(str(vrf_name))
-
-        table_adj = vrf.get("TABLE_adj") or {}
-        adj_rows = _ensure_list(table_adj.get("ROW_adj"))
-
-        for r in adj_rows:
-            if not isinstance(r, dict):
-                continue
-
-            ip = r.get("ip-addr-out") or r.get("ip_addr") or r.get("ip") or r.get("address")
-            if not ip:
-                continue
-
-            ip = str(ip).strip()
-            try:
-                if ipaddress.ip_address(ip).version != 4:
-                    continue
-            except Exception:
-                # skip any weird tokens; NX-OS output should be IPv4 here
-                continue
-
-            intf = r.get("intf-out") or r.get("interface") or r.get("intf") or ""
-            ts = r.get("time-stamp") or r.get("age") or r.get("time_stamp") or ""
-            mac = r.get("mac")
-            incomplete = str(r.get("incomplete") or "").strip().lower() in ("true", "1", "yes")
-
-            if mac:
-                mac_norm = _cisco_normalize_mac(str(mac))
-            else:
-                if not incomplete:
-                    # treat as incomplete if field missing but no explicit marker
-                    incomplete = True
-                mac_norm = {"mac_address": "INCOMPLETE", "mac_address_condensed": ""}
-
-            age_seconds = _nxos_duration_to_seconds(ts)
-
-            rows_out[count] = {
-                "ipv4_address": ip,
-                **mac_norm,
-                "interface": str(intf).strip(),
-                "age": str(ts).strip(),
-                "age_seconds": age_seconds,
-                "flags": r.get("flags"),
-                "vrf": str(vrf_name).strip(),
-                "incomplete": bool(incomplete),
-                "raw": r,
-                "source_os": "nxos",
-            }
-            count += 1
-
-    meta = {
-        "device_type": "cisco_nxos",
-        "detected_command": "show_ip_arp_table",
-        "vrf_names": vrf_names,
-        "vrf_count": len(vrf_names),
-        "row_count": count,
-    }
-
-    return {
-        "device_type": "cisco_nxos",
-        "meta": meta,
-        "normalized": {"ip_arp_table": rows_out},
-        "raw": data,
-    }
-
-def cisco_parse_show_ip_arp_table_auto(
-    device_type: str,
-    output: Union[str, Dict[str, Any]],
-    output_type_flag: str = "cli",  # cli | json | auto
-    *,
-    include_incomplete: bool = True,
-    return_envelope: bool = False,
-) -> Dict[str, Any]:
-    """
-    Notes / How to run:
-      - device_type: cisco_ios | cisco_xe | cisco_xr | cisco_nxos
-      - output: cli text, OR dict, OR json-string (nxos)
-      - output_type_flag: cli|json|auto
-    """
-    dt_raw = (device_type or "").strip()
-    dt = dt_raw.lower()
-    flag = (output_type_flag or "cli").strip().lower()
-
-    is_xr = dt in ("cisco_xr", "iosxr", "xr")
-    is_nxos = dt in ("cisco_nxos", "nxos")
-
-    def _wrap(rows: Dict[int, Dict[str, Any]], meta: Dict[str, Any], error: Optional[str]) -> Dict[str, Any]:
-        if return_envelope:
-            return {"rows": rows, "meta": meta, "error": error}
-        return rows if error is None else {"error": error}
-
-    # Forced JSON
-    if flag == "json":
-        if not is_nxos:
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
-        nx = parse_device_json("cisco_nxos", output if isinstance(output, dict) else _json_load_dict_best_effort(str(output)))
-        if isinstance(nx, dict) and nx.get("error"):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
-        rows = ((nx or {}).get("normalized") or {}).get("ip_arp_table")
-        if not isinstance(rows, dict):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_ip_arp_table")
-        if not include_incomplete:
-            rows = {k: v for k, v in rows.items() if isinstance(v, dict) and not v.get("incomplete")}
-        meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
-        meta["row_count"] = len(rows)
-        meta["incomplete_filtered"] = (not include_incomplete)
-        meta.setdefault("device_type", dt_raw)
-        meta.setdefault("detected_command", "show_ip_arp_table")
-        meta["output_type"] = "json"
-        return _wrap(rows, meta, None)
-
-    # Forced CLI
-    if flag == "cli":
-        if not isinstance(output, str):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "cli"}, "invalid_payload: expected cli string")
-        if is_xr:
-            res = cisco_parse_show_ip_arp_table_xr(output, include_incomplete=include_incomplete, return_envelope=return_envelope)
-            if return_envelope and isinstance(res, dict):
-                meta = res.get("meta") or {}
-                meta.setdefault("device_type", dt_raw)
-                meta.setdefault("detected_command", "show_ip_arp_table")
-                meta["output_type"] = "cli"
-                res["meta"] = meta
-            return res
-
-        res = cisco_parse_show_ip_arp_table(output, device_type=dt_raw, include_incomplete=include_incomplete, return_envelope=return_envelope)
-        if return_envelope and isinstance(res, dict):
-            meta = res.get("meta") or {}
-            meta.setdefault("device_type", dt_raw)
-            meta.setdefault("detected_command", "show_ip_arp_table")
-            meta["output_type"] = "cli"
-            res["meta"] = meta
-        return res
-
-    # Auto mode
-    if isinstance(output, dict):
-        if not is_nxos:
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
-        nx = parse_device_json("cisco_nxos", output)
-        if isinstance(nx, dict) and nx.get("error"):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
-        rows = ((nx or {}).get("normalized") or {}).get("ip_arp_table")
-        if not isinstance(rows, dict):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_ip_arp_table")
-        if not include_incomplete:
-            rows = {k: v for k, v in rows.items() if isinstance(v, dict) and not v.get("incomplete")}
-        meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
-        meta["row_count"] = len(rows)
-        meta["incomplete_filtered"] = (not include_incomplete)
-        meta.setdefault("device_type", dt_raw)
-        meta.setdefault("detected_command", "show_ip_arp_table")
-        meta["output_type"] = "json"
-        return _wrap(rows, meta, None)
-
-    raw = "" if output is None else str(output)
-    raw_strip = raw.lstrip()
-
-    if is_nxos and raw_strip.startswith("{"):
-        nx = cisco_parse_device_json_from_string("cisco_nxos", raw)
-        if isinstance(nx, dict) and not nx.get("error"):
-            rows = ((nx or {}).get("normalized") or {}).get("ip_arp_table")
-            if isinstance(rows, dict):
-                if not include_incomplete:
-                    rows = {k: v for k, v in rows.items() if isinstance(v, dict) and not v.get("incomplete")}
-                meta = (nx.get("meta") or {}) if isinstance(nx, dict) else {}
-                meta["row_count"] = len(rows)
-                meta["incomplete_filtered"] = (not include_incomplete)
-                meta.setdefault("device_type", dt_raw)
-                meta.setdefault("detected_command", "show_ip_arp_table")
-                meta["output_type"] = "json"
-                return _wrap(rows, meta, None)
-
-    # fallback to CLI
-    if is_xr:
-        return cisco_parse_show_ip_arp_table_xr(raw, include_incomplete=include_incomplete, return_envelope=return_envelope)
-    return cisco_parse_show_ip_arp_table(raw, device_type=dt_raw, include_incomplete=include_incomplete, return_envelope=return_envelope)
-
-def cisco_parse_show_lldp_neighbors(
-    output: str,
-    device_type: Optional[str] = None,
-    *,
-    return_envelope: bool = False,
-) -> Dict:
-    """Parse `show lldp neighbors` output (IOS / IOS-XE / NX-OS best-effort).
-
-    Notes
-    - For IOS-XR, this function returns an error and you should call
-      `cisco_parse_show_lldp_neighbors_xr(...)`.
-    - Targets the common tabular output:
-
-        Device ID           Local Intf     Hold-time  Capability      Port ID
-
-    Returns
-    - default: dict[int, dict]
-    - if return_envelope=True: {'rows': <dict>, 'meta': {...}, 'error': <str|None>}
-    """
-    raw = "" if output is None else str(output)
-    dt = (device_type or "").strip().lower()
-
-    if dt in ("cisco_xr", "xr", "iosxr", "cisco-iosxr"):
-        err = "unsupported_device_type: cisco_xr; use cisco_parse_show_lldp_neighbors_xr"
-        if return_envelope:
-            return {"rows": {}, "meta": {"device_type": device_type}, "error": err}
-        return {"error": err}
-
-    error_markers = (
-        "Invalid input detected",
-        "% Invalid input",
-        "Incomplete command",
-        "Ambiguous command",
-        "Unknown command",
-        "LLDP is not enabled",
-        "lldp is not enabled",
-    )
-    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
-
-    def _capability_tokens(val: str) -> List[str]:
-        s = (val or "").strip()
-        if not s:
-            return []
-        s = s.replace(",", " ").replace("/", " ")
-        toks = [t for t in s.split() if t]
-        return toks
-
-    def _build_spans(header: str) -> Optional[List[Tuple[str, int, int]]]:
-        labels: List[Tuple[str, Sequence[str]]] = [
-            ("device_id", ("Device ID", "System Name", "Chassis ID", "Device")),
-            ("local_interface", ("Local Intf", "Local Interface", "Local Port", "Local Intrfce")),
-            ("hold_time", ("Hold-time", "Hold Time", "Holdtime", "Holdtme")),
-            ("capability", ("Capability", "Capabilities")),
-            ("port_id", ("Port ID", "PortID", "Port Description", "Port Descr")),
-        ]
-        found: List[Tuple[str, int]] = []
-        for key, variants in labels:
-            pos = -1
-            for v in variants:
-                p = header.find(v)
-                if p >= 0:
-                    pos = p
-                    break
-            if pos >= 0:
-                found.append((key, pos))
-
-        keys = {k for k, _ in found}
-        if not {"device_id", "local_interface", "hold_time", "port_id"}.issubset(keys):
-            return None
-
-        found.sort(key=lambda x: x[1])
-        spans: List[Tuple[str, int, int]] = []
-        for i, (key, start) in enumerate(found):
-            end = found[i + 1][1] if i + 1 < len(found) else len(header)
-            spans.append((key, start, end))
-        return spans
-
-    rows: Dict[int, Dict[str, Any]] = {}
-    count = 0
-    spans: Optional[List[Tuple[str, int, int]]] = None
-    started = False
-    detected_style = None
-
-    for line in raw.splitlines():
-        ln = (line or "").rstrip("\n")
-        if not ln.strip():
-            continue
-
-        lnl = ln.lower().strip()
-
-        if not started and ("device id" in lnl or "system name" in lnl) and ("local" in lnl) and ("port" in lnl):
-            spans = _build_spans(ln)
-            started = True
-            detected_style = "fixed_columns" if spans else "heuristic"
-            continue
-
-        if not started:
-            continue
-
-        if set(ln.strip()) <= {"-", " "}:
-            continue
-        if lnl.startswith(("capability codes", "capability code", "total lldp entries", "total entries", "lldp neighbors")):
-            continue
-
-        if spans:
-            parsed: Dict[str, str] = {}
-            padded = ln + (" " * 4)
-            for key, start, end in spans:
-                parsed[key] = padded[start:end].strip()
-
-            ht = parsed.get("hold_time", "").strip()
-            if not ht.isdigit():
-                continue
-
-            cap = parsed.get("capability", "").strip()
-            row = {
-                "device_id": parsed.get("device_id", "").strip(),
-                "local_interface": parsed.get("local_interface", "").strip(),
-                "hold_time": int(ht),
-                "capability": cap,
-                "capability_tokens": _capability_tokens(cap),
-                "port_id": parsed.get("port_id", "").strip(),
-                "raw": ln.strip(),
-                "source_os": device_type or "",
-            }
-            rows[count] = row
-            count += 1
-            continue
-
-        parts = ln.split()
-        if len(parts) < 4:
-            continue
-
-        ht_idx = None
-        for i in range(2, len(parts)):
-            if parts[i].isdigit():
-                ht_idx = i
-                break
-        if ht_idx is None:
-            continue
-
-        device_id = parts[0]
-        local_interface = " ".join(parts[1:ht_idx])
-        hold_time = int(parts[ht_idx])
-
-        tail = parts[ht_idx + 1 :]
-        if not tail:
-            continue
-
-        port_id = tail[-1]
-        capability = " ".join(tail[:-1]).strip()
-
-        row = {
-            "device_id": device_id,
-            "local_interface": local_interface,
-            "hold_time": hold_time,
-            "capability": capability,
-            "capability_tokens": _capability_tokens(capability),
-            "port_id": port_id,
-            "raw": ln.strip(),
-            "source_os": device_type or "",
-        }
-        rows[count] = row
-        count += 1
-
-    if return_envelope:
-        return {
-            "rows": rows,
-            "meta": {"detected_style": detected_style, "device_type": device_type, "count": count},
-            "error": parse_error,
-        }
-
-    return rows if rows else ({"error": parse_error} if parse_error else {})
-
-
-def cisco_parse_show_lldp_neighbors_xr(
-    output: str,
-    *,
-    return_envelope: bool = False,
-) -> Dict:
-    """Best-effort IOS-XR LLDP neighbor parser.
-
-    IOS-XR LLDP output varies. This parser looks for a common neighbor table:
-      - device id / chassis id
-      - local interface
-      - hold-time
-      - port id / port description
-
-    """
-    raw = "" if output is None else str(output)
-
-    error_markers = (
-        "Invalid input detected",
-        "% Invalid input",
-        "Incomplete command",
-        "Ambiguous command",
-        "Unknown command",
-        "LLDP is not enabled",
-        "lldp is not enabled",
-    )
-    parse_error = "command_not_supported_or_invalid" if any(m in raw for m in error_markers) else None
-
-    rows: Dict[int, Dict[str, Any]] = {}
-    count = 0
-    started = False
-    spans: Optional[List[Tuple[str, int, int]]] = None
-
-    def _build_spans(header: str) -> Optional[List[Tuple[str, int, int]]]:
-        labels: List[Tuple[str, Sequence[str]]] = [
-            ("device_id", ("Device ID", "Chassis ID", "System Name", "Neighbor")),
-            ("local_interface", ("Local Intf", "Local Interface", "Local Port")),
-            ("hold_time", ("Hold-time", "Hold Time", "Holdtime", "Holdtme")),
-            ("port_id", ("Port ID", "Port Description", "PortID")),
-        ]
-        found: List[Tuple[str, int]] = []
-        for key, variants in labels:
-            pos = -1
-            for v in variants:
-                p = header.find(v)
-                if p >= 0:
-                    pos = p
-                    break
-            if pos >= 0:
-                found.append((key, pos))
-        keys = {k for k, _ in found}
-        if not {"device_id", "local_interface", "hold_time", "port_id"}.issubset(keys):
-            return None
-        found.sort(key=lambda x: x[1])
-        spans: List[Tuple[str, int, int]] = []
-        for i, (key, start) in enumerate(found):
-            end = found[i + 1][1] if i + 1 < len(found) else len(header)
-            spans.append((key, start, end))
-        return spans
-
-    for line in raw.splitlines():
-        ln = (line or "").rstrip("\n")
-        if not ln.strip():
-            continue
-        lnl = ln.lower().strip()
-
-        if not started and ("device id" in lnl or "chassis id" in lnl or "system name" in lnl) and ("local" in lnl) and ("port" in lnl):
-            spans = _build_spans(ln)
-            started = True
-            continue
-
-        if not started:
-            continue
-
-        if set(ln.strip()) <= {"-", " "}:
-            continue
-        if lnl.startswith(("capability", "total", "entries", "lldp")):
-            continue
-
-        if spans:
-            parsed: Dict[str, str] = {}
-            padded = ln + (" " * 4)
-            for key, start, end in spans:
-                parsed[key] = padded[start:end].strip()
-            ht = parsed.get("hold_time", "").strip()
-            if not ht.isdigit():
-                continue
-            rows[count] = {
-                "device_id": parsed.get("device_id", "").strip(),
-                "local_interface": parsed.get("local_interface", "").strip(),
-                "hold_time": int(ht),
-                "port_id": parsed.get("port_id", "").strip(),
-                "raw": ln.strip(),
-                "source_os": "cisco_xr",
-            }
-            count += 1
-            continue
-
-        parts = ln.split()
-        if len(parts) < 4:
-            continue
-        ht_idx = None
-        for i in range(1, len(parts)):
-            if parts[i].isdigit():
-                ht_idx = i
-                break
-        if ht_idx is None:
-            continue
-        device_id = parts[0]
-        local_interface = " ".join(parts[1:ht_idx])
-        hold_time = int(parts[ht_idx])
-        port_id = " ".join(parts[ht_idx + 1 :]).strip()
-        rows[count] = {
-            "device_id": device_id,
-            "local_interface": local_interface,
-            "hold_time": hold_time,
-            "port_id": port_id,
-            "raw": ln.strip(),
-            "source_os": "cisco_xr",
-        }
-        count += 1
-
-    if return_envelope:
-        return {
-            "rows": rows,
-            "meta": {"detected_style": "xr_fixed_columns" if spans else "xr_heuristic", "count": count},
-            "error": parse_error,
-        }
-
-    return rows if rows else ({"error": parse_error} if parse_error else {})
-
-def cisco_parse_show_lldp_neighbors_auto(
-    device_type: str,
-    output: Union[str, Dict[str, Any]],
-    output_type_flag: str = "cli",  # cli | json | auto
-    *,
-    return_envelope: bool = False,
-) -> Dict[str, Any]:
-    """
-    Notes / How to run:
-      - device_type: cisco_ios | cisco_xe | cisco_xr | cisco_nxos
-      - output: cli text, OR dict, OR json-string (nxos)
-      - output_type_flag: cli|json|auto
-    """
-    dt_raw = (device_type or "").strip()
-    dt = dt_raw.lower()
-    flag = (output_type_flag or "cli").strip().lower()
-
-    is_xr = dt in ("cisco_xr", "iosxr", "xr")
-    is_nxos = dt in ("cisco_nxos", "nxos")
-
-    def _wrap(rows: Dict[int, Dict[str, Any]], meta: Dict[str, Any], error: Optional[str]) -> Dict[str, Any]:
-        if return_envelope:
-            return {"rows": rows, "meta": meta, "error": error}
-        return rows if error is None else {"error": error}
-
-    # Forced JSON
-    if flag == "json":
-        if not is_nxos:
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_for_device_type")
-
-        if isinstance(output, dict):
-            nx = cisco_nxos_parse_show_lldp_neighbors_json(output)
-        else:
-            raw = "" if output is None else str(output)
-            d = _json_load_dict_best_effort(raw)
-            if isinstance(d, dict) and d.get("error"):
-                return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(d.get("error")))
-            nx = cisco_nxos_parse_show_lldp_neighbors_json(d)
-
-        if isinstance(nx, dict) and nx.get("error"):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, str(nx.get("error")))
-
-        neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
-        if not isinstance(neighbors, dict):
-            return _wrap({}, {"device_type": dt_raw, "output_type": "json"}, "unsupported_json_schema_for_lldp_neighbors")
-
-        meta = nx.get("meta") or {}
-        meta.setdefault("device_type", dt_raw)
-        meta.setdefault("detected_command", "show_lldp_neighbors")
-        meta["output_type"] = "json"
-        return _wrap(neighbors, meta, None)
-
-    raw = "" if output is None else str(output)
-    raw_l = raw.lstrip()
-
-    # Auto: NX-OS JSON if it looks like JSON
-    if is_nxos and raw_l.startswith(("{", "[")):
-        d = _json_load_dict_best_effort(raw)
-        nx = cisco_nxos_parse_show_lldp_neighbors_json(d) if isinstance(d, dict) and not d.get("error") else {"error": str((d or {}).get("error"))}
-        if isinstance(nx, dict) and not nx.get("error"):
-            neighbors = ((nx or {}).get("normalized") or {}).get("neighbors")
-            if isinstance(neighbors, dict):
-                meta = nx.get("meta") or {}
-                meta.setdefault("device_type", dt_raw)
-                meta.setdefault("detected_command", "show_lldp_neighbors")
-                meta["output_type"] = "json"
-                return _wrap(neighbors, meta, None)
-
-    # CLI
-    if flag == "cli" or flag == "auto":
-        if is_xr:
-            res = cisco_parse_show_lldp_neighbors_xr(raw, return_envelope=return_envelope)
-            if return_envelope and isinstance(res, dict):
-                meta = res.get("meta") or {}
-                meta.setdefault("device_type", dt_raw)
-                meta.setdefault("detected_command", "show_lldp_neighbors")
-                meta["output_type"] = "cli"
-                res["meta"] = meta
-            return res
-
-        res = cisco_parse_show_lldp_neighbors(raw, device_type=device_type, return_envelope=return_envelope)
-        if return_envelope and isinstance(res, dict):
-            meta = res.get("meta") or {}
-            meta.setdefault("device_type", dt_raw)
-            meta.setdefault("detected_command", "show_lldp_neighbors")
-            meta["output_type"] = "cli"
-            res["meta"] = meta
-        return res
-
-    return _wrap({}, {"device_type": dt_raw, "output_type": str(flag)}, "unsupported_output_type_flag")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

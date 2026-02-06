@@ -42,6 +42,12 @@ networks:
   public_net:
     driver: bridge  # Standard bridge allows port mapping
 
+x-backend-image: &backend_image
+  image: network_tools/backend:prod
+  build:
+    context: ./backend/app/fastapi
+    dockerfile: Dockerfile
+
 services:
   # From the project root (~/NETWORK_TOOLS) to start all containers
   # docker compose -f docker-compose.prod.yml up -d
@@ -427,7 +433,7 @@ services:
       db_net:
         ipv4_address: 172.30.20.20
       public_net:
-    image: dpage/pgadmin4:9.11
+    image: dpage/pgadmin4:9.12.0
     container_name: pgadmin
     restart: unless-stopped
     depends_on:
@@ -508,10 +514,7 @@ services:
   # docker compose -f docker-compose.prod.yml up -d fastapi_api --build
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate fastapi_api
   fastapi_api:
-    image: python:3.14-slim
-    build:
-      context: ./backend/app/fastapi
-      dockerfile: Dockerfile
+    <<: *backend_image
     container_name: fastapi_api
     restart: unless-stopped
     depends_on:
@@ -586,7 +589,7 @@ services:
   # docker compose -f docker-compose.prod.yml up -d celery_worker --build
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate celery_worker
   celery_worker:
-    image: python:3.14-slim
+    <<: *backend_image
     container_name: celery_worker
     restart: unless-stopped
     networks:
@@ -637,7 +640,7 @@ services:
   # docker compose -f docker-compose.prod.yml up -d flower --build
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate flower
   flower:
-    image: python:3.14-slim
+    <<: *backend_image
     container_name: flower
     restart: unless-stopped
     depends_on:

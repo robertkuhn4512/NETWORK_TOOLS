@@ -131,6 +131,13 @@ async def netmiko_autodiscover(
     except Exception as exc:
         return {"error": "netmiko_unhandled_error", "host": host, "detail": str(exc)}
 
+
+try:
+    # Newer Netmiko includes this for "command read timed out"
+    from netmiko.exceptions import ReadTimeout
+except Exception:
+    ReadTimeout = None
+
 async def netmiko_fetch_command_output(
     *,
     host: str,
@@ -142,6 +149,8 @@ async def netmiko_fetch_command_output(
     command: Union[str, Sequence[str]],
     timeout: int = 20,
     conn_timeout: int = 10,
+    max_wait_time: int = 120,          # <- NEW (default 120)
+    timeout_step: int = 15,            # <- NEW (+15 per retry)
 ) -> Dict[str, Any]:
     """
     Notes / How to run:
@@ -152,7 +161,13 @@ async def netmiko_fetch_command_output(
                 password="p",
                 device_type="cisco_nxos",
                 command=["show version", "show cdp neighbors"],
+                timeout=20,
+                max_wait_time=120,
             )
+
+      - On timeout failures, the function retries with timeout increased by `timeout_step`
+        (default +15s) until it reaches `max_wait_time` (default 120s).
+
       - Success returns BOTH:
           * res["output"]   -> combined output (single string)
           * res["outputs"]  -> dict mapping each command -> its output
@@ -164,11 +179,9 @@ async def netmiko_fetch_command_output(
         "device_type": "...",
         "commands": ["...", "..."],
         "output": "<combined string>",
-        "outputs": {
-          "show version": "<output>",
-          "show cdp neighbors": "<output>",
-          # if a command repeats: value becomes a list[str]
-        }
+        "outputs": {...},
+        "timeout_used": 50,
+        "timeouts_tried": [20, 35, 50]
       }
 
     Returns (error):
@@ -180,7 +193,7 @@ async def netmiko_fetch_command_output(
     if command is None:
         return {"error": "netmiko_no_command_provided", "host": host}
 
-    # Normalize command(s) to a list[str]
+    # Normalize command(s) to list[str]
     if isinstance(command, str):
         commands: List[str] = [command.strip()]
     else:
@@ -193,29 +206,45 @@ async def netmiko_fetch_command_output(
     if not commands:
         return {"error": "netmiko_no_command_provided", "host": host}
 
+    # Normalize timers
+    timeout = int(timeout)
+    conn_timeout = int(conn_timeout)
+    max_wait_time = int(max_wait_time) if max_wait_time not in (None, 0) else 120
+    timeout_step = max(1, int(timeout_step))
+
+    # Ensure the cap isn't lower than the starting timeout
+    if max_wait_time < timeout:
+        max_wait_time = timeout
+
     base: Dict[str, Any] = {
         "host": host,
         "username": username,
         "password": password,
         "port": int(port),
-        "timeout": int(timeout),
-        "conn_timeout": int(conn_timeout),
+        "conn_timeout": conn_timeout,
         "device_type": device_type,
     }
     if enable_secret:
         base["secret"] = enable_secret
 
-    def _run_sync() -> Dict[str, Any]:
+    def _run_sync(*, attempt_timeout: int) -> Dict[str, Any]:
         # outputs: command -> output (or list of outputs if cmd repeated)
         outputs_map: Dict[str, Any] = {}
         combined_parts: List[str] = []
 
-        # One session, many commands
-        with ssh_session(enable=bool(enable_secret), **base) as conn:
-            for cmd in commands:
-                out = conn.send_command(cmd)
+        run_base = dict(base)
+        run_base["timeout"] = int(attempt_timeout)
 
-                # Store per-command output (support duplicates)
+        # One session, many commands
+        with ssh_session(enable=bool(enable_secret), **run_base) as conn:
+            for cmd in commands:
+                # Prefer per-command read_timeout if supported by this Netmiko version/driver.
+                try:
+                    out = conn.send_command(cmd, read_timeout=int(attempt_timeout))
+                except TypeError:
+                    # Older Netmiko / certain drivers: no read_timeout kwarg
+                    out = conn.send_command(cmd)
+
                 if cmd not in outputs_map:
                     outputs_map[cmd] = out
                 else:
@@ -238,18 +267,53 @@ async def netmiko_fetch_command_output(
             "outputs": outputs_map,
         }
 
-    try:
-        # Avoid blocking the event loop with Netmiko I/O
+    async def _run_in_thread(fn):
         try:
-            import anyio  # FastAPI stack typically includes this
-            return await anyio.to_thread.run_sync(_run_sync)
+            import anyio
+            return await anyio.to_thread.run_sync(fn)
         except Exception:
-            # fallback if anyio isn't available or thread call fails for some reason
-            return _run_sync()
+            return fn()
 
-    except NetmikoAuthenticationException as exc:
-        return {"error": "netmiko_auth_failed", "host": host, "detail": str(exc)}
-    except NetmikoTimeoutException as exc:
-        return {"error": "netmiko_timeout", "host": host, "detail": str(exc)}
-    except Exception as exc:
-        return {"error": "netmiko_unhandled_error", "host": host, "detail": str(exc)}
+    timeouts_tried: List[int] = []
+    attempt_timeout = timeout
+
+    while True:
+        timeouts_tried.append(attempt_timeout)
+
+        try:
+            res = await _run_in_thread(lambda: _run_sync(attempt_timeout=attempt_timeout))
+            # annotate success with retry/timer metadata
+            res["timeout_used"] = attempt_timeout
+            res["timeouts_tried"] = list(timeouts_tried)
+            return res
+
+        except NetmikoAuthenticationException as exc:
+            return {"error": "netmiko_auth_failed", "host": host, "detail": str(exc)}
+
+        except NetmikoTimeoutException as exc:
+            if attempt_timeout >= max_wait_time:
+                return {
+                    "error": "netmiko_timeout",
+                    "host": host,
+                    "detail": str(exc),
+                    "timeouts_tried": list(timeouts_tried),
+                    "max_wait_time": max_wait_time,
+                }
+            attempt_timeout = min(attempt_timeout + timeout_step, max_wait_time)
+            continue
+
+        except Exception as exc:
+            # Also treat Netmiko ReadTimeout (if present) as a retryable timeout
+            if ReadTimeout is not None and isinstance(exc, ReadTimeout):  # type: ignore[arg-type]
+                if attempt_timeout >= max_wait_time:
+                    return {
+                        "error": "netmiko_timeout",
+                        "host": host,
+                        "detail": str(exc),
+                        "timeouts_tried": list(timeouts_tried),
+                        "max_wait_time": max_wait_time,
+                    }
+                attempt_timeout = min(attempt_timeout + timeout_step, max_wait_time)
+                continue
+
+            return {"error": "netmiko_unhandled_error", "host": host, "detail": str(exc)}

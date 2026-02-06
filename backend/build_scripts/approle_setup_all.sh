@@ -215,42 +215,49 @@ write_role_files() {
 
   ensure_out_dir "$out_dir"
 
-  local role_id_file secret_id_file
-  role_id_file="${out_dir}/role_id"
-  secret_id_file="${out_dir}/secret_id"
+  # Run the sensitive bits in a subshell so cleanup traps do NOT leak globally.
+  (
+    set -euo pipefail
 
-  local tmp_role_id tmp_secret_id
-  tmp_role_id="$(mktemp)"
-  tmp_secret_id="$(mktemp)"
-  trap 'rm -f "${tmp_role_id}" "${tmp_secret_id}" 2>/dev/null || true' RETURN
+    local role_id_file secret_id_file
+    role_id_file="${out_dir}/role_id"
+    secret_id_file="${out_dir}/secret_id"
 
-  # role-id
-  if ! vault_in_container read -field=role_id "auth/approle/role/${role_name}/role-id" > "${tmp_role_id}" 2>/dev/null; then
-    err "Failed to read role-id for '${role_name}'. Does the AppRole exist?"
-    exit 30
-  fi
-  if [[ ! -s "${tmp_role_id}" ]]; then
-    err "role-id empty for '${role_name}'"
-    exit 30
-  fi
-  atomic_write_file "${role_id_file}" "${tmp_role_id}"
+    local tmp_role_id tmp_secret_id
+    tmp_role_id="$(mktemp)"
+    tmp_secret_id="$(mktemp)"
 
-  # secret-id
-  if [[ "${ROTATE_SECRET_ID}" == "0" && -s "${secret_id_file}" ]]; then
-    log "${role_name}: keeping existing secret_id (bootstrap + --keep-secret-on-bootstrap)"
-  else
-    if ! vault_in_container write -field=secret_id -f "auth/approle/role/${role_name}/secret-id" > "${tmp_secret_id}" 2>/dev/null; then
-      err "Failed to mint secret-id for '${role_name}'"
+    # Cleanup is now truly local to this role operation.
+    trap 'rm -f "${tmp_role_id}" "${tmp_secret_id}" 2>/dev/null || true' EXIT
+
+    # role-id
+    if ! vault_in_container read -field=role_id "auth/approle/role/${role_name}/role-id" > "${tmp_role_id}" 2>/dev/null; then
+      err "Failed to read role-id for '${role_name}'. Does the AppRole exist?"
       exit 30
     fi
-    if [[ ! -s "${tmp_secret_id}" ]]; then
-      err "secret-id empty for '${role_name}'"
+    if [[ ! -s "${tmp_role_id}" ]]; then
+      err "role-id empty for '${role_name}'"
       exit 30
     fi
-    atomic_write_file "${secret_id_file}" "${tmp_secret_id}"
-  fi
+    atomic_write_file "${role_id_file}" "${tmp_role_id}"
 
-  log "wrote: ${out_dir}/role_id and ${out_dir}/secret_id"
+    # secret-id
+    if [[ "${ROTATE_SECRET_ID}" == "0" && -s "${secret_id_file}" ]]; then
+      log "${role_name}: keeping existing secret_id (bootstrap + --keep-secret-on-bootstrap)"
+    else
+      if ! vault_in_container write -field=secret_id -f "auth/approle/role/${role_name}/secret-id" > "${tmp_secret_id}" 2>/dev/null; then
+        err "Failed to mint secret-id for '${role_name}'"
+        exit 30
+      fi
+      if [[ ! -s "${tmp_secret_id}" ]]; then
+        err "secret-id empty for '${role_name}'"
+        exit 30
+      fi
+      atomic_write_file "${secret_id_file}" "${tmp_secret_id}"
+    fi
+
+    log "wrote: ${out_dir}/role_id and ${out_dir}/secret_id"
+  )
 }
 
 restart_agents_if_requested() {
