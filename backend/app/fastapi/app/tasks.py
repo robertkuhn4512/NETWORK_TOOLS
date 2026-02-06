@@ -51,23 +51,16 @@ from app.shared_functions.helpers.helpers_netmiko import (
 )
 
 from app.shared_functions.helpers.helpers_cisco import (
-    cisco_allowed_commands,
-    cisco_parse_show_version,
-    cisco_parse_show_version_auto,
-    cisco_extract_show_version_fields,
     cisco_hostname,
-    cisco_parse_show_ip_arp_table,
-    cisco_parse_show_ip_arp_table_xr,
-    cisco_parse_show_cdp_neighbors,
-    cisco_parse_show_cdp_neighbors_xr,
-    cisco_parse_show_lldp_neighbors,
-    cisco_parse_show_lldp_neighbors_xr,
+    cisco_allowed_commands,
+    cisco_extract_show_version_fields,
+    cisco_parse_show_interface_description_auto,
     cisco_parse_show_cdp_neighbors_auto,
     cisco_parse_show_lldp_neighbors_auto,
-    cisco_parse_device_json_from_string,
-    cisco_parse_show_interface_description_auto,
+    cisco_parse_show_mac_address_table_auto,
     cisco_parse_show_ip_arp_table_auto,
-    cisco_parse_show_mac_address_table_auto
+    cisco_parse_show_version_auto,
+    cisco_parse_show_mac_address_table_count_auto
 )
 
 from app.shared_functions.helpers.helpers_generic import (
@@ -96,6 +89,31 @@ def _run_async(coro):
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(coro)
 
+def _get_cmd_output(outputs: Any, cmd: Optional[str]) -> Optional[Any]:
+    """
+    Netmiko output dict keys are not always identical to the command string
+    (e.g. pipe modifiers removed). This helper tries reasonable fallbacks.
+    """
+    if not isinstance(outputs, dict) or not cmd:
+        return None
+
+    if cmd in outputs:
+        return outputs[cmd]
+
+    cmd_norm = " ".join(cmd.split())
+    if cmd_norm in outputs:
+        return outputs[cmd_norm]
+
+    # Strip pipe modifiers: "show version | json-pretty" -> "show version"
+    base = cmd.split("|", 1)[0].strip()
+    if base in outputs:
+        return outputs[base]
+
+    base_norm = " ".join(base.split())
+    if base_norm in outputs:
+        return outputs[base_norm]
+
+    return None
 
 async def _update_job(
     *,
@@ -354,19 +372,17 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
 
                                     if ad.get("ok", False):
 
-                                        # Fetch version information
-
-                                        # Fetched version based on device type
-                                        # I am going to hard code ish this check for now.
-                                        # Device types to flag off of can be found here
-                                        # https://ktbyers.github.io/netmiko/PLATFORMS.html
-                                        # TODO - Find a cleaner way to impliment this check.
-
-                                        # Batch commands to run in the same session
+                                        # Batch commands to run in the same session.
+                                        # These are currently used for stats gathering and the like.
                                         batch_commands = []
                                         batch_commands_output = {}
+
+                                        # Show version parsing. Items like sw version, model, etc
                                         show_version_command = cisco_allowed_commands(ad['device_type']).get('show_version', None)
+
+                                        # Commands to run during a backup event
                                         backup_commands = cisco_allowed_commands(ad['device_type']).get('allowed_backup_commands', None)
+
                                         os_name = cisco_allowed_commands(ad.get("device_type")).get('os_name_by_device', None)
                                         show_interface_description_command = cisco_allowed_commands(ad.get("device_type")).get('show_interface_description', None)
                                         hostname = None
@@ -383,6 +399,8 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         show_lldp_neighbors_output_parsed = {}
                                         show_ip_arp_output = {}
                                         show_ip_arp_output_parsed = {}
+                                        show_mac_address_table_count_output = {}
+                                        show_mac_address_table_count_output_parsed = {}
 
                                         # Add commands to the batch commands list if they are present in the
                                         # device dictionary
@@ -417,7 +435,11 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         if show_ip_arp_table_command is not None:
                                             batch_commands.append(show_ip_arp_table_command)
 
+                                        show_mac_address_table_count_command = cisco_allowed_commands(ad.get("device_type")).get('show_mac_address_table_count', None)
+                                        show_mac_address_table_count_command_flag = cisco_allowed_commands(ad.get("device_type")).get('show_mac_address_table_count_output_type', 'cli')
 
+                                        if show_mac_address_table_count_command is not None:
+                                            batch_commands.append(show_mac_address_table_count_command)
 
                                         # Run all batch commands
 
@@ -434,11 +456,14 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         # Process all batch commands output
                                         logger.info(json.dumps(batch_commands_output, indent=4))
 
-                                        show_version_command_output = batch_commands_output['outputs'].get(show_version_command, None)
-                                        show_version_command_output_type = cisco_allowed_commands(ad.get("device_type")).get('show_version_output_type', None)
+                                        outputs = batch_commands_output.get("outputs") or {}
+
+                                        show_version_command_output_type = cisco_allowed_commands(ad.get("device_type")).get("show_version_output_type", None)
+
+                                        show_version_command_output = _get_cmd_output(outputs, show_version_command)
 
                                         show_version_parsed = cisco_parse_show_version_auto(
-                                            show_version_command_output,
+                                            show_version_command_output or "",
                                             device_type=ad.get("device_type"),
                                             output_type=show_version_command_output_type or "auto",
                                         )
@@ -446,7 +471,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         show_version_fields = cisco_extract_show_version_fields(
                                             device_type=ad.get("device_type"),
                                             show_version_parsed=show_version_parsed,
-                                            raw_output=show_version_command_output if isinstance(show_version_command_output, str) else None,
+                                            raw_output=show_version_command_output,
                                         )
 
                                         show_interface_description_output = batch_commands_output['outputs'].get(show_interface_description_command, None)
@@ -468,6 +493,10 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         show_mac_address_table_output = batch_commands_output['outputs'].get(show_mac_address_table_command, None)
                                         show_mac_address_table_output_parsed = cisco_parse_show_mac_address_table_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_mac_address_table_command, None), show_mac_address_command_flag)
 
+                                        # Parse mac address table count output
+                                        show_mac_address_table_count_output = batch_commands_output['outputs'].get(show_mac_address_table_count_command, None)
+                                        show_mac_address_table_count_output_parsed = cisco_parse_show_mac_address_table_count_auto(ad.get("device_type"), batch_commands_output['outputs'].get(show_mac_address_table_count_command, None), show_mac_address_table_count_command_flag)
+
                                         # Perform a backup of the device
 
                                         if backup_commands is not None:
@@ -485,6 +514,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             hostname = cisco_hostname(backup_commands_output.get('output', '')).get('hostname', 'Unable to determine hostname')
 
                                             # Save the raw configuration backup
+
                                             now = datetime.now()
                                             day_folder = now.strftime("%Y_%m_%d")
 
@@ -573,16 +603,18 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                                 "encryption_warning_message": encryption_warning_message,
                                                 "encryption_task": encryption_task,
                                                 "decrypt_task": ({**decrypt_task, "content": "Redacted - This was a test to see if the file could be decrypted"} if isinstance(decrypt_task, dict) and "content" in decrypt_task else decrypt_task),
-                                                #"show_mac_address_table_output": show_mac_address_table_output,
+                                                "show_mac_address_table_output": show_mac_address_table_output,
                                                 "show_mac_address_table_output_parsed": show_mac_address_table_output_parsed,
-                                                #"show_interface_description_output": show_interface_description_output,
+                                                "show_interface_description_output": show_interface_description_output,
                                                 "show_interface_description_output_parsed": show_interface_description_output_parsed,
-                                                #"show_cdp_neighbors_output": show_cdp_neighbors_output,
+                                                "show_cdp_neighbors_output": show_cdp_neighbors_output,
                                                 "show_cdp_neighbors_output_parsed": show_cdp_neighbors_output_parsed,
-                                                #"show_lldp_neighbors_output": show_lldp_neighbors_output,
+                                                "show_lldp_neighbors_output": show_lldp_neighbors_output,
                                                 "show_lldp_neighbors_output_parsed": show_lldp_neighbors_output_parsed,
-                                                #"show_ip_arp_output": show_ip_arp_output,
+                                                "show_ip_arp_output": show_ip_arp_output,
                                                 "show_ip_arp_output_parsed": show_ip_arp_output_parsed,
+                                                "show_mac_address_table_count_output": show_mac_address_table_count_output,
+                                                "show_mac_address_table_count_output_parsed": show_mac_address_table_count_output_parsed
                                             },
                                             information_detail={}
                                         )

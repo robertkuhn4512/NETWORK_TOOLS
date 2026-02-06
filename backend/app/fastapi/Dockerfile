@@ -1,27 +1,24 @@
 FROM python:3.14-slim
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
- && apt-get install -y curl \
- && apt-get install -y iputils-ping \
- && apt-get install -y fping \
- && apt-get install -y jq \
- && rm -rf /var/lib/apt/lists/*
-
-RUN update-ca-certificates
-
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
-RUN python -m pip install --no-cache-dir -U pip
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl iputils-ping fping jq; \
+    update-ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN python -m pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 COPY bin/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
 ENTRYPOINT ["/entrypoint.sh"]
 EXPOSE 8000
