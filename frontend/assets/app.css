@@ -1,0 +1,45 @@
+/* assets/app.css */
+:root {
+    --app-sidebar-width: 280px;
+}
+
+body.app-body {
+    background: var(--bs-tertiary-bg);
+}
+
+.app-shell {
+    min-height: calc(100vh - 56px); /* navbar height approx */
+}
+
+.app-sidebar {
+    width: var(--app-sidebar-width);
+}
+
+.nav-pills .nav-link {
+    border-radius: .6rem;
+}
+
+.nav-pills .nav-link.active {
+    font-weight: 600;
+}
+
+.content-card {
+    border: 1px solid var(--bs-border-color);
+    box-shadow: 0 .35rem 1.25rem rgba(0,0,0,.04);
+}
+
+.table thead th {
+    color: var(--bs-secondary-color);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: .75rem;
+    letter-spacing: .04em;
+}
+
+/* Sidebar chevrons rotate when expanded */
+#sideNav button[aria-expanded="true"] .bi-chevron-down {
+    transform: rotate(180deg);
+}
+#sideNav .bi-chevron-down {
+    transition: transform .15s ease-in-out;
+}

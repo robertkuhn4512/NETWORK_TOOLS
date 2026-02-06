@@ -1,17 +1,104 @@
-<!DOCTYPE html>
-<html>
-    <head>
-        <meta charset="UTF-8">
-        <title>{% block title %}Welcome!{% endblock %}</title>
-        <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 128 128%22><text y=%221.2em%22 font-size=%2296%22>⚫️</text><text y=%221.3em%22 x=%220.2em%22 font-size=%2276%22 fill=%22%23fff%22>sf</text></svg>">
-        {% block stylesheets %}
-        {% endblock %}
+{# templates/base.html.twig #}
+<!doctype html>
+<html lang="{{ app.request.locale|default('en') }}" data-bs-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
 
-        {% block javascripts %}
-            {% block importmap %}{{ importmap('app') }}{% endblock %}
-        {% endblock %}
-    </head>
-    <body>
-        {% block body %}{% endblock %}
-    </body>
+    <title>{% block title %}Network Tools{% endblock %}</title>
+
+    {# Prevent “theme flash” before CSS paints (CSP-friendly version: add a nonce later if you use CSP) #}
+    <script>
+        (function () {
+            try {
+                var stored = localStorage.getItem('nt.theme'); // 'light' | 'dark' | null
+                var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                var theme = stored || (prefersDark ? 'dark' : 'light');
+                document.documentElement.setAttribute('data-bs-theme', theme);
+            } catch (e) {}
+        })();
+    </script>
+
+    {# Local vendor assets #}
+    <link rel="stylesheet" href="{{ asset('vendor/bootstrap/5.3.8/css/bootstrap.min.css') }}">
+    <link rel="stylesheet" href="{{ asset('vendor/bootstrap-icons/1.13.1/font/bootstrap-icons.min.css') }}">
+
+    {# Your app styles (AssetMapper maps assets/ by default) #}
+    <link rel="stylesheet" href="{{ asset('app.css') }}">
+    {% block stylesheets %}{% endblock %}
+</head>
+
+<body class="app-body">
+<a class="visually-hidden-focusable position-absolute top-0 start-0 m-3 p-2 bg-body border rounded"
+   href="#main-content">Skip to content</a>
+
+{% include 'layout/_topbar.html.twig' %}
+
+<div class="container-fluid app-shell">
+    <div class="row g-0">
+        <aside class="col-lg-auto">
+            {% include 'layout/_sidebar.html.twig' %}
+        </aside>
+
+        <main id="main-content" class="col-lg app-main" tabindex="-1">
+            {# Flash messages -> toast notifications #}
+            {% include 'layout/_flash_toasts.html.twig' %}
+
+            {# Page header area (optional override) #}
+            {% block page_header %}
+                <div class="bg-body border-bottom">
+                    <div class="container-fluid p-4">
+                        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+                            <div>
+                                <h1 class="h3 mb-1 fw-semibold">{% block page_title %}Dashboard{% endblock %}</h1>
+                                <div class="text-secondary">{% block page_subtitle %}Operational overview{% endblock %}</div>
+                            </div>
+                            <div class="d-flex gap-2">
+                                {% block page_actions %}
+                                    <button class="btn btn-outline-secondary" type="button">
+                                        <i class="bi bi-download me-1"></i>Export
+                                    </button>
+                                    <button class="btn btn-primary" type="button">
+                                        <i class="bi bi-plus-lg me-1"></i>Create
+                                    </button>
+                                {% endblock %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {% endblock %}
+
+            <div class="container-fluid p-4">
+                {% block body %}{% endblock %}
+            </div>
+
+            <footer class="border-top py-3 mt-4">
+                <div class="container-fluid small text-secondary d-flex flex-wrap justify-content-between gap-2">
+                    <div>© {{ "now"|date("Y") }} Network Tools</div>
+                    <div class="d-flex gap-3">
+                        <a class="text-secondary text-decoration-none" href="#">Docs</a>
+                        <a class="text-secondary text-decoration-none" href="#">Support</a>
+                        <a class="text-secondary text-decoration-none" href="#">Status</a>
+                    </div>
+                </div>
+            </footer>
+        </main>
+    </div>
+</div>
+
+<noscript>
+    <div class="alert alert-warning rounded-0 m-0">
+        This application works best with JavaScript enabled (navigation, toasts, dropdowns).
+    </div>
+</noscript>
+
+{# Local Bootstrap bundle (includes Popper for dropdowns/offcanvas/tooltips) #}
+<script src="{{ asset('vendor/bootstrap/5.3.8/js/bootstrap.bundle.min.js') }}" defer></script>
+
+{# Your app JS (ES module; AssetMapper-friendly) #}
+<script type="module" src="{{ asset('app.js') }}"></script>
+
+{% block javascripts %}{% endblock %}
+</body>
 </html>

@@ -1,0 +1,25 @@
+{# templates/layout/_flash_toasts.html.twig #}
+<div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1080;">
+  {% set map = {
+    'success': 'text-bg-success',
+    'error':   'text-bg-danger',
+    'danger':  'text-bg-danger',
+    'warning': 'text-bg-warning',
+    'info':    'text-bg-info'
+  } %}
+
+  {% for type, messages in app.flashes %}
+    {% set klass = map[type]|default('text-bg-secondary') %}
+    {% for message in messages %}
+      <div class="toast {{ klass }} border-0 mb-2" role="alert" aria-live="assertive" aria-atomic="true"
+           data-bs-autohide="true" data-bs-delay="6000">
+        <div class="d-flex">
+          <div class="toast-body">
+            {{ message }}
+          </div>
+          <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+      </div>
+    {% endfor %}
+  {% endfor %}
+</div>
