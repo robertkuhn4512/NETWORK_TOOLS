@@ -767,7 +767,7 @@ services:
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_php_fpm
   #
   frontend_php_fpm:
-    image: php:8.5-fpm-alpine
+    image: frontend_php_fpm
     build:
       context: ./frontend
       dockerfile: docker/php-fpm/Dockerfile
@@ -783,7 +783,7 @@ services:
       db_net:
         ipv4_address: 172.30.20.71
     read_only: true
-    user: "82:0"
+    user: "82:82"
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,mode=1777
       - /run:rw,nosuid,nodev,noexec,mode=0755
@@ -824,7 +824,7 @@ services:
   #
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_nginx
   frontend_nginx:
-    image: nginx:1.27-alpine
+    image: frontend_nginx
     build:
       context: ./frontend
       dockerfile: docker/nginx/Dockerfile

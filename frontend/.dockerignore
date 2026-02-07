@@ -1,0 +1,8 @@
+.git
+vendor
+node_modules
+var/cache
+var/log
+public/assets
+container_data
+**/.DS_Store

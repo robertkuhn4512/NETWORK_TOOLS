@@ -18,6 +18,17 @@ services:
     # this creates a service per class whose id is the fully-qualified class name
     App\:
         resource: '../src/'
+        exclude:
+            - '../src/DependencyInjection/'
+            - '../src/Entity/'
+            - '../src/Kernel.php'
 
+    App\Security\KeycloakAuthenticator:
+        autowire: true
+        autoconfigure: true
+
+    App\Security\KeycloakUserProvider:
+        autowire: true
+        autoconfigure: true
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
