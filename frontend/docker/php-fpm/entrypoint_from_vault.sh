@@ -4,11 +4,6 @@ set -euo pipefail
 # Prefer the path used by your PHP-FPM container mount.
 SECRETS_ENV="${VAULT_SECRETS_ENV:-/run/vault/frontend.env}"
 
-# Back-compat if someone still uses the old path.
-if [[ ! -r "${SECRETS_ENV}" && -r "/vault/rendered/frontend.env" ]]; then
-  SECRETS_ENV="/vault/rendered/frontend.env"
-fi
-
 if [[ ! -r "${SECRETS_ENV}" ]]; then
   echo "ERROR: missing/unreadable Vault-rendered env file: ${SECRETS_ENV}" >&2
   ls -lha "$(dirname "${SECRETS_ENV}")" 2>/dev/null || true

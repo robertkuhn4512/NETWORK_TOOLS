@@ -4,25 +4,24 @@ security:
             id: App\Security\KeycloakUserProvider
 
     firewalls:
-        dev:
-            pattern: ^/(_(profiler|wdt)|css|images|js)/
-            security: false
-
         main:
             lazy: true
             provider: keycloak_users
-
             custom_authenticators:
                 - App\Security\KeycloakAuthenticator
-
             entry_point: App\Security\KeycloakAuthenticator
 
             logout:
                 path: app_logout
-                target: connect_keycloak_start
-                invalidate_session: false
+                invalidate_session: true
+                success_handler: App\Security\KeycloakLogoutSuccessHandler
+                enable_csrf: true
+                csrf_parameter: _csrf_token
+                csrf_token_id: logout
 
     access_control:
-        - { path: ^/connect/keycloak, roles: PUBLIC_ACCESS }
-        - { path: ^/logout$, roles: PUBLIC_ACCESS }
+        # allow OAuth/OIDC callback endpoints and logout endpoints without auth loops
+        - { path: ^/logout, roles: PUBLIC_ACCESS }
+        - { path: ^/connect, roles: PUBLIC_ACCESS }
+        - { path: ^/auth, roles: PUBLIC_ACCESS }   # if your callback lives under /auth/*
         - { path: ^/, roles: ROLE_USER }

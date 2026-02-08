@@ -30,7 +30,7 @@ final class SecurityController extends AbstractController
         return $this->redirectToRoute('app_home');
     }
 
-    #[Route('/logout', name: 'app_logout', methods: ['GET'])]
+    #[Route('/logout', name: 'app_logout', methods: ['POST'])]
     public function logout(): void
     {
         throw new \LogicException('This route is intercepted by the firewall logout.');

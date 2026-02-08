@@ -1,12 +1,12 @@
+# config/packages/knpu_oauth2_client.yaml
 knpu_oauth2_client:
     clients:
         keycloak:
-            type: generic
-            provider_class: Stevenmaguire\OAuth2\Client\Provider\Keycloak
-            provider_options:
-                authServerUrl: '%env(KEYCLOAK_AUTH_SERVER_URL)%'   # https://auth...:8443
-                realm: '%env(KEYCLOAK_REALM)%'                     # network_tools
+            type: keycloak_pkce
             client_id: '%env(KEYCLOAK_CLIENT_ID)%'
             client_secret: '%env(KEYCLOAK_CLIENT_SECRET)%'
+            auth_server_url: '%env(KEYCLOAK_AUTH_SERVER_URL)%'   # e.g. https://auth.networkengineertools.com:8443
+            realm: '%env(KEYCLOAK_REALM)%'                       # e.g. network_tools
             redirect_route: connect_keycloak_check
+            use_state: true
 

@@ -14,7 +14,7 @@ $dotenv->usePutenv(true);
 $vaultEnv = $_SERVER['VAULT_SECRETS_ENV']
     ?? $_ENV['VAULT_SECRETS_ENV']
     ?? getenv('VAULT_SECRETS_ENV')
-    ?? '/run/vault/frontend.env';
+    ?? '/vault/rendered/frontend.env';
 
 if (is_string($vaultEnv) && $vaultEnv !== '' && is_readable($vaultEnv)) {
     $dotenv->overload($vaultEnv);

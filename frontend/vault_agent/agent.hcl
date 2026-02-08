@@ -26,7 +26,7 @@ template {
   exec = {
     command = [
       "sh", "-lc",
-      "chown 0:82 /vault/rendered && chmod 0750 /vault/rendered && chown 0:82 /vault/rendered/frontend.env && chmod 0440 /vault/rendered/frontend.env"
+      "chown 0:82 /vault/rendered && chmod 2750 /vault/rendered && chown 0:82 /vault/rendered/frontend.env && chmod 0640 /vault/rendered/frontend.env"
     ]
     timeout = "10s"
   }
