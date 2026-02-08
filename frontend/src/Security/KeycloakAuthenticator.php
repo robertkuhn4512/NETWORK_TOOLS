@@ -53,7 +53,10 @@ final class KeycloakAuthenticator extends OAuth2Authenticator implements Authent
 
         /** @var AccessToken $accessToken */
         $accessToken = $this->fetchAccessToken($client);
-
+        $idToken = $accessToken->getValues()['id_token'] ?? null;
+        if ($request->hasSession()) {
+            $request->getSession()->set('keycloak_id_token', $idToken);
+        }
         // Optional: store id_token for Keycloak logout redirect
         $values = method_exists($accessToken, 'getValues') ? $accessToken->getValues() : [];
         if (isset($values['id_token']) && $request->hasSession()) {

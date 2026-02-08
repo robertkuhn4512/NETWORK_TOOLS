@@ -30,5 +30,12 @@ services:
     App\Security\KeycloakUserProvider:
         autowire: true
         autoconfigure: true
+
+    App\EventListener\KeycloakLogoutListener:
+        arguments:
+            $keycloakAuthServerUrl: '%env(KEYCLOAK_AUTH_SERVER_URL)%'
+            $keycloakRealm: '%env(KEYCLOAK_REALM)%'
+            $keycloakClientId: '%env(KEYCLOAK_CLIENT_ID)%'
+            $postLogoutRedirectUri: '%env(APP_LOGOUT_REDIRECT_URL)%'
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones

@@ -13,8 +13,7 @@ security:
 
             logout:
                 path: app_logout
-                invalidate_session: true
-                success_handler: App\Security\KeycloakLogoutSuccessHandler
+                invalidate_session: false
                 enable_csrf: true
                 csrf_parameter: _csrf_token
                 csrf_token_id: logout
