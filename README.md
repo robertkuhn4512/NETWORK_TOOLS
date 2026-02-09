@@ -1196,11 +1196,11 @@ back through the API without writing anything to disk.
 {
   "APP_DEBUG": "1",
   "APP_ENV": "dev",
-  "APP_LOGOUT_REDIRECT_URL": "https://networkengineertools.com:8443/",
-  "APP_SECRET": "clkKk_Uows26uP51U1kk8CNwGCQa1LZT8KkmatwlrbW1PjoTah8gIx4-74DLU5XOJWaYAzFGvNHQkF2ia3y4XA",
+  "APP_LOGOUT_REDIRECT_URL": "https://networkengineertools.com:8443/logged-out",
+  "APP_SECRET": "",
   "KEYCLOAK_AUTH_SERVER_URL": "https://auth.networkengineertools.com:8443",
   "KEYCLOAK_CLIENT_ID": "symfony_frontend",
-  "KEYCLOAK_CLIENT_SECRET": "5Fm8ahFkTIUdmHrF0d650NJWo14Kkvsg",
+  "KEYCLOAK_CLIENT_SECRET": "",
   "KEYCLOAK_REALM": "network_tools"
 }
 ```
