@@ -35,4 +35,11 @@ final class SecurityController extends AbstractController
     {
         throw new \LogicException('This route is intercepted by the firewall logout.');
     }
+
+    #[Route('/logged-out', name: 'app_logged_out', methods: ['GET'])]
+    public function loggedOut(): Response
+    {
+        return $this->render('security/logged_out.html.twig');
+    }
+
 }

@@ -20,7 +20,8 @@ security:
 
     access_control:
         # allow OAuth/OIDC callback endpoints and logout endpoints without auth loops
+        - { path: ^/logged-out, roles: PUBLIC_ACCESS }
         - { path: ^/logout, roles: PUBLIC_ACCESS }
         - { path: ^/connect, roles: PUBLIC_ACCESS }
-        - { path: ^/auth, roles: PUBLIC_ACCESS }   # if your callback lives under /auth/*
+        - { path: ^/auth, roles: PUBLIC_ACCESS }
         - { path: ^/, roles: ROLE_USER }
