@@ -674,10 +674,9 @@ services:
       - "flower"
       - "--address=0.0.0.0"
       - "--port=5555"
-      - "--persistent=True"
-      - "--db=/data/flower.db"
-      # If you proxy under a path (example: https://host/flower/), enable:
-      # - "--url_prefix=/flower"
+      - "--persistent=False"
+      #- "--persistent=True"
+      #- "--db=/data/flower.db"
     healthcheck:
       test: [ "CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:5555/\", timeout=2).read()' >/dev/null" ]
       interval: 10s

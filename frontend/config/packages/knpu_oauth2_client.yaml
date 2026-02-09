@@ -8,5 +8,6 @@ knpu_oauth2_client:
             auth_server_url: '%env(KEYCLOAK_AUTH_SERVER_URL)%'   # e.g. https://auth.networkengineertools.com:8443
             realm: '%env(KEYCLOAK_REALM)%'                       # e.g. network_tools
             redirect_route: connect_keycloak_check
+            redirect_params: { }
             use_state: true
 
