@@ -21,5 +21,13 @@ auto_auth {
 template {
   source      = "/vault/templates/frontend.env.ctmpl"
   destination = "/vault/rendered/frontend.env"
-  perms       = "0440"
+  perms       = "0640"
+
+  exec = {
+    command = [
+      "sh", "-lc",
+      "chown 0:82 /vault/rendered && chmod 2750 /vault/rendered && chown 0:82 /vault/rendered/frontend.env && chmod 0640 /vault/rendered/frontend.env"
+    ]
+    timeout = "10s"
+  }
 }

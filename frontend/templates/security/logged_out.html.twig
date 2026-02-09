@@ -1,0 +1,198 @@
+{# templates/security/logged_out.html.twig #}
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Signed out</title>
+
+    <style>
+        :root {
+            --bg: #0b1220;
+            --panel: rgba(255,255,255,0.06);
+            --border: rgba(255,255,255,0.12);
+            --text: #e8ebf2;
+            --muted: #b7bed1;
+            --muted2: #93a0bd;
+            --primary: #4f8cff;
+            --primaryText: #0b1220;
+            --shadow: 0 24px 70px rgba(0,0,0,0.45);
+            --radius: 16px;
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+            background: radial-gradient(1200px 600px at 20% 10%, rgba(79,140,255,0.22), transparent 55%),
+            radial-gradient(900px 500px at 90% 30%, rgba(120,255,193,0.10), transparent 55%),
+            var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 28px;
+        }
+
+        .wrap { width: 100%; max-width: 720px; }
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .header {
+            padding: 22px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            gap: 14px;
+            align-items: center;
+        }
+        .badge {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: rgba(79,140,255,0.18);
+            border: 1px solid rgba(79,140,255,0.35);
+            display: grid;
+            place-items: center;
+            flex: 0 0 auto;
+        }
+        .badge svg { width: 22px; height: 22px; }
+
+        h1 {
+            margin: 0;
+            font-size: 20px;
+            letter-spacing: 0.2px;
+        }
+        .subtitle {
+            margin: 4px 0 0;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .body { padding: 22px 24px; }
+        .body p {
+            margin: 0 0 14px;
+            line-height: 1.55;
+            color: var(--muted);
+            font-size: 14.5px;
+        }
+
+        .info {
+            margin-top: 14px;
+            padding: 14px 14px;
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 14px;
+            background: rgba(0,0,0,0.18);
+            color: var(--muted2);
+            font-size: 13.5px;
+        }
+        .info strong { color: var(--text); }
+
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 18px;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            border-radius: 12px;
+            font-weight: 650;
+            text-decoration: none;
+            border: 1px solid transparent;
+            cursor: pointer;
+            user-select: none;
+            line-height: 1;
+        }
+        .btn-primary {
+            background: var(--primary);
+            color: var(--primaryText);
+        }
+        .btn-secondary {
+            background: transparent;
+            border-color: rgba(255,255,255,0.18);
+            color: var(--text);
+        }
+        .btn svg { width: 16px; height: 16px; }
+
+        .footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            color: var(--muted2);
+            font-size: 12.5px;
+        }
+        code {
+            padding: 2px 6px;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.10);
+            color: var(--text);
+        }
+    </style>
+</head>
+
+<body>
+<div class="wrap">
+    <div class="card" role="main" aria-labelledby="title">
+
+        <div class="header">
+            <div class="badge" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M12 2a7 7 0 0 0-7 7v3H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1V9a7 7 0 0 0-7-7Z" stroke="currentColor" stroke-width="1.6"/>
+                    <path d="M8 12V9a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="1.6"/>
+                </svg>
+            </div>
+
+            <div>
+                <h1 id="title">You’re signed out</h1>
+                <div class="subtitle">Your session has ended successfully.</div>
+            </div>
+        </div>
+
+        <div class="body">
+            <p>
+                You’ve been logged out of the application. If you’re on a shared computer, we recommend closing your browser window.
+            </p>
+
+            <div class="info">
+                <strong>What happens next:</strong><br>
+                • Clicking “Return to Home” will bring you back to the homepage, where you can sign in again.<br>
+                • If you’re still automatically signed in, your SSO session may still be active in the identity provider—close the browser or sign out from the IdP.
+            </div>
+
+            <div class="actions">
+                <a class="btn btn-primary" href="{{ path('app_home') }}">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M5 12l7-7 7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M9 21V12h6v9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Return to Home (Sign in)
+                </a>
+
+            </div>
+        </div>
+
+        <div class="footer">
+            <div>
+                Status: <code>signed_out</code>
+            </div>
+            <div>
+                {{ "now"|date("Y-m-d H:i:s") }} (server time)
+            </div>
+        </div>
+
+    </div>
+</div>
+</body>
+</html>

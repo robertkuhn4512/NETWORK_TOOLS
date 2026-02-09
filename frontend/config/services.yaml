@@ -18,6 +18,24 @@ services:
     # this creates a service per class whose id is the fully-qualified class name
     App\:
         resource: '../src/'
+        exclude:
+            - '../src/DependencyInjection/'
+            - '../src/Entity/'
+            - '../src/Kernel.php'
 
+    App\Security\KeycloakAuthenticator:
+        autowire: true
+        autoconfigure: true
+
+    App\Security\KeycloakUserProvider:
+        autowire: true
+        autoconfigure: true
+
+    App\EventListener\KeycloakLogoutListener:
+        arguments:
+            $keycloakAuthServerUrl: '%env(KEYCLOAK_AUTH_SERVER_URL)%'
+            $keycloakRealm: '%env(KEYCLOAK_REALM)%'
+            $keycloakClientId: '%env(KEYCLOAK_CLIENT_ID)%'
+            $postLogoutRedirectUri: '%env(APP_LOGOUT_REDIRECT_URL)%'
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
