@@ -1,8 +1,10 @@
-.git
+.git/
+.gitignore
 vendor
 node_modules
-var/cache
-var/log
+var/cache/
+var/log/
+node_modules/
 public/assets
 container_data
 **/.DS_Store

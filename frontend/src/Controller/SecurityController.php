@@ -20,7 +20,7 @@ final class SecurityController extends AbstractController
     {
         return $clientRegistry
             ->getClient('keycloak')
-            ->redirect(['openid', 'profile', 'email']);
+            ->redirect(['openid', 'profile', 'email', 'roles']);
     }
 
     #[Route('/connect/keycloak/check', name: 'connect_keycloak_check', methods: ['GET'])]

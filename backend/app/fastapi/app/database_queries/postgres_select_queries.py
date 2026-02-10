@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from typing import Any, Dict, List, Optional
-
 from app.database import database
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _uuid_or_none(val: Any) -> Optional[str]:
+    if val in (None, ""):
+        return None
+    try:
+        return str(uuid.UUID(str(val)))
+    except Exception:
+        return None
+
 def _quote_ident(name: str) -> str:
 
     """
@@ -117,3 +127,35 @@ async def select_unique_device_os_versions(
             "error": "database_error",
             "detail": {"message": str(e), "schema": schema_name, "table": table},
         }
+
+async def select_jobs_tracking_information(*, database, job_id: str) -> Dict[str, Any]:
+    jid = _uuid_or_none(job_id)
+    if not jid:
+        return {"error": "invalid_job_id"}
+
+    sql = """
+        SELECT *
+        FROM public.jobs_tracking_information
+        WHERE job_id = :job_id::uuid
+        LIMIT 1
+    """
+    row = await database.fetch_one(query=sql, values={"job_id": jid})
+    if not row:
+        return {"detail": {"found": False, "job_id": jid}}
+    return {"detail": {"found": True, "job": dict(row._mapping)}}
+
+async def select_app_tracking_celery(*, database, job_id: str) -> Dict[str, Any]:
+    jid = _uuid_or_none(job_id)
+    if not jid:
+        return {"error": "invalid_job_id"}
+
+    sql = """
+        SELECT *
+        FROM public.app_tracking_celery
+        WHERE job_id = :job_id::uuid
+        LIMIT 1
+    """
+    row = await database.fetch_one(query=sql, values={"job_id": jid})
+    if not row:
+        return {"detail": {"found": False, "job_id": jid}}
+    return {"detail": {"found": True, "job": dict(row._mapping)}}

@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import quote
 from app.database import database
 from uuid import uuid4
+from app.database_queries.postgres_insert_queries import insert_app_backend_tracking
 
 def build_postgres_async_dsn() -> str:
     """
@@ -35,72 +36,231 @@ def build_postgres_async_dsn() -> str:
 
     return f"postgresql+asyncpg://{user}:{pw}@{host}:{port}/{db_enc}"
 
-ACTIVE_STATUSES = ("QUEUED", "STARTED", "RETRY")
+ACTIVE_STATUSES = ("QUEUED", "RECEIVED", "STARTED", "RETRY")
 
-async def _reserve_job_row_queued(*, job_name: str, dedupe_key: str, request_payload: dict, correlation_id: str | None):
+def _is_active_dedupe_conflict(exc: Exception) -> bool:
+    """
+    Detect conflict with uq_app_tracking_celery_active_dedupe.
+    We intentionally keep this string-based because exception wrapping varies.
+    """
+    msg = str(exc)
+    return "uq_app_tracking_celery_active_dedupe" in msg or (
+        "duplicate key value violates unique constraint" in msg
+        and "uq_app_tracking_celery_active_dedupe" in msg
+    )
+
+
+async def _reserve_job_row_queued(
+    *,
+    job_name: str,
+    dedupe_key: str,
+    request_payload: Optional[Dict[str, Any]] = None,
+    correlation_id: Optional[str] = None,
+    queue: Optional[str] = None,
+    routing_key: Optional[str] = None,
+    exchange: Optional[str] = None,
+    priority: Optional[int] = None,
+    parent_job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Reserve a row in public.app_tracking_celery BEFORE enqueue.
+
+    Returns:
+      {
+        "created": bool,
+        "job_id": str,
+        "task_id": str,
+        "status": str,
+        "error": Optional[str],
+        "detail": Optional[dict]
+      }
+
+    Behavior:
+      - Creates a new job row with status QUEUED when no active dedupe exists.
+      - If an active dedupe exists (uq_app_tracking_celery_active_dedupe), returns the existing job row with created=False.
+    """
+    route = (request_payload or {}).get("route") or "internal/_reserve_job_row_queued"
+    requested_by = (request_payload or {}).get("requested_by")
+
+    if not job_name or not str(job_name).strip():
+        return {"error": "missing_job_name", "detail": {"message": "job_name is required"}}
+
+    if not dedupe_key or not str(dedupe_key).strip():
+        return {"error": "missing_dedupe_key", "detail": {"message": "dedupe_key is required"}}
+
     job_id = str(uuid4())
-    task_id = str(uuid4())  # pre-generate so task_id is never NULL
+    task_id = job_id  # keep celery task id == job_id (simple + deterministic)
+
+    req_json = json.dumps(request_payload or {}, default=str)
 
     insert_sql = """
-    INSERT INTO app_tracking_celery (
-        job_id, task_id, job_name, dedupe_key, correlation_id,
-        status, request, created_at, updated_at
+    INSERT INTO public.app_tracking_celery (
+        job_id,
+        task_id,
+        job_name,
+        dedupe_key,
+        status,
+        correlation_id,
+        queue,
+        routing_key,
+        exchange,
+        priority,
+        parent_job_id,
+        request
     )
     VALUES (
-        :job_id, :task_id, :job_name, :dedupe_key, :correlation_id,
-        'QUEUED', CAST(:request AS jsonb), now(), now()
+        CAST(:job_id AS uuid),
+        :task_id,
+        :job_name,
+        :dedupe_key,
+        'QUEUED',
+        :correlation_id,
+        :queue,
+        :routing_key,
+        :exchange,
+        :priority,
+        CAST(:parent_job_id AS uuid),
+        CAST(:request AS jsonb)
     )
-    ON CONFLICT (job_name, dedupe_key)
-    WHERE is_deleted = FALSE AND status IN ('QUEUED','RECEIVED','STARTED','RETRY')
-    DO NOTHING
-    RETURNING job_id, task_id
+    RETURNING job_id, task_id, status
     """
 
-    row = await database.fetch_one(insert_sql, {
+    values = {
         "job_id": job_id,
         "task_id": task_id,
         "job_name": job_name,
         "dedupe_key": dedupe_key,
         "correlation_id": correlation_id,
-        "request": json.dumps(request_payload),
-    })
+        "queue": queue,
+        "routing_key": routing_key,
+        "exchange": exchange,
+        "priority": priority,
+        "parent_job_id": parent_job_id,
+        "request": req_json,
+    }
 
-    if row:
-        return {"created": True, "job_id": row["job_id"], "task_id": row["task_id"], "status": "QUEUED"}
+    try:
+        row = await database.fetch_one(query=insert_sql, values=values)
 
-    # duplicate active job exists
-    select_sql = """
-    SELECT job_id, task_id, status
-    FROM app_tracking_celery
-    WHERE is_deleted = FALSE
-      AND job_name = :job_name
-      AND dedupe_key = :dedupe_key
-      AND status IN ('QUEUED','RECEIVED','STARTED','RETRY')
-    ORDER BY created_at DESC
-    LIMIT 1
-    """
-    existing = await database.fetch_one(select_sql, {"job_name": job_name, "dedupe_key": dedupe_key})
-    if existing:
-        return {"created": False, "job_id": existing["job_id"], "task_id": existing["task_id"], "status": existing["status"]}
+        await insert_app_backend_tracking(
+            database=database,
+            route=route,
+            information={
+                "event": "app_tracking_celery_reserved",
+                "created": True,
+                "job_id": job_id,
+                "task_id": task_id,
+                "job_name": job_name,
+                "dedupe_key": dedupe_key,
+                "correlation_id": correlation_id,
+                "requested_by": requested_by,
+            },
+        )
 
-    return {"error": "reserve_failed_unknown_state"}
+        return {
+            "created": True,
+            "job_id": str(row["job_id"]) if row and "job_id" in row else job_id,
+            "task_id": str(row["task_id"]) if row and "task_id" in row else task_id,
+            "status": str(row["status"]) if row and "status" in row else "QUEUED",
+        }
 
-async def _attach_task_id(*, job_id: str, task_id: str) -> None:
+    except Exception as exc:
+        # If we hit the active dedupe unique index, return the existing active job
+        if _is_active_dedupe_conflict(exc):
+            select_sql = """
+            SELECT job_id, task_id, status
+            FROM public.app_tracking_celery
+            WHERE job_name = :job_name
+              AND dedupe_key = :dedupe_key
+              AND is_deleted = false
+              AND status = ANY(:active_statuses)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+            row = await database.fetch_one(
+                query=select_sql,
+                values={"job_name": job_name, "dedupe_key": dedupe_key, "active_statuses": list(ACTIVE_STATUSES)},
+            )
+
+            if row:
+                await insert_app_backend_tracking(
+                    database=database,
+                    route=route,
+                    information={
+                        "event": "app_tracking_celery_reserved",
+                        "created": False,
+                        "job_id": str(row["job_id"]),
+                        "task_id": str(row["task_id"]),
+                        "job_name": job_name,
+                        "dedupe_key": dedupe_key,
+                        "correlation_id": correlation_id,
+                        "requested_by": requested_by,
+                        "note": "active_dedupe_exists",
+                    },
+                )
+
+                return {
+                    "created": False,
+                    "job_id": str(row["job_id"]),
+                    "task_id": str(row["task_id"]),
+                    "status": str(row["status"]),
+                }
+
+            # Dedupe conflict but couldn't find the row (should be rare)
+            await insert_app_backend_tracking(
+                database=database,
+                route=route,
+                information={
+                    "event": "app_tracking_celery_reserve_error",
+                    "job_name": job_name,
+                    "dedupe_key": dedupe_key,
+                    "correlation_id": correlation_id,
+                    "requested_by": requested_by,
+                    "error": str(exc),
+                    "note": "dedupe_conflict_but_no_row_found",
+                },
+            )
+            return {"error": "dedupe_conflict_no_row", "detail": {"message": str(exc)}}
+
+        # Real failure
+        await insert_app_backend_tracking(
+            database=database,
+            route=route,
+            information={
+                "event": "app_tracking_celery_reserve_error",
+                "job_id": job_id,
+                "task_id": task_id,
+                "job_name": job_name,
+                "dedupe_key": dedupe_key,
+                "correlation_id": correlation_id,
+                "requested_by": requested_by,
+                "error": str(exc),
+            },
+        )
+        return {"error": "reserve_failed", "detail": {"message": str(exc)}}
+
+async def _attach_task_id(*, job_id: str, task_id: str) -> Dict[str, Any]:
     sql = """
-    UPDATE app_tracking_celery
+    UPDATE public.app_tracking_celery
     SET task_id = :task_id,
         updated_at = now()
-    WHERE job_id = :job_id
+    WHERE job_id = CAST(:job_id AS uuid)
     """
-    await database.execute(sql, {"job_id": job_id, "task_id": task_id})
+    await database.execute(query=sql, values={"job_id": job_id, "task_id": task_id})
+    return {"detail": {"ok": True, "job_id": job_id, "task_id": task_id}}
 
-async def _mark_job_failed_enqueue(*, job_id: str, error_message: str) -> None:
+async def _mark_job_failed_enqueue(*, job_id: str, error_message: str) -> Dict[str, Any]:
     sql = """
-    UPDATE app_tracking_celery
+    UPDATE public.app_tracking_celery
     SET status = 'FAILURE',
+        error_type = 'EnqueueError',
         error_message = :error_message,
         updated_at = now(),
         completed_at = now()
-    WHERE job_id = :job_id
+    WHERE job_id = CAST(:job_id AS uuid)
     """
-    await database.execute(sql, {"job_id": job_id, "error_message": error_message[:2000]})
+    await database.execute(
+        query=sql,
+        values={"job_id": job_id, "error_message": (error_message or "")[:2000]},
+    )
+    return {"detail": {"ok": True, "job_id": job_id, "status": "FAILURE"}}
