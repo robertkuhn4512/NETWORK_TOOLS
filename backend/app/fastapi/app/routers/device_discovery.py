@@ -21,7 +21,9 @@ from pydantic import BaseModel, Field
 from app.security.auth import UserContext, get_current_user
 
 from app.database import database
-from app.database_queries.postgres_insert_queries import (insert_app_backend_tracking)
+from app.database_queries.postgres_insert_queries import (
+    insert_app_backend_tracking
+)
 
 from app.celery_app import celery_app
 

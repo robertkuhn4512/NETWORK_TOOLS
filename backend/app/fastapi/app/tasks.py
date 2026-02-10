@@ -14,6 +14,7 @@ and execute 1 by 1 for each ip.
 from __future__ import annotations
 from pathlib import Path
 import os
+import re
 import asyncio
 import json
 import logging
@@ -42,6 +43,11 @@ from app.database_queries.postgres_insert_queries import (
     upsert_device_with_archive,
     upsert_app_tracking_celery_job,
     upsert_jobs_tracking_information
+)
+
+from app.database_queries.postgres_select_queries import (
+    select_latest_device_backup_location_for_ipv4,
+    select_device_backup_locations_for_ipv4,
 )
 
 from app.shared_functions.helpers.helpers_sanitation import scrub_secrets
@@ -713,7 +719,6 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
 
                                                 # Save the location of the backup file if present
                                                 await insert_device_backup_location(
-                                                    database=database,
                                                     device_name=hostname,
                                                     ipv4_loopback=target_ip,
                                                     device_type=ad.get("device_type"),
@@ -953,36 +958,106 @@ def device_backups_search_configuration_files(self, meta: Dict[str, Any]) -> Dic
     task_id = getattr(self.request, "id", None)
     worker_hostname = getattr(self.request, "hostname", None)
     task_id = getattr(self.request, "id", None)
+    route = str(meta.get("route") or "/device_backups/search_configuration_files")
     processed = 0
     async def _run():
         await connect_db()
         try:
-            job_id = str(meta.get("job_id", "")).strip()
-            route = str(meta.get("route") or "/device_backups/search_configuration_files")
-            requested_by = meta.get("requested_by")
-
             payload = meta.get("payload") or {}
+            logger.info(f"meta: {meta}")
+            logger.info(f"payload: {payload}")
+            context_lines = int(payload.get("context_lines", 0) or 0)
+
+            device_ip = (payload.get("device_ip") or "").strip()
+            direction = (payload.get("direction") or "").strip().lower() if payload.get("direction") else None
+
             file_location = (payload.get("file_location") or "").strip()
             file_locations = payload.get("file_locations") or []
-            search_q = payload.get("search") or ""
-            mode = payload.get("mode") or "string"
+            files: list[str] = []
 
             ignore_case = bool(payload.get("ignore_case", True))
-            regex_multiline = bool(payload.get("regex_multiline", False))
-            context_lines = int(payload.get("context_lines", 0) or 0)
+
+            job_id = str(meta.get("job_id", "")).strip()
+
             max_matches_per_file = int(payload.get("max_matches_per_file", 200) or 200)
             max_total_matches = int(payload.get("max_total_matches", 5000) or 5000)
-            redact_output = bool(payload.get("redact_output", False))
+            mode = payload.get("mode") or "string"
 
-            files: list[str] = []
-            if isinstance(file_locations, list) and file_locations:
-                files = [str(x).strip() for x in file_locations if str(x).strip()]
+            number_of_files_to_search = int(payload.get("number_of_files_to_search") or 1)
+
+            redact_output = bool(payload.get("redact_output", False))
+            regex_multiline = bool(payload.get("regex_multiline", False))
+            requested_by = meta.get("requested_by")
+
+            resolved_file_locations: list[str] = []
+
+            search_history = bool(payload.get("search_history", False))
+            search_q = payload.get("search") or ""
+
+            use_device_ip = bool(payload.get("use_device_ip", False))
+            use_file_list = bool(payload.get("use_file_list", False))
+            use_single_file = bool(payload.get("use_single_file", False))
+
+            # validate mutually exclusive mode again (defensive)
+            enabled = sum(bool(x) for x in [use_device_ip, use_single_file, use_file_list])
+
+            if enabled != 1:
+                raise ValueError("Exactly one of use_device_ip, use_single_file, use_file_list must be true in worker payload.")
+
+            if use_device_ip:
+                if not device_ip:
+                    raise ValueError("device_ip is required when use_device_ip=true")
+
+                if search_history:
+
+                    if direction not in ("asc", "desc"):
+                        raise ValueError("direction must be 'asc' or 'desc' when search_history=true")
+
+                    resp = await select_device_backup_locations_for_ipv4(
+                        ipv4_loopback=device_ip,
+                        direction=direction,
+                        limit=number_of_files_to_search,
+                    )
+
+                    rows = resp.get("detail", {}).get("rows", [])
+                    resolved_file_locations = [r["file_location"] for r in rows if r.get("file_location")]
+
+                else:
+                    resp = await select_latest_device_backup_location_for_ipv4(
+                        ipv4_loopback=device_ip,
+                    )
+                    logger.info(f"resp: {resp}")
+
+                    found = resp.get("detail", {}).get("found")
+
+                    row = resp.get("detail", {}).get("row") if found else None
+
+                    if row and row.get("file_location"):
+                        resolved_file_locations = [row["file_location"]]
+
+            elif use_single_file:
+                if not file_location:
+                    raise ValueError("file_location is required when use_single_file=true")
+                resolved_file_locations = [file_location]
+
+            else:  # use_file_list
+                if not isinstance(file_locations, list) or len(file_locations) == 0:
+                    raise ValueError("file_locations must be a non-empty list when use_file_list=true")
+                resolved_file_locations = [str(x).strip() for x in file_locations if str(x).strip()]
+
+
+            logger.info(f"resolved_file_locations: {resolved_file_locations}")
+
+            if isinstance(resolved_file_locations, list) and resolved_file_locations:
+                files = [str(x).strip() for x in resolved_file_locations if str(x).strip()]
             elif file_location:
-                files = [file_location]
+                files = [resolved_file_locations]
 
             if not job_id or not files or not str(search_q).strip():
                 err = {"error": "missing_required_fields", "job_id": job_id, "files_count": len(files)}
                 return err
+
+            logger.info(f"files: {files}")
 
             # base dir enforcement (same idea as device_backups.py)
             base_dir = (os.getenv("CELERY_WORKER_DEVICE_BACKUP_FILE_LOCATION") or "/backups/device_configuration_backups").strip()
@@ -1188,6 +1263,7 @@ def device_backups_search_configuration_files(self, meta: Dict[str, Any]) -> Dic
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
                     "status": "FAILURE",
+                    "meta": meta
                 },
             )
 
@@ -1197,13 +1273,12 @@ def device_backups_search_configuration_files(self, meta: Dict[str, Any]) -> Dic
                     job_id=job_id,
                     job_type="configuration_search",
                     status="FAILURE",
-                    progress_current=processed,
-                    progress_total=len(files) if files else 0,
                     progress_message=f"failed: {type(exc).__name__}: {str(exc)}",
                     error_type=type(exc).__name__,
                     error_message=str(exc),
                     traceback=tb,
                     duration_ms=ms,
+                    meta=meta
                 )
 
                 await _update_job(

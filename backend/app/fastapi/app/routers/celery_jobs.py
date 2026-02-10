@@ -13,23 +13,25 @@ Endpoints:
 - DELETE /celery_jobs/{job_id}
 - DELETE /celery_jobs/completed
 """
-
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger("app.celery_jobs")
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
-
-# Assumptions based on your structure:
-# - `database` is your shared async connector (databases lib)
-# - `insert_app_backend_tracking` exists for structured logging/tracking
 from app.database import database
 from app.database_queries.postgres_insert_queries import (insert_app_backend_tracking)
+from app.security.auth import UserContext, get_current_user
 
-router = APIRouter(prefix="/celery_jobs", tags=["celery_jobs"])
-
+router = APIRouter(
+    prefix="/celery_jobs",
+    tags=["celery_jobs"],
+    dependencies=[Depends(get_current_user)]
+)
 
 TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "REVOKED", "EXPIRED", "CANCELED"}
 ACTIVE_STATUSES = {"QUEUED", "RECEIVED", "STARTED", "RETRY"}
@@ -40,7 +42,7 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
     return dict(row._mapping) if row is not None else {}
 
 
-@router.get("", status_code=200)
+@router.get("", status_code=200, summary="Fetch a list of all jobs in the celery database table")
 async def list_celery_jobs(
     status: Optional[List[str]] = Query(default=None, description="Filter by status (repeatable)."),
     include_deleted: bool = Query(default=False),
@@ -50,6 +52,7 @@ async def list_celery_jobs(
     created_before: Optional[datetime] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    user: UserContext = Depends(get_current_user)
 ) -> Dict[str, Any]:
     """
     List jobs for UI (paged).
@@ -160,7 +163,7 @@ async def list_celery_jobs(
 
 
 @router.get("/{job_id}", status_code=200)
-async def get_celery_job(job_id: UUID) -> Dict[str, Any]:
+async def get_celery_job(job_id: UUID, user: UserContext = Depends(get_current_user)) -> Dict[str, Any]:
     """
     Fetch a job by job_id.
     """
@@ -231,7 +234,7 @@ async def get_celery_job(job_id: UUID) -> Dict[str, Any]:
 
 
 @router.get("/by_task/{task_id}", status_code=200)
-async def get_celery_job_by_task_id(task_id: str) -> Dict[str, Any]:
+async def get_celery_job_by_task_id(task_id: str, user: UserContext = Depends(get_current_user)) -> Dict[str, Any]:
     """
     Fetch a job by Celery task_id.
     """
@@ -307,6 +310,7 @@ async def delete_completed_job(
     job_id: UUID,
     hard: bool = Query(default=False, description="If true, permanently delete row (hard purge)."),
     deleted_by: Optional[str] = Query(default=None, description="Optional actor identifier for auditing."),
+    user: UserContext = Depends(get_current_user)
 ) -> Dict[str, Any]:
     """
     Delete a job ONLY if it is in a terminal state.
@@ -391,6 +395,7 @@ async def delete_completed_jobs_bulk(
     hard: bool = Query(default=False),
     limit: int = Query(default=500, ge=1, le=5000),
     deleted_by: Optional[str] = Query(default=None),
+    user: UserContext = Depends(get_current_user)
 ) -> Dict[str, Any]:
     """
     Bulk delete completed jobs older than N hours.

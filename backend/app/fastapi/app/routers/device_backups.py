@@ -8,10 +8,11 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
@@ -62,20 +63,78 @@ class TargetFile(BaseModel):
         example="/backups/device_configuration_backups/cisco_xe/2026_01_28/10.0.0.101/10.0.0.101_2026_01_28_19_15_59.enc|.gz",
     )
 
+#class ConfigurationSearchRequest(BaseModel):
+#    file_location: str | None = Field(default=None, description="Absolute path to one backup file")
+#    file_locations: List[str] | None = Field(default=None, description="Absolute paths to many backup files")
+#
+#    search: str = Field(..., description="String or regex pattern to search for")
+#    mode: str = Field(default="string", description="string|regex")
+#    ignore_case: bool = Field(default=True)
+#    regex_multiline: bool = Field(default=False, description="If true, run regex across the whole config text (DOTALL).")
+#
+#    context_lines: int = Field(default=0, ge=0, le=25)
+#    max_matches_per_file: int = Field(default=200, ge=1, le=5000)
+#    max_total_matches: int = Field(default=5000, ge=1, le=200000)
+
 class ConfigurationSearchRequest(BaseModel):
-    file_location: str | None = Field(default=None, description="Absolute path to one backup file")
-    file_locations: List[str] | None = Field(default=None, description="Absolute paths to many backup files")
+    # Exactly one of these must be True
+    use_device_ip: bool = Field(default=False)
+    use_single_file: bool = Field(default=False)
+    use_file_list: bool = Field(default=False)
 
-    search: str = Field(..., description="String or regex pattern to search for")
-    mode: str = Field(default="string", description="string|regex")
-    ignore_case: bool = Field(default=True)
-    regex_multiline: bool = Field(default=False, description="If true, run regex across the whole config text (DOTALL).")
+    # Device/IP mode
+    device_ip: Optional[str] = None
+    search_history: bool = Field(default=False)
+    direction: Optional[Literal["asc", "desc"]] = None
+    number_of_files_to_search: int = Field(default=1, ge=1, le=500)
 
-    context_lines: int = Field(default=0, ge=0, le=25)
+    # File modes
+    file_location: Optional[str] = None
+    file_locations: Optional[List[str]] = None
+
+    # Search options (existing)
+    search: str = Field(..., min_length=1)
+    mode: Literal["string", "regex"] = Field(default="string")
+    ignore_case: bool = True
+    regex_multiline: bool = True
+    context_lines: int = Field(default=2, ge=0, le=50)
     max_matches_per_file: int = Field(default=200, ge=1, le=5000)
-    max_total_matches: int = Field(default=5000, ge=1, le=200000)
+    max_total_matches: int = Field(default=2000, ge=1, le=50000)
 
+    @model_validator(mode="after")
+    def validate_exclusive_mode(self):
+        enabled = [self.use_device_ip, self.use_single_file, self.use_file_list]
+        if sum(bool(x) for x in enabled) != 1:
+            raise ValueError("Exactly one of use_device_ip, use_single_file, use_file_list must be true.")
 
+        if self.use_device_ip:
+            if not (self.device_ip or "").strip():
+                raise ValueError("device_ip is required when use_device_ip=true.")
+            if self.file_location is not None or self.file_locations is not None:
+                raise ValueError("file_location/file_locations not allowed when use_device_ip=true.")
+
+            if self.search_history:
+                if self.direction is None:
+                    raise ValueError("direction is required when search_history=true.")
+            else:
+                if self.direction is not None:
+                    raise ValueError("direction only allowed when search_history=true.")
+                if self.number_of_files_to_search != 1:
+                    raise ValueError("number_of_files_to_search only allowed when search_history=true.")
+
+        if self.use_single_file:
+            if not (self.file_location or "").strip():
+                raise ValueError("file_location is required when use_single_file=true.")
+            if self.file_locations is not None:
+                raise ValueError("file_locations not allowed when use_single_file=true.")
+
+        if self.use_file_list:
+            if not self.file_locations or len(self.file_locations) == 0:
+                raise ValueError("file_locations must be a non-empty list when use_file_list=true.")
+            if self.file_location is not None:
+                raise ValueError("file_location not allowed when use_file_list=true.")
+
+        return self
 
 def _is_path_within_base(*, candidate: Path, base: Path) -> bool:
     """
@@ -219,35 +278,52 @@ async def search_configuration_files(
     route = str(request.url.path)
 
     files: list[str] = []
+    # Lock file searches to files in the backups directory
+    base_dir = (os.getenv("CELERY_WORKER_DEVICE_BACKUP_FILE_LOCATION") or "/backups/device_configuration_backups").strip()
+    base_path = Path(base_dir)
 
     if isinstance(payload.file_locations, list) and payload.file_locations:
         files = [str(x).strip() for x in payload.file_locations if str(x).strip()]
     elif payload.file_location:
         files = [str(payload.file_location).strip()]
 
-    if not files:
-        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail={"error": "file_location_missing"})
+    # This allows the user to pass in the below example payload.
+    # and the system will find the latest backup file based on the ip
+    # {
+    #     "use_device_ip": true,
+    #     "device_ip": "10.0.0.101",
+    #     "search": "service password-encryption",
+    #     "mode": "string"
+    # }
+
+
+    if not payload.use_device_ip:
+        if not files:
+            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail={"error": "file_location_missing"})
+
+        for f in files:
+            p = Path(f)
+            if not p.is_absolute():
+                raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail={"error": "file_location_must_be_absolute", "file_location": f})
+            if not _is_path_within_base(candidate=p, base=base_path):
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN,
+                    detail={"error": "file_location_outside_allowed_base", "allowed_base": str(base_path), "file_location": f},
+                )
 
     q = (payload.search or "").strip()
+
     if not q:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail={"error": "search_missing"})
 
-    # Lock file searches to files in the backups directory
-    base_dir = (os.getenv("CELERY_WORKER_DEVICE_BACKUP_FILE_LOCATION") or "/backups/device_configuration_backups").strip()
-    base_path = Path(base_dir)
-
-    for f in files:
-        p = Path(f)
-        if not p.is_absolute():
-            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail={"error": "file_location_must_be_absolute", "file_location": f})
-        if not _is_path_within_base(candidate=p, base=base_path):
-            raise HTTPException(
-                status_code=HTTP_403_FORBIDDEN,
-                detail={"error": "file_location_outside_allowed_base", "allowed_base": str(base_path), "file_location": f},
-            )
-
     # Redaction policy (safe default):
+
     roles = getattr(user, "roles", None) or []
+
+    # TODO - This needs to be reworked.
+    # I will be using this flag to "Attempt" to redact any sensitive data from a search results.
+    # Items like passwords / keys / hashes etc.
+    
     is_admin = "device_backup_file_admin" in roles
     redact_output = not is_admin  # admin sees line content, non-admin sees line numbers only
 
@@ -272,6 +348,7 @@ async def search_configuration_files(
         dedupe_key=dedupe_key,
         status="PENDING",
         route=route,
+        request={"payload": payload, "requested_by": requested_by, "route": route},
     )
 
     if isinstance(res_celery_track, dict) and res_celery_track.get("error"):
@@ -290,7 +367,7 @@ async def search_configuration_files(
         route=route,
         celery_task_id=job_id,  # set Celery task_id == job_id below
         redacted=redact_output,
-        input_payload={
+        input={
             "file_locations": files,
             "search": q,
             "mode": payload.mode,
@@ -299,7 +376,15 @@ async def search_configuration_files(
             "context_lines": payload.context_lines,
             "max_matches_per_file": payload.max_matches_per_file,
             "max_total_matches": payload.max_total_matches,
-            "redact_output": redact_output,
+            "use_device_ip": payload.use_device_ip,
+            "use_single_file": payload.use_single_file,
+            "use_file_list": payload.use_file_list,
+            "device_ip": payload.device_ip,
+            "search_history": payload.search_history,
+            "direction": payload.direction,
+            "number_of_files_to_search": payload.number_of_files_to_search,
+            "file_location": payload.file_location,
+            "file_locations": payload.file_locations,
         },
         progress_current=0,
         progress_total=len(files),
@@ -323,6 +408,15 @@ async def search_configuration_files(
             "max_matches_per_file": payload.max_matches_per_file,
             "max_total_matches": payload.max_total_matches,
             "redact_output": redact_output,
+            "use_device_ip": payload.use_device_ip,
+            "use_single_file": payload.use_single_file,
+            "use_file_list": payload.use_file_list,
+            "device_ip": payload.device_ip,
+            "search_history": payload.search_history,
+            "direction": payload.direction,
+            "number_of_files_to_search": payload.number_of_files_to_search,
+            "file_location": payload.file_location,
+            "file_locations": payload.file_locations,
         },
     }
 
