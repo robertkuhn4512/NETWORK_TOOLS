@@ -12,6 +12,7 @@ and execute 1 by 1 for each ip.
 """
 
 from __future__ import annotations
+from pathlib import Path
 import os
 import asyncio
 import json
@@ -20,6 +21,15 @@ import time
 import traceback
 from typing import Any, Dict
 from datetime import datetime
+from fastapi import HTTPException
+
+from starlette.status import (
+    HTTP_400_BAD_REQUEST,
+    HTTP_403_FORBIDDEN,
+    HTTP_404_NOT_FOUND,
+    HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+    HTTP_500_INTERNAL_SERVER_ERROR,
+)
 
 from app.celery_app import celery_app
 from app.database import database, connect_db, disconnect_db
@@ -29,7 +39,9 @@ from app.shared_functions.helpers.helpers_logging_config import load_env_from_va
 from app.database_queries.postgres_insert_queries import (
     insert_app_backend_tracking,
     insert_device_backup_location,
-    upsert_device_with_archive
+    upsert_device_with_archive,
+    upsert_app_tracking_celery_job,
+    upsert_jobs_tracking_information
 )
 
 from app.shared_functions.helpers.helpers_sanitation import scrub_secrets
@@ -117,51 +129,182 @@ def _get_cmd_output(outputs: Any, cmd: Optional[str]) -> Optional[Any]:
 
 async def _update_job(
     *,
+    database=database,
     job_id: str,
-    status: str,
-    started: bool = False,
-    completed: bool = False,
-    duration_ms: int | None = None,
-    worker_hostname: str | None = None,
-    result: dict | None = None,
-    error_type: str | None = None,
-    error_message: str | None = None,
-    tb: str | None = None,
-):
+    celery_task_id: str | None = None,
+    job_name: str | None = None,
+    status: str = "PENDING",
+    route: str | None = None,
+    meta: dict | None = None,
+    **legacy,
+) -> None:
     """
-    Update your app_tracking_celery row. This matches what celery_jobs.py reads.
+    Canonical Celery job tracking update for **app_tracking_celery**.
+
+    Backward-compatible with older call sites that used:
+      started/completed/duration_ms/worker_hostname/result/task_id
     """
-    sql = """
-    UPDATE app_tracking_celery
-    SET
-      status = :status,
-      updated_at = now(),
-      started_at = CASE WHEN :started THEN COALESCE(started_at, now()) ELSE started_at END,
-      completed_at = CASE WHEN :completed THEN now() ELSE completed_at END,
-      duration_ms = COALESCE(:duration_ms, duration_ms),
-      worker_hostname = COALESCE(:worker_hostname, worker_hostname),
-      result = COALESCE(CAST(:result_json AS jsonb), result),
-      error_type = COALESCE(:error_type, error_type),
-      error_message = COALESCE(:error_message, error_message),
-      traceback = COALESCE(:traceback, traceback)
-    WHERE job_id = :job_id
-    """
-    await database.execute(
-        sql,
-        {
-            "job_id": job_id,
-            "status": status,
-            "started": started,
-            "completed": completed,
-            "duration_ms": duration_ms,
-            "worker_hostname": worker_hostname,
-            "result_json": json.dumps(result) if result is not None else None,
-            "error_type": error_type,
-            "error_message": error_message,
-            "traceback": tb,
-        },
+    job_id_norm = (str(job_id).strip() if job_id is not None else "")
+    if not job_id_norm:
+        return
+
+    celery_task_id_norm = (
+        (str(celery_task_id).strip() if celery_task_id is not None else "")
+        or (str(legacy.get("task_id")).strip() if legacy.get("task_id") else "")
+        or job_id_norm
     )
 
+    meta_out = dict(meta or {})
+
+    job_name_norm = (
+            (str(job_name).strip() if job_name else "")
+            or (str(meta_out.get("job_name")).strip() if meta_out.get("job_name") else "")
+            or (str(legacy.get("job_name")).strip() if legacy.get("job_name") else "")
+            or "unknown_job"
+    )
+
+    dedupe_key_norm = (
+            (str(meta_out.get("dedupe_key")).strip() if meta_out.get("dedupe_key") else "")
+            or (str(legacy.get("dedupe_key")).strip() if legacy.get("dedupe_key") else "")
+            or job_id_norm
+    )
+
+    res = await upsert_app_tracking_celery_job(
+        database=database,
+        job_id=job_id_norm,
+        task_id=celery_task_id_norm,
+        job_name=job_name_norm,
+        dedupe_key=dedupe_key_norm,
+        status=status,
+        route=route,
+    )
+
+    if isinstance(res, dict) and res.get("error"):
+        await insert_app_backend_tracking(
+            database=database,
+            route=(route or "internal/_update_job"),
+            information={
+                "event": "job_tracking_update_failed",
+                "job_id": job_id_norm,
+                "celery_task_id": celery_task_id_norm,
+                "status": status,
+                "error": res.get("detail", res.get("error")),
+            },
+        )
+
+def _is_path_within_base(*, candidate: Path, base: Path) -> bool:
+    try:
+        base_r = base.resolve()
+        cand_r = candidate.resolve()
+        return cand_r == base_r or str(cand_r).startswith(str(base_r) + os.sep)
+    except Exception:
+        return False
+
+def _safe_read_plain_text(path: Path, *, max_bytes: int) -> dict:
+    try:
+        # NOTE: limit raw reads too
+        data = path.read_bytes()
+        if max_bytes and max_bytes > 0 and len(data) > max_bytes:
+            return {"error": "file_too_large", "bytes": len(data), "max_bytes": max_bytes}
+        try:
+            return {"ok": True, "content": data.decode("utf-8", errors="replace")}
+        except Exception:
+            return {"ok": True, "content": data.decode(errors="replace")}
+    except Exception as e:
+        return {"error": f"read_failed: {e}"}
+
+def _search_text(
+    *,
+    text: str,
+    query: str,
+    mode: str,
+    ignore_case: bool,
+    regex_multiline: bool,
+    context_lines: int,
+    max_matches_per_file: int,
+    remaining_budget: int,
+    redact_output: bool,
+) -> dict:
+    query = (query or "")
+    if not query:
+        return {"ok": False, "error": "search_query_empty"}
+
+    mode = (mode or "string").strip().lower()
+    ignore_case = bool(ignore_case)
+    regex_multiline = bool(regex_multiline)
+    context_lines = max(0, int(context_lines or 0))
+    max_matches_per_file = max(1, int(max_matches_per_file or 200))
+
+    matches: list[dict] = []
+    lines = text.splitlines()
+
+    if mode == "string":
+        needle = query.lower() if ignore_case else query
+        for idx, line in enumerate(lines, start=1):
+            hay = line.lower() if ignore_case else line
+            if needle in hay:
+                if len(matches) >= max_matches_per_file or len(matches) >= remaining_budget:
+                    break
+                if redact_output:
+                    matches.append({"line_no": idx})
+                else:
+                    ctx_start = max(0, (idx - 1) - context_lines)
+                    ctx_end = min(len(lines), (idx - 1) + context_lines + 1)
+                    matches.append(
+                        {
+                            "line_no": idx,
+                            "line": line,
+                            "context": lines[ctx_start:ctx_end] if context_lines else None,
+                        }
+                    )
+        return {"ok": True, "mode": "string", "matches": matches}
+
+    if mode == "regex":
+        flags = re.MULTILINE
+        if ignore_case:
+            flags |= re.IGNORECASE
+
+        try:
+            rx = re.compile(query, flags | (re.DOTALL if regex_multiline else 0))
+        except Exception as e:
+            return {"ok": False, "error": f"invalid_regex: {e}"}
+
+        if regex_multiline:
+            # Whole-text regex finditer; return offsets + line number
+            for m in rx.finditer(text):
+                if len(matches) >= max_matches_per_file or len(matches) >= remaining_budget:
+                    break
+                start = m.start()
+                line_no = text.count("\n", 0, start) + 1
+                if redact_output:
+                    matches.append({"line_no": line_no, "start": start, "end": m.end()})
+                else:
+                    snippet = m.group(0)
+                    if len(snippet) > 800:
+                        snippet = snippet[:800] + "…"
+                    matches.append({"line_no": line_no, "start": start, "end": m.end(), "match": snippet})
+            return {"ok": True, "mode": "regex_multiline", "matches": matches}
+
+        # Line-by-line regex search
+        for idx, line in enumerate(lines, start=1):
+            if rx.search(line):
+                if len(matches) >= max_matches_per_file or len(matches) >= remaining_budget:
+                    break
+                if redact_output:
+                    matches.append({"line_no": idx})
+                else:
+                    ctx_start = max(0, (idx - 1) - context_lines)
+                    ctx_end = min(len(lines), (idx - 1) + context_lines + 1)
+                    matches.append(
+                        {
+                            "line_no": idx,
+                            "line": line,
+                            "context": lines[ctx_start:ctx_end] if context_lines else None,
+                        }
+                    )
+        return {"ok": True, "mode": "regex", "matches": matches}
+
+    return {"ok": False, "error": f"invalid_mode: {mode}"}
 
 @celery_app.task(name="device_discovery.start_device_discovery", bind=True)
 def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -175,7 +318,6 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
     t0 = time.perf_counter()
     task_id = getattr(self.request, "id", None)
     worker_hostname = getattr(self.request, "hostname", None)
-
     async def _run():
         await connect_db()
         try:
@@ -189,11 +331,13 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                 return err
 
             # mark STARTED
+
             await _update_job(
                 job_id=job_id,
                 status="STARTED",
                 started=True,
                 worker_hostname=worker_hostname,
+                task_id=task_id
             )
 
             # run ICMP check (async helper)
@@ -281,6 +425,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                     duration_ms=ms,
                     worker_hostname=worker_hostname,
                     result=result,
+                    task_id=task_id
                 )
 
             elif not device_profiles_error and device_profiles:
@@ -663,6 +808,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             duration_ms=ms,
                                             worker_hostname=worker_hostname,
                                             result=result,
+                                            task_id=task_id
                                         )
 
                                         # Add to a device discovery table / devices table
@@ -706,7 +852,10 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             duration_ms=ms,
                                             worker_hostname=worker_hostname,
                                             result=result,
+                                            task_id=task_id
                                         )
+
+                                        ad = None
                                 else:
                                     await insert_app_backend_tracking(
                                         database=database,
@@ -718,6 +867,9 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                             "device_profile": {profile_name: scrub_secrets(p)},
                                         },
                                     )
+
+                                    ad = None
+
                                     break
                             else:
                                 await insert_app_backend_tracking(
@@ -730,6 +882,9 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                                         "device_profile": {profile_name: scrub_secrets(p)},
                                     },
                                 )
+
+                                ad = None
+
                                 break
 
             else:
@@ -741,6 +896,7 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                     duration_ms=ms,
                     worker_hostname=worker_hostname,
                     result=result,
+                    task_id=task_id
                 )
 
 
@@ -762,9 +918,302 @@ def device_discovery_start_device_discovery(self, meta: Dict[str, Any]) -> Dict[
                     error_type=type(exc).__name__,
                     error_message=str(exc),
                     tb=tb,
+                    task_id=task_id
                 )
 
             logger.exception("icmp_ping failed job_id=%s task_id=%s", meta.get("job_id"), task_id)
+            return {"error": f"celery_task_failed: {exc}"}
+
+        finally:
+            await disconnect_db()
+
+    return _run_async(_run())
+
+@celery_app.task(name="device_backups.search_configuration_files", bind=True)
+def device_backups_search_configuration_files(self, meta: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    meta must include:
+      - job_id
+      - requested_by
+      - route (optional)
+      - roles (optional)
+      - payload:
+          - file_location (str) OR file_locations (list[str])
+          - search (str)
+          - mode ('string'|'regex')
+          - ignore_case (bool)
+          - regex_multiline (bool)
+          - context_lines (int)
+          - max_matches_per_file (int)
+          - max_total_matches (int)
+          - redact_output (bool)
+    """
+
+    t0 = time.perf_counter()
+    task_id = getattr(self.request, "id", None)
+    worker_hostname = getattr(self.request, "hostname", None)
+    task_id = getattr(self.request, "id", None)
+    processed = 0
+    async def _run():
+        await connect_db()
+        try:
+            job_id = str(meta.get("job_id", "")).strip()
+            route = str(meta.get("route") or "/device_backups/search_configuration_files")
+            requested_by = meta.get("requested_by")
+
+            payload = meta.get("payload") or {}
+            file_location = (payload.get("file_location") or "").strip()
+            file_locations = payload.get("file_locations") or []
+            search_q = payload.get("search") or ""
+            mode = payload.get("mode") or "string"
+
+            ignore_case = bool(payload.get("ignore_case", True))
+            regex_multiline = bool(payload.get("regex_multiline", False))
+            context_lines = int(payload.get("context_lines", 0) or 0)
+            max_matches_per_file = int(payload.get("max_matches_per_file", 200) or 200)
+            max_total_matches = int(payload.get("max_total_matches", 5000) or 5000)
+            redact_output = bool(payload.get("redact_output", False))
+
+            files: list[str] = []
+            if isinstance(file_locations, list) and file_locations:
+                files = [str(x).strip() for x in file_locations if str(x).strip()]
+            elif file_location:
+                files = [file_location]
+
+            if not job_id or not files or not str(search_q).strip():
+                err = {"error": "missing_required_fields", "job_id": job_id, "files_count": len(files)}
+                return err
+
+            # base dir enforcement (same idea as device_backups.py)
+            base_dir = (os.getenv("CELERY_WORKER_DEVICE_BACKUP_FILE_LOCATION") or "/backups/device_configuration_backups").strip()
+            base_path = Path(base_dir)
+
+            max_bytes = int(os.getenv("DEVICE_BACKUP_MAX_DECOMPRESSED_BYTES", "10485760") or "10485760")
+            if max_bytes < 0:
+                max_bytes = 0  # treat negative as unlimited
+
+            # mark STARTED in both tables
+            await _update_job(
+                job_id=job_id,
+                job_name=(meta.get("job_name") or getattr(self, "name", None)),
+                status="STARTED",
+                started=True,
+                worker_hostname=worker_hostname,
+                task_id=task_id
+            )
+
+            jt_init = await upsert_jobs_tracking_information(
+                database=database,
+                job_id=job_id,
+                job_type="configuration_search",
+                status="STARTED",
+                requested_by=requested_by,
+                route=route,
+                celery_task_id=str(task_id) if task_id else None,
+                redacted=redact_output,
+                input={
+                    "file_locations": files,
+                    "search": search_q,
+                    "mode": mode,
+                    "ignore_case": ignore_case,
+                    "regex_multiline": regex_multiline,
+                    "context_lines": context_lines,
+                    "max_matches_per_file": max_matches_per_file,
+                    "max_total_matches": max_total_matches,
+                },
+                progress_current=0,
+                progress_total=len(files),
+                progress_message="starting",
+            )
+
+            if isinstance(jt_init, dict) and jt_init.get("error"):
+                raise HTTPException(
+                    status_code=HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={"error": "job_tracking_init_failed", "detail": jt_init},
+                )
+
+            results: list[dict] = []
+            processed = 0
+            matches_budget = max(1, max_total_matches)
+
+            for f in files:
+                processed += 1
+                p = Path(f)
+
+                item: dict = {"file_location": f}
+
+                if not p.is_absolute():
+                    item.update({"ok": False, "error": "file_location_must_be_absolute"})
+                    results.append(item)
+                elif not _is_path_within_base(candidate=p, base=base_path):
+                    item.update({"ok": False, "error": "file_location_outside_allowed_base", "allowed_base": str(base_path)})
+                    results.append(item)
+                elif not p.exists():
+                    item.update({"ok": False, "error": "file_not_found"})
+                    results.append(item)
+                else:
+                    ext = p.suffix.lower()
+
+                    # read file content (enc/gz/plain)
+                    if ext == ".enc":
+                        r = read_backup_enc_gz_text(enc_path=p, max_decompressed_bytes=(max_bytes or None))
+                        if isinstance(r, dict) and r.get("ok"):
+                            content = r.get("content") or ""
+                            item["backup_meta"] = {
+                                "target_ip": r.get("target_ip"),
+                                "timestamp": r.get("timestamp"),
+                            }
+                        else:
+                            item.update({"ok": False, "error": (r.get("error") if isinstance(r, dict) else "decrypt_failed")})
+                            results.append(item)
+                            content = None
+                    elif ext == ".gz":
+                        r = await read_gz_text_file(gz_path=p, max_decompressed_bytes=(max_bytes or None))
+                        if isinstance(r, dict) and r.get("ok"):
+                            content = r.get("content") or ""
+                        else:
+                            item.update({"ok": False, "error": (r.get("error") if isinstance(r, dict) else "gunzip_failed")})
+                            results.append(item)
+                            content = None
+                    else:
+                        r = _safe_read_plain_text(p, max_bytes=max_bytes)
+                        if r.get("ok"):
+                            content = r.get("content") or ""
+                        else:
+                            item.update({"ok": False, "error": r.get("error")})
+                            results.append(item)
+                            content = None
+
+                    if content is not None:
+                        s = _search_text(
+                            text=content,
+                            query=str(search_q),
+                            mode=str(mode),
+                            ignore_case=ignore_case,
+                            regex_multiline=regex_multiline,
+                            context_lines=context_lines,
+                            max_matches_per_file=max_matches_per_file,
+                            remaining_budget=matches_budget,
+                            redact_output=redact_output,
+                        )
+                        if s.get("ok"):
+                            m = s.get("matches") or []
+                            matches_budget -= len(m)
+                            item.update({"ok": True, "match_count": len(m), "matches": m, "search_mode": s.get("mode")})
+                        else:
+                            item.update({"ok": False, "error": s.get("error")})
+                        results.append(item)
+
+                # stream progress update after each file
+                await upsert_jobs_tracking_information(
+                    database=database,
+                    job_id=job_id,
+                    job_type="configuration_search",
+                    status="PROGRESS",
+                    progress_current=processed,
+                    progress_total=len(files),
+                    progress_message=f"processed {processed}/{len(files)}",
+                )
+
+                await _update_job(
+                    job_id=job_id,
+                    job_name=(meta.get("job_name") or getattr(self, "name", None)),
+                    status="PROGRESS",
+                    completed=False,
+                    worker_hostname=worker_hostname,
+                    result={
+                        "files_total": len(files),
+                        "files_processed": processed,
+                    },
+                    task_id=task_id
+                )
+
+            ms = int((time.perf_counter() - t0) * 1000)
+
+            final = {
+                "job_id": job_id,
+                "celery_task_id": task_id,
+                "requested_by": requested_by,
+                "route": route,
+                "files_total": len(files),
+                "files_processed": processed,
+                "results": results,
+                "truncation": {
+                    "max_matches_per_file": max_matches_per_file,
+                    "max_total_matches": max_total_matches,
+                },
+                "redacted": redact_output,
+            }
+
+            await upsert_jobs_tracking_information(
+                database=database,
+                job_id=job_id,
+                job_type="configuration_search",
+                status="SUCCESS",
+                progress_current=processed,
+                progress_total=len(files),
+                progress_message="complete",
+                result=final,
+                duration_ms=ms
+            )
+
+            await _update_job(
+                job_id=job_id,
+                job_name=(meta.get("job_name") or getattr(self, "name", None)),
+                status="SUCCESS",
+                completed=True,
+                duration_ms=ms,
+                worker_hostname=worker_hostname,
+                result=final,
+                task_id=task_id
+            )
+
+            return {"detail": final}
+
+        except Exception as exc:
+            ms = int((time.perf_counter() - t0) * 1000)
+            tb = traceback.format_exc()
+            job_id = str(meta.get("job_id", "")).strip()
+
+            await insert_app_backend_tracking(
+                database=database,
+                route=route,
+                information={
+                    "event": "device_backups_search_configuration_files.Exception",
+                    "job_id": job_id,
+                    "job_name": (meta.get("job_name") or getattr(self, "name", None)),
+                    "job_type": "configuration_search",
+                    "ms": ms,
+                    "tb": tb,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "status": "FAILURE",
+                },
+            )
+
+            if job_id:
+                await upsert_jobs_tracking_information(
+                    database=database,
+                    job_id=job_id,
+                    job_type="configuration_search",
+                    status="FAILURE",
+                    progress_current=processed,
+                    progress_total=len(files) if files else 0,
+                    progress_message=f"failed: {type(exc).__name__}: {str(exc)}",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    traceback=tb,
+                    duration_ms=ms,
+                )
+
+                await _update_job(
+                    job_id=job_id,
+                    celery_task_id=str(task_id) if task_id else job_id,
+                    status="FAILURE",
+                    #meta={"worker_hostname": worker_hostname, "duration_ms": ms},
+                )
+
+            logger.exception("search_configuration_files failed job_id=%s task_id=%s", meta.get("job_id"), task_id)
             return {"error": f"celery_task_failed: {exc}"}
 
         finally:

@@ -45,30 +45,6 @@
             {# Flash messages -> toast notifications #}
             {% include 'layout/_flash_toasts.html.twig' %}
 
-            {# Page header area (optional override) #}
-            {% block page_header %}
-                <div class="bg-body border-bottom">
-                    <div class="container-fluid p-4">
-                        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
-                            <div>
-                                <h1 class="h3 mb-1 fw-semibold">{% block page_title %}Dashboard{% endblock %}</h1>
-                                <div class="text-secondary">{% block page_subtitle %}Operational overview{% endblock %}</div>
-                            </div>
-                            <div class="d-flex gap-2">
-                                {% block page_actions %}
-                                    <button class="btn btn-outline-secondary" type="button">
-                                        <i class="bi bi-download me-1"></i>Export
-                                    </button>
-                                    <button class="btn btn-primary" type="button">
-                                        <i class="bi bi-plus-lg me-1"></i>Create
-                                    </button>
-                                {% endblock %}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            {% endblock %}
-
             <div class="container-fluid p-4">
                 {% block body %}{% endblock %}
             </div>

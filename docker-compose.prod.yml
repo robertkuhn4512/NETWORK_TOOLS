@@ -127,6 +127,8 @@ services:
   vault_production_node:
     networks:
       public_net:
+      db_net:
+        ipv4_address: 172.30.20.4
     image: hashicorp/vault:1.21.1
     hostname: vault_production_node
     container_name: vault_production_node
@@ -185,10 +187,10 @@ services:
                                                                                             # This entry refers to the containers name. Which because of docker is in a hosts entry
                                                                                             # So reachability internally will work with this. Externally you would need to add an antry
                                                                                             # for it on your dev machine if it's separate from the machine hosting the container.
-      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"                               # For production use with a valid FQDN (Hash the above, unhash this and rebuild)
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8443"                               # For production use with a valid FQDN (Hash the above, unhash this and rebuild)
                                                                                             # This should be populated in the environment file SERVER_1_FQDN_FULL="Your domain name here"
-      VAULT_API_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
-      VAULT_CLUSTER_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8201"
+      VAULT_API_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8443"
+      #VAULT_CLUSTER_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8201" -> Unhash when / if you decide to use a cluster. NEed to setup a separate router under nginx for it.
       #VAULT_LOG_LEVEL: "debug"                                                              # Used for debugging vault while you are testing. Comment out and rebuild with
                                                                                             # VAULT_LOG_LEVEL: "info" for production use
       VAULT_LOG_LEVEL: "info"
@@ -544,7 +546,7 @@ services:
       - ./container_data/backups/device_configuration_backups:/backups/device_configuration_backups
     environment:
       VAULT_TOKEN_FILE: "/run/vault/.vault-token"
-      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8443"
       VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
       APP_MODULE: "app.main:app"
       BIND_HOST: "0.0.0.0"
@@ -616,7 +618,7 @@ services:
       VAULT_ENV_OVERRIDE: "0"
       VAULT_TOKEN_FILE: "/run/vault/.vault-token"
       VAULT_CACERT: "/run/certs/combined-ca.crt"
-      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8443"
       VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
       LOG_DIR: "/var/log/network_tools/celery"
       LOG_FILE: "network_tools_celery.log"
@@ -698,7 +700,7 @@ services:
     environment:
       PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN:-vault_production_node}"
       PUBLIC_HTTPS_PORT: "${PUBLIC_HTTPS_PORT:-8443}"
-      VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200"
+      VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN}:8443"
       VAULT_CACERT: "/vault/ca/ca.crt"
     read_only: true
     user: "0:0"

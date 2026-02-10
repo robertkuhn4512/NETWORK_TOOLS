@@ -1,60 +1,75 @@
+# syntax=docker/dockerfile:1.7
+
 # ------------------------------------------------------------
-# Stage 1: build a consistent /app tree (and scaffold if missing)
+# Notes / How to build:
+#   - Ensure BuildKit is enabled for cache mounts:
+#       export DOCKER_BUILDKIT=1
+#       export COMPOSE_DOCKER_CLI_BUILD=1
+#       docker compose build frontend_php_fpm
+#
+#   - Optional: provide a GitHub token to reduce 429s (BuildKit secret):
+#       Create: ./secrets/composer-auth.json
+#       {
+#         "github-oauth": { "github.com": "YOUR_TOKEN" }
+#       }
 # ------------------------------------------------------------
-FROM composer:2 AS scaffold
+
+# ------------------------------------------------------------
+# Stage 1a: vendor install for PROD (no-dev) with proper caching
+# ------------------------------------------------------------
+FROM composer:2 AS vendor_prod
 WORKDIR /app
 
-# Copy whatever is in ./frontend into the build context.
-COPY . /app
+# Copy ONLY dependency manifests first (this makes the layer reusable)
+COPY composer.json composer.lock ./
+# symfony.lock is optional; copy it only if you have it in repo
+# (If you do have it, keep this line. If you don't, remove it.)
+COPY symfony.lock* ./
 
-RUN set -eux; \
-    need_scaffold=0; \
-    if [ ! -f /app/composer.json ]; then \
-      need_scaffold=1; \
-    else \
-      php -r '$p="/app/composer.json"; $j=@file_get_contents($p); if($j===false){exit(1);} json_decode($j,true); exit(json_last_error()===JSON_ERROR_NONE ? 0 : 1);' \
-        || need_scaffold=1; \
-    fi; \
-    if [ "${need_scaffold}" -eq 1 ]; then \
-      echo "composer.json missing/invalid; scaffolding Symfony full stack (website-skeleton)"; \
-      mkdir -p /tmp/overlay; \
-      if [ -d /app/docker ]; then cp -a /app/docker /tmp/overlay/; fi; \
-      if [ -d /app/vault_agent ]; then cp -a /app/vault_agent /tmp/overlay/; fi; \
-      if [ -d /app/bin ]; then cp -a /app/bin /tmp/overlay/; fi; \
-      composer create-project symfony/website-skeleton:"8.0.*" /tmp/symfony --no-interaction --no-progress; \
-      cd /tmp/symfony; \
-      composer remove symfony/orm-pack doctrine/doctrine-bundle doctrine/orm doctrine/doctrine-migrations-bundle --no-interaction --no-progress || true; \
-      rm -f config/packages/doctrine*.yaml config/routes/doctrine*.yaml || true; \
-      composer require symfony/http-client --no-interaction --no-progress; \
-      find /app -mindepth 1 -maxdepth 1 -exec rm -rf {} +; \
-      cp -a /tmp/symfony/. /app/; \
-      if [ -d /tmp/overlay/docker ]; then cp -a /tmp/overlay/docker /app/; fi; \
-      if [ -d /tmp/overlay/vault_agent ]; then cp -a /tmp/overlay/vault_agent /app/; fi; \
-      if [ -d /tmp/overlay/bin ]; then cp -a /tmp/overlay/bin /app/; fi; \
-    fi
-
-# ------------------------------------------------------------
-# Stage 2a: vendor install for PROD (no-dev)
-# ------------------------------------------------------------
-FROM scaffold AS vendor_prod
-RUN set -eux; \
+RUN --mount=type=cache,target=/tmp/composer-cache \
+    --mount=type=secret,id=composer_auth,required=false,target=/root/.composer/auth.json \
+    set -eux; \
+    export COMPOSER_CACHE_DIR=/tmp/composer-cache; \
     COMPOSER_ALLOW_SUPERUSER=1 composer install \
       --no-dev --prefer-dist --no-interaction --no-progress \
-      --optimize-autoloader --no-scripts; \
+      --no-scripts --no-autoloader
+
+# Now copy the rest of the app (changes here won't force re-downloads)
+COPY . /app
+
+RUN --mount=type=cache,target=/tmp/composer-cache \
+    set -eux; \
+    export COMPOSER_CACHE_DIR=/tmp/composer-cache; \
     composer dump-autoload --no-dev --classmap-authoritative
 
-# ------------------------------------------------------------
-# Stage 2b: vendor install for DEV (with require-dev)
-# ------------------------------------------------------------
-FROM scaffold AS vendor_dev
-RUN set -eux; \
-    COMPOSER_ALLOW_SUPERUSER=1 composer install \
-      --prefer-dist --no-interaction --no-progress \
-      --optimize-autoloader --no-scripts; \
-    composer dump-autoload --optimize
 
 # ------------------------------------------------------------
-# Stage 3: runtime base (extensions + your config/entrypoint)
+# Stage 1b: vendor install for DEV (with require-dev) with proper caching
+# ------------------------------------------------------------
+FROM composer:2 AS vendor_dev
+WORKDIR /app
+
+COPY composer.json composer.lock ./
+COPY symfony.lock* ./
+
+RUN --mount=type=cache,target=/tmp/composer-cache \
+    --mount=type=secret,id=composer_auth,required=false,target=/root/.composer/auth.json \
+    set -eux; \
+    export COMPOSER_CACHE_DIR=/tmp/composer-cache; \
+    COMPOSER_ALLOW_SUPERUSER=1 composer install \
+      --prefer-dist --no-interaction --no-progress \
+      --no-scripts --no-autoloader
+
+COPY . /app
+
+RUN --mount=type=cache,target=/tmp/composer-cache \
+    set -eux; \
+    export COMPOSER_CACHE_DIR=/tmp/composer-cache; \
+    composer dump-autoload --optimize
+
+
+# ------------------------------------------------------------
+# Stage 2: runtime base (extensions + your config/entrypoint)
 # ------------------------------------------------------------
 FROM php:8.5-fpm-alpine AS runtime_base
 
@@ -74,6 +89,7 @@ EXPOSE 9000
 ENTRYPOINT ["/usr/local/bin/entrypoint_from_vault.sh"]
 CMD ["php-fpm", "-F"]
 
+
 # ------------------------------------------------------------
 # Target: PROD
 # ------------------------------------------------------------
@@ -81,6 +97,7 @@ FROM runtime_base AS prod
 COPY --from=vendor_prod /app /var/www/html
 ENV APP_ENV=prod \
     APP_DEBUG=0
+
 
 # ------------------------------------------------------------
 # Target: DEV

@@ -88,12 +88,34 @@ async def list_celery_jobs(
 
         sql = f"""
             SELECT
-              job_id, task_id, job_name, queue, routing_key, exchange, priority,
-              status, retries, max_retries, eta, expires_at,
-              created_at, updated_at, started_at, completed_at, duration_ms,
-              worker_hostname, worker_pid, correlation_id,
-              parent_job_id, request, result, error_type, error_message,
-              is_deleted, deleted_at, deleted_by
+              job_id, 
+              task_id, 
+              job_name, 
+              queue, 
+              routing_key, 
+              exchange, 
+              priority,
+              status, 
+              retries, 
+              max_retries, 
+              eta, 
+              expires_at,
+              created_at, 
+              updated_at, 
+              started_at, 
+              completed_at, 
+              duration_ms,
+              worker_hostname, 
+              worker_pid, 
+              correlation_id,
+              parent_job_id, 
+              request, 
+              result, 
+              error_type, 
+              error_message,
+              is_deleted, 
+              deleted_at, 
+              deleted_by
             FROM app_tracking_celery
             {where_sql}
             ORDER BY created_at DESC
@@ -145,12 +167,35 @@ async def get_celery_job(job_id: UUID) -> Dict[str, Any]:
     try:
         sql = """
             SELECT
-              job_id, task_id, job_name, queue, routing_key, exchange, priority,
-              status, retries, max_retries, eta, expires_at,
-              created_at, updated_at, started_at, completed_at, duration_ms,
-              worker_hostname, worker_pid, correlation_id,
-              parent_job_id, request, result, error_type, error_message, traceback,
-              is_deleted, deleted_at, deleted_by
+              job_id, 
+              task_id, 
+              job_name, 
+              queue, 
+              routing_key, 
+              exchange, 
+              priority,
+              status, 
+              retries, 
+              max_retries, 
+              eta, 
+              expires_at,
+              created_at, 
+              updated_at, 
+              started_at, 
+              completed_at, 
+              duration_ms,
+              worker_hostname, 
+              worker_pid, 
+              correlation_id,
+              parent_job_id, 
+              request, 
+              result, 
+              error_type, 
+              error_message, 
+              traceback,
+              is_deleted, 
+              deleted_at, 
+              deleted_by
             FROM app_tracking_celery
             WHERE job_id = :job_id
             LIMIT 1
@@ -193,12 +238,35 @@ async def get_celery_job_by_task_id(task_id: str) -> Dict[str, Any]:
     try:
         sql = """
             SELECT
-              job_id, task_id, job_name, queue, routing_key, exchange, priority,
-              status, retries, max_retries, eta, expires_at,
-              created_at, updated_at, started_at, completed_at, duration_ms,
-              worker_hostname, worker_pid, correlation_id,
-              parent_job_id, request, result, error_type, error_message, traceback,
-              is_deleted, deleted_at, deleted_by
+              job_id, 
+              task_id, 
+              job_name, 
+              queue, 
+              routing_key, 
+              exchange, 
+              priority,
+              status, 
+              retries, 
+              max_retries, 
+              eta, 
+              expires_at,
+              created_at, 
+              updated_at, 
+              started_at, 
+              completed_at, 
+              duration_ms,
+              worker_hostname, 
+              worker_pid, 
+              correlation_id,
+              parent_job_id, 
+              request, 
+              result, 
+              error_type, 
+              error_message, 
+              traceback,
+              is_deleted, 
+              deleted_at, 
+              deleted_by
             FROM app_tracking_celery
             WHERE task_id = :task_id
             LIMIT 1

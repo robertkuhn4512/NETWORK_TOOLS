@@ -1428,3 +1428,23 @@ developer_network_tools@networktoolsvm:~/NETWORK_TOOLS$ tree --charset ascii
 `-- README.md
 
 ```
+
+## Appendix D - Postgres Information
+
+>Backup Schema Commands (Inside docker)
+> If you make changes to the schema, This file can be used to init the database on a recreation of the container. 
+
+```bash
+pg_dump -h postgres_primary -p 5432 -U network_tools_user -d network_tools \
+  --schema-only \
+  --no-owner --no-privileges \
+  -f backup_network_tools_schema.sql
+```
+
+>Copy the file from docker to your VM
+>Dealers choice on where you want to store the file. I put mine in a folder called pg_schema_backups
+
+```bash
+docker cp postgres_primary:01_network_tools_schema_dump.sql pg_schema_backups
+```
+

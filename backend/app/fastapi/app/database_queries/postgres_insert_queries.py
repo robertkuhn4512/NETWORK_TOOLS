@@ -19,15 +19,55 @@ Purpose:
 """
 
 from __future__ import annotations
-
+from datetime import datetime, timezone
 import logging
 import json
-from typing import Any
+import uuid
+from typing import Any, Dict, Optional, Sequence
 from datetime import date
 
 from app.shared_functions.helpers.helpers_generic import pretty_json_any
 
 logger = logging.getLogger("app.db.insert_queries")
+
+def _json_dumps_safe(obj: Any) -> Optional[str]:
+    if obj is None:
+        return None
+    try:
+        return json.dumps(obj, default=str)
+    except Exception:
+        return json.dumps({"_repr": str(obj)}, default=str)
+
+
+def _uuid_or_none(val: Any) -> Optional[str]:
+    if val in (None, ""):
+        return None
+    try:
+        return str(uuid.UUID(str(val)))
+    except Exception:
+        return None
+
+def _normalize_app_tracking_status(status: Optional[str]) -> str:
+    # app_tracking_celery has a CHECK constraint for allowed statuses
+    if not status:
+        return "QUEUED"
+    s = str(status).strip().upper()
+    mapping = {
+        "PENDING": "QUEUED",
+        "QUEUED": "QUEUED",
+        "RECEIVED": "RECEIVED",
+        "STARTED": "STARTED",
+        "PROGRESS": "STARTED",
+        "RETRY": "RETRY",
+        "SUCCESS": "SUCCESS",
+        "FAILURE": "FAILURE",
+        "REVOKED": "REVOKED",
+        "EXPIRED": "EXPIRED",
+        "CANCELED": "CANCELED",
+        "CANCELLED": "CANCELED",
+    }
+    return mapping.get(s, "QUEUED")
+
 
 def _as_date(v) -> date | None:
     """
@@ -802,4 +842,290 @@ async def upsert_reporting_cisco_api_eox_from_payload(
     except Exception as e:
         logger.exception("upsert_reporting_cisco_api_eox_from_payload failed")
         return {"ok": False, "error": "db_insert_failed", "detail": {"message": str(e)}}
+
+
+async def upsert_app_tracking_celery_job(
+    *,
+    database,
+    job_id: str,
+    task_id: str | None = None,
+    job_name: str | None = None,
+    dedupe_key: str | None = None,
+    status: str = "PENDING",
+    route: str | None = None,
+) -> dict:
+    """
+    Creates/updates a row in app_tracking_celery.
+
+    Critical schema constraints (per your DB):
+      - job_name   NOT NULL
+      - dedupe_key NOT NULL
+
+    Backward-compatible:
+      - If callers don't supply job_name/dedupe_key, we fall back safely.
+    """
+    try:
+        job_id_norm = (str(job_id).strip() if job_id is not None else "")
+        if not job_id_norm:
+            return {"error": "missing_required_fields: job_id"}
+
+        task_id_norm = (str(task_id).strip() if task_id is not None else "") or job_id_norm
+        status_norm = _normalize_app_tracking_status(status)
+
+        # Must never be NULL in DB
+        job_name_norm = (str(job_name).strip() if job_name is not None else "") or "unknown_job"
+        dedupe_key_norm = (str(dedupe_key).strip() if dedupe_key is not None else "") or job_id_norm
+
+        query = """
+        INSERT INTO app_tracking_celery (
+            job_id,
+            task_id,
+            job_name,
+            dedupe_key,
+            status,
+            created_at,
+            updated_at,
+            completed_at
+        )
+        VALUES (
+            CAST(:job_id AS UUID),
+            :task_id,
+            :job_name,
+            :dedupe_key,
+            :status,
+            NOW(),
+            NOW(),
+            CASE
+                WHEN :status IN ('SUCCESS','FAILURE','REVOKED','CANCELED','EXPIRED') THEN NOW()
+                ELSE NULL
+            END
+        )
+        ON CONFLICT (job_id) DO UPDATE SET
+            task_id    = EXCLUDED.task_id,
+            status     = EXCLUDED.status,
+            updated_at = NOW(),
+            job_name   = COALESCE(app_tracking_celery.job_name, EXCLUDED.job_name),
+            dedupe_key = COALESCE(app_tracking_celery.dedupe_key, EXCLUDED.dedupe_key),
+            completed_at = COALESCE(
+                app_tracking_celery.completed_at,
+                CASE
+                    WHEN EXCLUDED.status IN ('SUCCESS','FAILURE','REVOKED','CANCELED','EXPIRED') THEN NOW()
+                    ELSE NULL
+                END
+            )
+        ;
+        """
+
+        await database.execute(
+            query=query,
+            values={
+                "job_id": job_id_norm,
+                "task_id": task_id_norm,
+                "job_name": job_name_norm,
+                "dedupe_key": dedupe_key_norm,
+                "status": status_norm,
+            },
+        )
+
+        return {
+            "detail": {
+                "ok": True,
+                "job_id": job_id_norm,
+                "task_id": task_id_norm,
+                "job_name": job_name_norm,
+                "dedupe_key": dedupe_key_norm,
+                "status": status_norm,
+            }
+        }
+
+    except Exception as e:
+        # Never let logging errors mask the real DB exception
+        try:
+            await insert_app_backend_tracking(
+                database=database,
+                route=(route or "internal/upsert_app_tracking_celery_job"),
+                information={
+                    "event": "app_tracking_celery_upsert_failed",
+                    "job_id": str(job_id),
+                    "task_id": str(task_id or ""),
+                    "job_name": str(job_name or ""),
+                    "dedupe_key": str(dedupe_key or ""),
+                    "status": str(status),
+                    "exception": str(e),
+                },
+            )
+        except Exception:
+            pass
+
+        return {"error": "database_error", "detail": {"message": str(e), "job_id": str(job_id)}}
+
+
+async def upsert_jobs_tracking_information(
+    *,
+    database,
+    job_id: str,
+    job_type: str,
+    status: str = "PENDING",
+    celery_task_id: Optional[str] = None,
+    requested_by: Optional[str] = None,
+    route: Optional[str] = None,
+    redacted: bool = False,
+    progress_current: Optional[int] = None,
+    progress_total: Optional[int] = None,
+    progress_message: Optional[str] = None,
+    # schema uses column name `input`
+    input_payload: Optional[Any] = None,  # legacy kwarg
+    input: Optional[Any] = None,          # alias
+    result: Optional[Any] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+    tb: Optional[str] = None,
+    traceback: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+    completed_at: Optional[datetime] = None,
+    ended_at: Optional[datetime] = None,   # ✅ legacy alias (was referenced but missing)
+    duration_ms: Optional[int] = None,
+    # legacy aliases used elsewhere
+    progress: Optional[int] = None,
+    details: Optional[Dict[str, Any]] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - Writes to public.jobs_tracking_information (schema-aligned).
+      - Accepts legacy kwargs: input_payload, ended_at, progress/details/meta.
+    """
+    try:
+        jid = _uuid_or_none(job_id)
+        if not jid:
+            return {"error": "invalid_job_id"}
+
+        if not job_type or not str(job_type).strip():
+            return {"error": "missing_required_fields: job_type"}
+
+        # legacy mapping: progress (0-100) => progress_current/total if not provided
+        if progress_current is None and progress is not None:
+            progress_current = int(progress)
+            if progress_total is None:
+                progress_total = 100
+
+        effective_input = input if input is not None else input_payload
+        if effective_input is None and meta is not None:
+            effective_input = meta
+
+        # normalize / shape result payload
+        result_obj: Dict[str, Any] = {}
+        if details is not None:
+            result_obj["details"] = details
+
+        if isinstance(result, dict):
+            # merge `details` into provided result dict if both exist
+            if result_obj:
+                for k, v in result_obj.items():
+                    result.setdefault(k, v)
+            result_obj = result
+        elif result is not None:
+            result_obj["result"] = result
+
+        now_utc = datetime.now(timezone.utc)
+        status_norm = str(status).strip().upper() if status else "PENDING"
+
+        started_eff = started_at
+        if started_eff is None and status_norm in ("STARTED", "PROGRESS", "SUCCESS", "FAILURE"):
+            started_eff = now_utc
+
+        completed_eff = completed_at or ended_at  # ✅ no NameError anymore
+        if completed_eff is None and status_norm in ("SUCCESS", "FAILURE"):
+            completed_eff = now_utc
+
+        query = """
+        INSERT INTO public.jobs_tracking_information (
+            job_id,
+            job_type,
+            status,
+            celery_task_id,
+            requested_by,
+            route,
+            redacted,
+            progress_current,
+            progress_total,
+            progress_message,
+            input,
+            result,
+            error_type,
+            error_message,
+            traceback,
+            started_at,
+            completed_at,
+            duration_ms,
+            updated_at
+        ) VALUES (
+            CAST(:job_id AS uuid),
+            :job_type,
+            :status,
+            :celery_task_id,
+            :requested_by,
+            :route,
+            :redacted,
+            :progress_current,
+            :progress_total,
+            :progress_message,
+            CAST(:input AS jsonb),
+            CAST(:result AS jsonb),
+            :error_type,
+            :error_message,
+            :traceback,
+            :started_at,
+            :completed_at,
+            :duration_ms,
+            NOW()
+        )
+        ON CONFLICT (job_id) DO UPDATE SET
+            job_type = EXCLUDED.job_type,
+            status = EXCLUDED.status,
+            celery_task_id = COALESCE(EXCLUDED.celery_task_id, public.jobs_tracking_information.celery_task_id),
+            requested_by = COALESCE(EXCLUDED.requested_by, public.jobs_tracking_information.requested_by),
+            route = COALESCE(EXCLUDED.route, public.jobs_tracking_information.route),
+            redacted = COALESCE(EXCLUDED.redacted, public.jobs_tracking_information.redacted),
+            progress_current = COALESCE(EXCLUDED.progress_current, public.jobs_tracking_information.progress_current),
+            progress_total = COALESCE(EXCLUDED.progress_total, public.jobs_tracking_information.progress_total),
+            progress_message = COALESCE(EXCLUDED.progress_message, public.jobs_tracking_information.progress_message),
+            input = COALESCE(public.jobs_tracking_information.input, EXCLUDED.input),
+            result = COALESCE(public.jobs_tracking_information.result, '{}'::jsonb) || COALESCE(EXCLUDED.result, '{}'::jsonb),
+            error_type = COALESCE(EXCLUDED.error_type, public.jobs_tracking_information.error_type),
+            error_message = COALESCE(EXCLUDED.error_message, public.jobs_tracking_information.error_message),
+            traceback = COALESCE(EXCLUDED.traceback, public.jobs_tracking_information.traceback),
+            started_at = COALESCE(public.jobs_tracking_information.started_at, EXCLUDED.started_at),
+            completed_at = COALESCE(public.jobs_tracking_information.completed_at, EXCLUDED.completed_at),
+            duration_ms = COALESCE(EXCLUDED.duration_ms, public.jobs_tracking_information.duration_ms),
+            updated_at = NOW()
+        ;
+        """
+
+        values = {
+            "job_id": jid,
+            "job_type": str(job_type).strip(),
+            "status": status_norm,
+            "celery_task_id": str(celery_task_id) if celery_task_id not in (None, "") else None,
+            "requested_by": requested_by,
+            "route": route,
+            "redacted": bool(redacted),
+            "progress_current": int(progress_current) if progress_current not in (None, "") else None,
+            "progress_total": int(progress_total) if progress_total not in (None, "") else None,
+            "progress_message": progress_message,
+            "input": _json_dumps_safe(effective_input),
+            "result": _json_dumps_safe(result_obj) if result_obj else None,
+            "error_type": error_type,
+            "error_message": error_message,
+            "traceback": traceback or tb,
+            "started_at": started_eff,
+            "completed_at": completed_eff,
+            "duration_ms": int(duration_ms) if duration_ms not in (None, "") else None,
+        }
+
+        await database.execute(query=query, values=values)
+        return {"detail": {"ok": True, "job_id": jid}}
+
+    except Exception as e:
+        return {"error": "database_error", "detail": {"message": str(e), "job_id": job_id}}
 
