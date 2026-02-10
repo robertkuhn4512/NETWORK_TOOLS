@@ -66,6 +66,14 @@
 #     --api-path "/cisco_api_reporting/devices/unique_os_versions/cve" \
 #     --method POST \
 #     --payload-file "./backend/build_scripts/documentation/fastapi/test_scripts/test_payloads/unique_os_versions_cve.json" \
+#     --ca-bundle "./backend/app/fastapi/certs/networktools_ca.crt"#
+#
+#   Test the /device_backups/search_configuration_files endpoint - Single file
+#   bash ./backend/build_scripts/documentation/fastapi/test_scripts/test_fastapi_keycloak_cc.sh \
+#     --api-base "https://api.networkengineertools.com:8443" \
+#     --api-path "/device_backups/search_configuration_files" \
+#     --method POST \
+#     --payload-file "./backend/build_scripts/documentation/fastapi/test_scripts/test_payloads/search_configuration_files_single_file.json" \
 #     --ca-bundle "./backend/app/fastapi/certs/networktools_ca.crt"
 #
 #

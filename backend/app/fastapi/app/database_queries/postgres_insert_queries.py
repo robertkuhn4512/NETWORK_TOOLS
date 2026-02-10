@@ -7,7 +7,7 @@ Notes:
 
   - Save a configuration backup location:
       from app.database_queries.postgres_insert_queries import insert_device_backup_location
-      await insert_device_backup_location(database=database, device_name="sw1", ipv4_loopback="10.0.0.1", device_type="cisco_xe", file_location="/backups/.../sw1.enc")
+      await insert_device_backup_location(device_name="sw1", ipv4_loopback="10.0.0.1", device_type="cisco_xe", file_location="/backups/.../sw1.enc")
 
   - Upsert devices with archive-on-change:
       from app.database_queries.postgres_insert_queries import upsert_device_with_archive
@@ -25,7 +25,7 @@ import json
 import uuid
 from typing import Any, Dict, Optional, Sequence
 from datetime import date
-
+from app.database import database
 from app.shared_functions.helpers.helpers_generic import pretty_json_any
 
 logger = logging.getLogger("app.db.insert_queries")
@@ -174,56 +174,54 @@ async def insert_app_backend_tracking(
 
 async def insert_device_backup_location(
     *,
-    database,
-    device_name: Optional[str] = None,
-    ipv4_loopback: Optional[str] = None,
-    ipv6_loopback: Optional[str] = None,
-    device_type: Optional[str] = None,
+    device_name: Optional[str],
+    ipv4_loopback: Optional[str],
+    ipv6_loopback: Optional[str] | None = None,
+    device_type: Optional[str] | None = None,
     file_location: str,
-) -> dict:
+) -> Dict[str, Any]:
     """
-    Insert a new row into device_backup_locations.
-    This function never overwrites existing rows; it always appends.
-
-    Returns:
-      {"detail": {"ok": True, "id": <int|None>}} on success
-      {"error": "<message>"} on failure
+    Notes / How to run:
+      - await insert_device_backup_location(...)
+      - Expects `public.device_backup_locations` to exist.
     """
     sql = """
-    INSERT INTO device_backup_locations (
-        device_name,
-        ipv4_loopback,
-        ipv6_loopback,
-        device_type,
-        file_location,
-        datetimestamp
-    )
-    VALUES (
-        :device_name,
-        :ipv4_loopback,
-        :ipv6_loopback,
-        :device_type,
-        :file_location,
-        NOW()
-    )
-    RETURNING id
+    INSERT INTO public.device_backup_locations
+      (
+          device_name, 
+          ipv4_loopback, 
+          ipv6_loopback, 
+          device_type, 
+          file_location, 
+          datetimestamp
+      )
+    VALUES
+      (
+          :device_name, 
+          :ipv4_loopback, 
+          :ipv6_loopback, 
+          :device_type,
+          :file_location,
+          NOW()
+      )
+    RETURNING id, device_name, ipv4_loopback, ipv6_loopback, device_type, file_location, datetimestamp
     """
 
-    params = {
+    values = {
         "device_name": device_name,
         "ipv4_loopback": ipv4_loopback,
         "ipv6_loopback": ipv6_loopback,
         "device_type": device_type,
-        "file_location": file_location,
+        "file_location": file_location
     }
 
     try:
-        row = await database.fetch_one(sql, params)
-        new_id = None if row is None else row[0]
-        return {"detail": {"ok": True, "id": new_id}}
+        row = await database.fetch_one(query=sql, values=values)
+        if not row:
+            return {"error": "insert_failed", "detail": {"message": "No row returned"}}
+        return {"ok": True, "row": dict(row._mapping)}
     except Exception as e:
-        logger.exception("insert_device_backup_location failed device=%r ipv4=%r", device_name, ipv4_loopback)
-        return {"error": f"insert_device_backup_location failed: {e}"}
+        return {"error": "database_error", "detail": {"message": str(e), "values": values}}
 
 
 async def upsert_device_with_archive(
@@ -853,6 +851,7 @@ async def upsert_app_tracking_celery_job(
     dedupe_key: str | None = None,
     status: str = "PENDING",
     route: str | None = None,
+    request: dict | None = None
 ) -> dict:
     """
     Creates/updates a row in app_tracking_celery.
@@ -865,6 +864,7 @@ async def upsert_app_tracking_celery_job(
       - If callers don't supply job_name/dedupe_key, we fall back safely.
     """
     try:
+        request = request or {}
         job_id_norm = (str(job_id).strip() if job_id is not None else "")
         if not job_id_norm:
             return {"error": "missing_required_fields: job_id"}
@@ -885,7 +885,8 @@ async def upsert_app_tracking_celery_job(
             status,
             created_at,
             updated_at,
-            completed_at
+            completed_at,
+            request
         )
         VALUES (
             CAST(:job_id AS UUID),
@@ -898,7 +899,8 @@ async def upsert_app_tracking_celery_job(
             CASE
                 WHEN :status IN ('SUCCESS','FAILURE','REVOKED','CANCELED','EXPIRED') THEN NOW()
                 ELSE NULL
-            END
+            END,
+            CAST(:request AS jsonb)
         )
         ON CONFLICT (job_id) DO UPDATE SET
             task_id    = EXCLUDED.task_id,
@@ -912,7 +914,8 @@ async def upsert_app_tracking_celery_job(
                     WHEN EXCLUDED.status IN ('SUCCESS','FAILURE','REVOKED','CANCELED','EXPIRED') THEN NOW()
                     ELSE NULL
                 END
-            )
+            ),
+            request = EXCLUDED.request
         ;
         """
 
@@ -924,6 +927,7 @@ async def upsert_app_tracking_celery_job(
                 "job_name": job_name_norm,
                 "dedupe_key": dedupe_key_norm,
                 "status": status_norm,
+                "request": _json_dumps_safe(request)
             },
         )
 
@@ -935,6 +939,7 @@ async def upsert_app_tracking_celery_job(
                 "job_name": job_name_norm,
                 "dedupe_key": dedupe_key_norm,
                 "status": status_norm,
+                "request": _json_dumps_safe(request)
             }
         }
 
@@ -952,6 +957,7 @@ async def upsert_app_tracking_celery_job(
                     "dedupe_key": str(dedupe_key or ""),
                     "status": str(status),
                     "exception": str(e),
+                    "request": _json_dumps_safe(request)
                 },
             )
         except Exception:
