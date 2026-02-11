@@ -101,6 +101,41 @@ final class KeycloakAuthenticator extends OAuth2Authenticator implements Authent
         /** @var AccessToken $accessToken */
         $accessToken = $this->fetchAccessToken($client);
 
+        if ($request->hasSession()) {
+            $session = $request->getSession();
+
+            // access token
+            $session->set('kc_access_token', $accessToken->getToken());
+
+            // expires_at (league token usually provides absolute timestamp)
+            $expiresAt = null;
+            if (method_exists($accessToken, 'getExpires')) {
+                $expiresAt = $accessToken->getExpires();
+            }
+
+            // refresh token (may be method or only in values)
+            $refreshToken = null;
+            if (method_exists($accessToken, 'getRefreshToken')) {
+                $refreshToken = $accessToken->getRefreshToken();
+            }
+            $values = method_exists($accessToken, 'getValues') ? $accessToken->getValues() : [];
+            $refreshToken = $refreshToken ?: ($values['refresh_token'] ?? null);
+
+            if (is_string($refreshToken) && $refreshToken !== '') {
+                $session->set('kc_refresh_token', $refreshToken);
+            }
+
+            if (is_int($expiresAt) && $expiresAt > 0) {
+                $session->set('kc_access_expires_at', $expiresAt);
+            } else {
+                // fallback if expiresAt isn't available
+                $expiresIn = (int)($values['expires_in'] ?? 0);
+                if ($expiresIn > 0) {
+                    $session->set('kc_access_expires_at', time() + $expiresIn);
+                }
+            }
+        }
+
         // Decode JWT payload (roles live here)
         $accessPayload = $this->decodeJwtPayload($accessToken->getToken());
         $roles = $this->extractRolesFromTokenPayload($accessPayload);

@@ -76,6 +76,14 @@
 #     --payload-file "./backend/build_scripts/documentation/fastapi/test_scripts/test_payloads/search_configuration_files_single_file.json" \
 #     --ca-bundle "./backend/app/fastapi/certs/networktools_ca.crt"
 #
+#   Test the datatables endpoint /cisco_api_reporting/datatable/reporting_cisco_api_eox
+#   bash ./backend/build_scripts/documentation/fastapi/test_scripts/test_fastapi_keycloak_cc.sh \
+#     --api-base "https://api.networkengineertools.com:8443" \
+#     --api-path "/cisco_api_reporting/datatable/reporting_cisco_api_eox" \
+#     --method POST \
+#     --payload-file "./backend/build_scripts/documentation/fastapi/test_scripts/test_payloads/datatable_reporting_cisco_api_eox.json" \
+#     --ca-bundle "./backend/app/fastapi/certs/networktools_ca.crt"
+#
 #
 #
 # Notes:

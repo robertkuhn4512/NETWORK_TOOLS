@@ -21,8 +21,15 @@ final class KeycloakLogoutSuccessHandler implements LogoutSuccessHandlerInterfac
 
         $idToken = null;
         if ($request->hasSession()) {
+            $session = $request->getSession();
+
             $idToken = $request->getSession()->get('kc_id_token');
             $request->getSession()->remove('kc_id_token');
+
+            // Clear FastAPI pass-through tokens
+            $session->remove('kc_access_token');
+            $session->remove('kc_refresh_token');
+            $session->remove('kc_access_expires_at');
         }
 
         // Keycloak end-session endpoint
