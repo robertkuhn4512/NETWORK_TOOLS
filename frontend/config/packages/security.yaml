@@ -25,4 +25,5 @@ security:
         - { path: ^/connect, roles: PUBLIC_ACCESS }
         - { path: ^/auth, roles: PUBLIC_ACCESS }
         - { path: ^/admin, roles: ROLE_SYMFONY_SUPER_ADMIN }
+        - { path: ^/device_list, roles: [ROLE_SYMFONY_SUPER_ADMIN, ROLE_DEVICE_REPORTING_USER] }
         - { path: ^/, roles: ROLE_USER }

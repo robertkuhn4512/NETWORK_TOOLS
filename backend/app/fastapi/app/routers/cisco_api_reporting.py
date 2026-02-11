@@ -20,7 +20,13 @@ from starlette.status import HTTP_400_BAD_REQUEST, HTTP_500_INTERNAL_SERVER_ERRO
 
 from app.security.auth import UserContext, get_current_user, require_any_role
 from app.shared_functions.helpers.helpers_hashicorp_vault import vault_get_cisco_api_console_config
-from app.database_queries.postgres_select_queries import select_unique_device_os_versions
+
+from app.database_queries.postgres_select_queries import (
+    select_unique_device_os_versions,
+    fetch_reporting_cisco_api_cve_software_datatable,
+    fetch_reporting_cisco_api_eox_datatable
+)
+
 from app.database import database
 from app.database_queries.postgres_insert_queries import (
     insert_app_backend_tracking,
@@ -76,6 +82,37 @@ class CiscoBulkFromDevicesRequest(BaseModel):
     include_raw: bool = Field(False, description="If true, include full Cisco JSON/text per pair (can be large).")
     os_allowlist: Optional[List[str]] = Field(None, description="Optional allowlist of OS values (lowercased).")
 
+class DataTablesSearch(BaseModel):
+    value: Optional[str] = None
+    regex: Optional[bool] = False
+
+
+class DataTablesOrder(BaseModel):
+    column: Optional[int] = 0
+    dir: Optional[str] = "asc"
+
+
+class DataTablesColumn(BaseModel):
+    data: Optional[str] = None
+    name: Optional[str] = None
+    searchable: Optional[bool] = True
+    orderable: Optional[bool] = True
+    search: Optional[DataTablesSearch] = None
+
+
+class DataTablesRequest(BaseModel):
+    """
+    Notes / How to run:
+      - DataTables server-side request payload.
+    """
+    draw: Optional[int] = 0
+    start: Optional[int] = 0
+    length: Optional[int] = 25
+    search: Optional[DataTablesSearch] = None
+    order: Optional[List[DataTablesOrder]] = None
+    columns: Optional[List[DataTablesColumn]] = None
+
+    model_config = {"extra": "allow"}
 
 def _clean_version(ver: str) -> str:
     """
@@ -830,3 +867,66 @@ async def devices_unique_os_versions_cve(
     )
 
     return {"detail": {**payload, "batches": batches_out}}
+
+@router.post(
+    "/datatable/reporting_cisco_api_cve_software",
+    summary="DataTables server-side: reporting_cisco_api_cve_software",
+    status_code=200,
+)
+async def datatable_reporting_cisco_api_cve_software(
+    request: Request,
+    body: DataTablesRequest,
+    user: UserContext = Depends(require_any_role("fastapi_client")),
+):
+    res = await fetch_reporting_cisco_api_cve_software_datatable(database=database, dt=body.model_dump())
+    if res.get("error"):
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=res)
+
+    await insert_app_backend_tracking(
+        database=database,
+        route=request.url.path,
+        information={
+            "event": "cisco_api_reporting.datatable_reporting_cisco_api_cve_software",
+            "requested_by": {"azp": getattr(user, "azp", None), "roles": user.roles or []},
+            "dt_meta": (res.get("meta") or {}),
+            "counts": {
+                "recordsTotal": res.get("recordsTotal"),
+                "recordsFiltered": res.get("recordsFiltered"),
+                "rows_returned": len(res.get("data") or []),
+            },
+        },
+    )
+
+    return {"detail": res}
+
+
+@router.post(
+    "/datatable/reporting_cisco_api_eox",
+    summary="DataTables server-side: reporting_cisco_api_eox",
+    status_code=200,
+)
+async def datatable_reporting_cisco_api_eox(
+    request: Request,
+    body: DataTablesRequest,
+    user: UserContext = Depends(require_any_role("fastapi_client")),
+):
+    res = await fetch_reporting_cisco_api_eox_datatable(dt=body.model_dump())
+    if res.get("error"):
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=res)
+
+    await insert_app_backend_tracking(
+        database=database,
+        route=request.url.path,
+        information={
+            "event": "cisco_api_reporting.datatable_reporting_cisco_api_eox",
+            "requested_by": {"azp": getattr(user, "azp", None), "roles": user.roles or []},
+            "dt_meta": (res.get("meta") or {}),
+            "counts": {
+                "recordsTotal": res.get("recordsTotal"),
+                "recordsFiltered": res.get("recordsFiltered"),
+                "rows_returned": len(res.get("data") or []),
+            },
+        },
+    )
+
+    return {"detail": res}

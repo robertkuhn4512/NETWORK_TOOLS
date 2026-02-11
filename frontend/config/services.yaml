@@ -7,6 +7,8 @@
 # Put parameters here that don't need to change on each machine where the app is deployed
 # https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
 parameters:
+    fastapi.base_url: '%env(resolve:FASTAPI_BASE_URL)%'
+    keycloak.token_url: '%env(resolve:KEYCLOAK_AUTH_SERVER_URL)%/realms/%env(resolve:KEYCLOAK_REALM)%/protocol/openid-connect/token'
 
 services:
     # default configuration for services in *this* file
@@ -32,11 +34,19 @@ services:
         autowire: true
         autoconfigure: true
 
+    App\Service\Security\KeycloakSessionTokenManager:
+        arguments:
+            $tokenUrl: '%keycloak.token_url%'
+            $clientId: '%env(resolve:KEYCLOAK_CLIENT_ID)%'
+            $clientSecret: '%env(KEYCLOAK_CLIENT_SECRET)%'
+
     App\EventListener\KeycloakLogoutListener:
         arguments:
             $keycloakAuthServerUrl: '%env(KEYCLOAK_AUTH_SERVER_URL)%'
             $keycloakRealm: '%env(KEYCLOAK_REALM)%'
             $keycloakClientId: '%env(KEYCLOAK_CLIENT_ID)%'
             $postLogoutRedirectUri: '%env(APP_LOGOUT_REDIRECT_URL)%'
-    # add more service definitions when explicit configuration is needed
-    # please note that last definitions always *replace* previous ones
+
+    App\Service\FastApi\FastApiClient:
+        arguments:
+            $baseUrl: '%fastapi.base_url%'

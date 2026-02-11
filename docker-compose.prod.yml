@@ -80,7 +80,7 @@ services:
        - pgadmin
        - frontend_nginx
     networks:
-      public_net:
+      public_net: {}
       db_net:
         ipv4_address: 172.30.20.3
         aliases:
@@ -124,6 +124,7 @@ services:
       timeout: 3s
       retries: 10
 
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate vault_production_node
   vault_production_node:
     networks:
       public_net:
@@ -183,15 +184,15 @@ services:
       VAULT_CACERT: "/vault/certs/cert.crt"                                                 # VAULT_CACERT should normally point to a CA certificate (e.g., ca.crt),
                                                                                             # not the server leaf cert—unless your leaf cert is self-signed and acting as CA. Make this explicit by
                                                                                             # mounting a CA file and pointing to it.
-      #VAULT_ADDR: "https://vault_production_node:8200"                                     # For dev container use (Hash / remove / just use the value below and change the value below in the .env file)
+
                                                                                             # This entry refers to the containers name. Which because of docker is in a hosts entry
                                                                                             # So reachability internally will work with this. Externally you would need to add an antry
                                                                                             # for it on your dev machine if it's separate from the machine hosting the container.
-      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8443"                               # For production use with a valid FQDN (Hash the above, unhash this and rebuild)
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"                               # For production use with a valid FQDN (Hash the above, unhash this and rebuild)
                                                                                             # This should be populated in the environment file SERVER_1_FQDN_FULL="Your domain name here"
-      VAULT_API_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8443"
-      #VAULT_CLUSTER_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8201" -> Unhash when / if you decide to use a cluster. NEed to setup a separate router under nginx for it.
-      #VAULT_LOG_LEVEL: "debug"                                                              # Used for debugging vault while you are testing. Comment out and rebuild with
+      VAULT_API_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
+      VAULT_CLUSTER_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8201"
+
                                                                                             # VAULT_LOG_LEVEL: "info" for production use
       VAULT_LOG_LEVEL: "info"
       VAULT_RAFT_NODE_ID: "Node1"                                                           # If you ever change this and reboot a node in an existing cluster you will have issues
@@ -206,10 +207,15 @@ services:
     restart: unless-stopped
     depends_on:
       - vault_production_node
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.8
+    extra_hosts:
+      - "vault.${PRIMARY_SERVER_FQDN}:172.30.20.4"  # Vault agents need to reach vault locally to boot themselves
     entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
     environment:
-      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN:-vault_production_node}"
-      VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200"
+      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN}"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_CACERT: "/vault/ca/ca.crt"
     read_only: true
     tmpfs:
@@ -247,11 +253,16 @@ services:
     restart: unless-stopped
     depends_on:
       - vault_production_node
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.9
+    extra_hosts:
+      - "vault.${PRIMARY_SERVER_FQDN}:172.30.20.4"  # Vault agents need to reach vault locally to boot themselves
     entrypoint:
       [ "/bin/sh","-lc","mkdir -p /vault/rendered/tls && exec vault agent -config=/vault/agent/agent.hcl" ]
     environment:
-      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN:-vault_production_node}"
-      VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200"
+      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN}"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_CACERT: "/vault/ca/ca.crt"
     tmpfs:
       - /tmp
@@ -492,10 +503,16 @@ services:
     restart: unless-stopped
     depends_on:
       - vault_production_node
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.9
+    extra_hosts:
+      - "vault.${PRIMARY_SERVER_FQDN}:172.30.20.4"  # Vault agents need to reach vault locally to boot themselves
     entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
     environment:
-      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN:-vault_production_node}"
-      VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN:-vault_production_node}:8200"
+      PRIMARY_SERVER_FQDN: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
+      PUBLIC_HTTPS_PORT: "${PUBLIC_HTTPS_PORT}"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_CACERT: "/vault/ca/ca.crt"
     read_only: true
     tmpfs:
@@ -536,6 +553,8 @@ services:
       db_net:
         ipv4_address: 172.30.20.40
       public_net:
+    extra_hosts:
+      - "vault.${PRIMARY_SERVER_FQDN}:172.30.20.4"
     ports:
       - "8000:8000"
     volumes:
@@ -546,7 +565,7 @@ services:
       - ./container_data/backups/device_configuration_backups:/backups/device_configuration_backups
     environment:
       VAULT_TOKEN_FILE: "/run/vault/.vault-token"
-      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8443"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
       APP_MODULE: "app.main:app"
       BIND_HOST: "0.0.0.0"
@@ -602,6 +621,8 @@ services:
       db_net:
         ipv4_address: 172.30.20.60
       public_net:
+    extra_hosts:
+      - "vault.${PRIMARY_SERVER_FQDN}:172.30.20.4"
     depends_on:
       vault_agent_fastapi:
         condition: service_healthy
@@ -618,7 +639,7 @@ services:
       VAULT_ENV_OVERRIDE: "0"
       VAULT_TOKEN_FILE: "/run/vault/.vault-token"
       VAULT_CACERT: "/run/certs/combined-ca.crt"
-      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8443"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_SECRETS_JSON: "/run/vault/fastapi_secrets.json"
       LOG_DIR: "/var/log/network_tools/celery"
       LOG_FILE: "network_tools_celery.log"
@@ -690,17 +711,22 @@ services:
   # Vault Agent for Symfony Frontend
   # Renders: /vault/rendered/frontend.env
   # ------------------------------------------------------------
+  # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate vault_agent_frontend
   vault_agent_frontend:
     image: hashicorp/vault:1.21.1
     container_name: vault_agent_frontend
     restart: unless-stopped
     depends_on:
       - vault_production_node
+    networks:
+      db_net:
+        ipv4_address: 172.30.20.7
+    extra_hosts:
+      - "vault.${PRIMARY_SERVER_FQDN}:172.30.20.4"  # Vault agents need to reach vault locally to boot themselves
     entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]
     environment:
-      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN:-vault_production_node}"
-      PUBLIC_HTTPS_PORT: "${PUBLIC_HTTPS_PORT:-8443}"
-      VAULT_ADDR: "https://${PRIMARY_SERVER_FQDN}:8443"
+      PRIMARY_SERVER_FQDN: "${PRIMARY_SERVER_FQDN}"
+      VAULT_ADDR: "https://vault.${PRIMARY_SERVER_FQDN}:8200"
       VAULT_CACERT: "/vault/ca/ca.crt"
     read_only: true
     user: "0:0"
@@ -747,7 +773,7 @@ services:
         set -eux
         umask 0002
 
-        mkdir -p /var/www/html/var/cache/prod /var/www/html/var/log
+        mkdir -p /var/www/html/var/cache/prod /var/www/html/var/cache/dev /var/www/html/var/log
 
         # Take ownership every startup (repairs root-owned dirs)
         chown -R 82:82 /var/www/html/var
@@ -787,6 +813,9 @@ services:
     networks:
       db_net:
         ipv4_address: 172.30.20.71
+    extra_hosts:
+      - "api.${PRIMARY_SERVER_FQDN}:172.30.20.3"        # This can be removed if you have DNS setup correctly on the host vm / test / prod environment
+                                                        # So the container can reach fastapis endpoint on a public ip if needed
     read_only: true
     user: "82:82"
     tmpfs:

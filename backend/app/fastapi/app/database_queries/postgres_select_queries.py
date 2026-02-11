@@ -3,11 +3,31 @@ from __future__ import annotations
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from app.database import database
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Datatable Related Helpers
+def _dt_int(val: Any, default: int) -> int:
+    try:
+        return int(val)
+    except Exception:
+        return default
+
+
+def _dt_str(val: Any, default: str = "") -> str:
+    try:
+        s = str(val)
+    except Exception:
+        return default
+    return s
+
+def _dt_dir(val: Any, default: str = "desc") -> str:
+    d = _dt_str(val, default).strip().lower()
+    return d if d in ("asc", "desc") else default
+
+# END Datatable Related Helpers
 
 def _uuid_or_none(val: Any) -> Optional[str]:
     if val in (None, ""):
@@ -463,3 +483,284 @@ async def select_device_backup_locations_for_ipv4(
 
     except Exception as e:
         return {"detail": {"error": "database_error", "message": str(e)}}
+
+
+async def _datatable_select_all(
+    *,
+    schema: str,
+    table: str,
+    dt: Dict[str, Any],
+    allowed_columns: List[str],
+    searchable_columns: List[str],
+    default_order: Tuple[str, str] = ("id", "desc"),
+    max_length: int = 500,
+) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - dt is the DataTables request object (what DataTables sends to your server).
+      - Example:
+            res = await _datatable_select_all(
+                database=database,
+                schema="public",
+                table="devices",
+                dt={"draw": 1, "start": 0, "length": 25, "search": {"value": "router"}},
+                allowed_columns=[...],
+                searchable_columns=[...],
+            )
+    """
+    try:
+        qs = _quote_ident(schema)
+        qt = _quote_ident(table)
+
+        # ---- paging ----
+        draw = _dt_int(dt.get("draw"), 0)
+        start = max(_dt_int(dt.get("start"), 0), 0)
+        length = _dt_int(dt.get("length"), 25)
+        if length < 0:
+            length = max_length
+        length = min(max(length, 0), max_length)
+
+        # ---- ordering (DataTables order[0].column -> columns[idx].data/name) ----
+        order_col, order_dir = default_order
+        try:
+            order = dt.get("order") or []
+            cols = dt.get("columns") or []
+            if isinstance(order, list) and order and isinstance(cols, list) and cols:
+                o0 = order[0] if isinstance(order[0], dict) else {}
+                idx = _dt_int(o0.get("column"), -1)
+                req_dir = _dt_dir(o0.get("dir"), order_dir)
+
+                if 0 <= idx < len(cols) and isinstance(cols[idx], dict):
+                    cobj = cols[idx]
+                    cname = cobj.get("data") or cobj.get("name")
+                    if isinstance(cname, str) and cname in allowed_columns:
+                        order_col = cname
+                order_dir = req_dir
+        except Exception:
+            # fall back to default order
+            pass
+
+        if order_col not in allowed_columns:
+            order_col = default_order[0]
+        order_dir = _dt_dir(order_dir, default_order[1])
+
+        q_order_col = _quote_ident(order_col)
+        order_sql = f"{q_order_col} {'ASC' if order_dir == 'asc' else 'DESC'} NULLS LAST"
+
+        # ---- filtering (global search + per-column search[value]) ----
+        where_parts: List[str] = []
+        values: Dict[str, Any] = {}
+
+        global_search = ""
+        try:
+            search_obj = dt.get("search") or {}
+            if isinstance(search_obj, dict):
+                global_search = _dt_str(search_obj.get("value"), "").strip()
+        except Exception:
+            global_search = ""
+
+        if global_search:
+            values["global_search"] = f"%{global_search}%"
+            ors = []
+            for c in searchable_columns:
+                if c not in allowed_columns:
+                    continue
+                qc = _quote_ident(c)
+                ors.append(f"CAST({qc} AS text) ILIKE :global_search")
+            if ors:
+                where_parts.append("(" + " OR ".join(ors) + ")")
+
+        # per-column search
+        cols = dt.get("columns") or []
+        if isinstance(cols, list) and cols:
+            for i, cobj in enumerate(cols):
+                if not isinstance(cobj, dict):
+                    continue
+                cname = cobj.get("data") or cobj.get("name")
+                if not isinstance(cname, str) or cname not in allowed_columns:
+                    continue
+                s = cobj.get("search") or {}
+                sval = ""
+                if isinstance(s, dict):
+                    sval = _dt_str(s.get("value"), "").strip()
+                if not sval:
+                    continue
+
+                key = f"col_search_{i}"
+                values[key] = f"%{sval}%"
+                where_parts.append(f"CAST({_quote_ident(cname)} AS text) ILIKE :{key}")
+
+        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        # ---- counts ----
+        total_sql = f"SELECT COUNT(*) AS n FROM {qs}.{qt}"
+        filtered_sql = f"SELECT COUNT(*) AS n FROM {qs}.{qt} {where_sql}"
+
+        total_row = await database.fetch_one(query=total_sql)
+        total_n = int((total_row._mapping["n"] if total_row else 0))
+
+        filtered_row = await database.fetch_one(query=filtered_sql, values=values)
+        filtered_n = int((filtered_row._mapping["n"] if filtered_row else 0))
+
+        # ---- page data ----
+        data_sql = f"""
+            SELECT *
+            FROM {qs}.{qt}
+            {where_sql}
+            ORDER BY {order_sql}
+            LIMIT :limit OFFSET :offset
+        """
+        values_page = dict(values)
+        values_page["limit"] = length
+        values_page["offset"] = start
+
+        rows = await database.fetch_all(query=data_sql, values=values_page)
+        data = [dict(r._mapping) for r in (rows or [])]
+
+        return {
+            "ok": True,
+            "draw": draw,
+            "recordsTotal": total_n,
+            "recordsFiltered": filtered_n,
+            "data": data,
+            "meta": {
+                "schema": schema,
+                "table": table,
+                "start": start,
+                "length": length,
+                "order": {"column": order_col, "dir": order_dir},
+                "global_search": global_search or None,
+            },
+        }
+
+    except ValueError as e:
+        # identifier validation failure via _quote_ident
+        return {"error": f"unsafe_sql_identifier: {e}", "detail": {"schema": schema, "table": table}}
+    except Exception as e:
+        return {"error": f"database_error: {e}", "detail": {"schema": schema, "table": table}}
+
+
+# -----------------------------
+# Table-specific wrappers
+# -----------------------------
+
+async def fetch_devices_datatable(*, database, dt: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - res = await fetch_devices_datatable(database=database, dt=dt_payload)
+    """
+    cols = [
+        "id",
+        "device_name",
+        "hub_id",
+        "site_abbreviation",
+        "os",
+        "version",
+        "chassis_model",
+        "ipv4_loopback",
+        "ipv6_loopback",
+        "device_type",
+        "information",
+        "information_detail",
+        "datetimestamp",
+    ]
+    # searchable can be the same list; trim later if performance dictates
+    return await _datatable_select_all(
+        database=database,
+        schema="public",
+        table="devices",
+        dt=dt,
+        allowed_columns=cols,
+        searchable_columns=cols,
+        default_order=("datetimestamp", "desc"),
+        max_length=500,
+    )
+
+
+async def fetch_device_backup_locations_datatable(*, database, dt: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - res = await fetch_device_backup_locations_datatable(database=database, dt=dt_payload)
+    """
+    cols = [
+        "id",
+        "device_name",
+        "ipv4_loopback",
+        "ipv6_loopback",
+        "device_type",
+        "file_location",
+        "datetimestamp",
+    ]
+    return await _datatable_select_all(
+        database=database,
+        schema="public",
+        table="device_backup_locations",
+        dt=dt,
+        allowed_columns=cols,
+        searchable_columns=cols,
+        default_order=("datetimestamp", "desc"),
+        max_length=500,
+    )
+
+
+async def fetch_reporting_cisco_api_cve_software_datatable(*, database, dt: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - res = await fetch_reporting_cisco_api_cve_software_datatable(database=database, dt=dt_payload)
+    """
+    cols = [
+        "id",
+        "os_name",
+        "version",
+        "information",
+        "datetimestamp",
+    ]
+    return await _datatable_select_all(
+        database=database,
+        schema="public",
+        table="reporting_cisco_api_cve_software",
+        dt=dt,
+        allowed_columns=cols,
+        searchable_columns=cols,
+        default_order=("datetimestamp", "desc"),
+        max_length=500,
+    )
+
+
+async def fetch_reporting_cisco_api_eox_datatable(*, dt: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - res = await fetch_reporting_cisco_api_eox_datatable(database=database, dt=dt_payload)
+    """
+    cols = [
+        "id",
+        "product_id",
+        "datetimestamp",
+        "created_at",
+        "updated_at",
+        "product_id_description",
+        "product_bulletin_number",
+        "product_bulletin_url",
+        "eox_external_announcement_date",
+        "end_of_sale_date",
+        "end_of_sw_maintenance_releases",
+        "end_of_security_vul_support_date",
+        "end_of_routine_failure_analysis_date",
+        "end_of_service_contract_renewal",
+        "end_of_svc_attach_date",
+        "last_date_of_support",
+        "updated_timestamp",
+        "request_page_index",
+        "request_product_query",
+        "record_hash",
+        "information",
+    ]
+    return await _datatable_select_all(
+        schema="public",
+        table="reporting_cisco_api_eox",
+        dt=dt,
+        allowed_columns=cols,
+        searchable_columns=cols,
+        default_order=("datetimestamp", "desc"),
+        max_length=500,
+    )

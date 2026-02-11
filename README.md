@@ -1133,7 +1133,7 @@ back through the API without writing anything to disk.
   "REDIS_PORT": "6379",
 
   "TRUSTED_HOSTS": "networkengineertools.com,*.networkengineertools.com,localhost,127.0.0.1",
-  "VAULT_ADDR": "https://vault.networkengineertools.com:8200"
+  "VAULT_ADDR": "https://vault.networkengineertools.com:8443"
 }
 ```
 
@@ -1197,10 +1197,11 @@ back through the API without writing anything to disk.
   "APP_DEBUG": "1",
   "APP_ENV": "dev",
   "APP_LOGOUT_REDIRECT_URL": "https://networkengineertools.com:8443/logged-out",
-  "APP_SECRET": "",
+  "APP_SECRET": "clkKk_Uows26uP51U1kk8CNwGCQa1LZT8KkmatwlrbW1PjoTah8gIx4-74DLU5XOJWaYAzFGvNHQkF2ia3y4XA",
+  "FASTAPI_BASE_URL": "https://api.networkengineertools.com:8000",
   "KEYCLOAK_AUTH_SERVER_URL": "https://auth.networkengineertools.com:8443",
   "KEYCLOAK_CLIENT_ID": "symfony_frontend",
-  "KEYCLOAK_CLIENT_SECRET": "",
+  "KEYCLOAK_CLIENT_SECRET": "5Fm8ahFkTIUdmHrF0d650NJWo14Kkvsg",
   "KEYCLOAK_REALM": "network_tools"
 }
 ```
@@ -1448,3 +1449,30 @@ pg_dump -h postgres_primary -p 5432 -U network_tools_user -d network_tools \
 docker cp postgres_primary:01_network_tools_schema_dump.sql pg_schema_backups
 ```
 
+## Appendix E - Symfony Information
+
+# Commands for debugging Symfony Controllers
+# Filter for “reporting”
+
+```bash
+docker exec -it frontend_php_fpm sh -lc 'php bin/console debug:router | grep -i reporting'
+```
+
+# Show details for one route name
+```bash
+docker exec -it frontend_php_fpm sh -lc 'php bin/console debug:router api_reporting_devices_initial'
+```
+# If you need a specific env (dev/prod)
+
+```bash
+docker exec -it frontend_php_fpm sh -lc 'php bin/console debug:router --env=dev'
+```
+
+```bash
+docker exec -it frontend_php_fpm sh -lc 'php bin/console debug:router --env=prod'
+```
+
+# Show what environment symfony thinks it is (Production | Development)
+```bash
+docker exec -it frontend_php_fpm sh -lc 'printenv | egrep "^(APP_ENV|APP_DEBUG|SYMFONY_ENV|SYMFONY_DEBUG)="'
+```

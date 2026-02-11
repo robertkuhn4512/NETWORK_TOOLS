@@ -323,7 +323,7 @@ async def search_configuration_files(
     # TODO - This needs to be reworked.
     # I will be using this flag to "Attempt" to redact any sensitive data from a search results.
     # Items like passwords / keys / hashes etc.
-    
+
     is_admin = "device_backup_file_admin" in roles
     redact_output = not is_admin  # admin sees line content, non-admin sees line numbers only
 
