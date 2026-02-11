@@ -505,7 +505,7 @@ services:
       - vault_production_node
     networks:
       db_net:
-        ipv4_address: 172.30.20.9
+        ipv4_address: 172.30.20.6
     extra_hosts:
       - "vault.${PRIMARY_SERVER_FQDN}:172.30.20.4"  # Vault agents need to reach vault locally to boot themselves
     entrypoint: [ "/bin/sh","-lc","exec vault agent -config=/vault/agent/agent.hcl" ]

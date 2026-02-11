@@ -28,10 +28,18 @@ def _pick_jwk(jwks: Dict[str, Any], kid: str) -> Dict[str, Any]:
             return k
     raise HTTPException(status_code=401, detail={"error": "unknown_kid"})
 
-def _realm_roles(claims: Dict[str, Any]) -> List[str]:
-    ra = claims.get("realm_access") or {}
-    roles = ra.get("roles") or []
-    return sorted({str(r) for r in roles})
+def _all_roles(claims: Dict[str, Any]) -> List[str]:
+    out = set()
+
+    ra = (claims.get("realm_access") or {}).get("roles") or []
+    out.update(str(r) for r in ra)
+
+    resource_access = claims.get("resource_access") or {}
+    for client, blob in resource_access.items():
+        roles = (blob or {}).get("roles") or []
+        out.update(str(r) for r in roles)
+
+    return sorted(out)
 
 def get_current_user(creds: HTTPAuthorizationCredentials = Security(bearer)) -> UserContext:
     if not creds or not creds.credentials:
@@ -69,13 +77,12 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Security(bearer)) -> 
     except JWTError as e:
         raise HTTPException(status_code=401, detail={"error": "jwt_verify_failed", "detail": str(e)})
 
-    # azp allow-list (optional but recommended)
     if settings.allowed_azp:
         azp = claims.get("azp")
         if not azp or str(azp) not in set(settings.allowed_azp):
             raise HTTPException(status_code=403, detail={"error": "invalid_azp", "azp": azp})
 
-    roles = _realm_roles(claims)
+    roles = _all_roles(claims)
 
     return UserContext(
         sub=str(claims.get("sub")),

@@ -666,7 +666,6 @@ async def fetch_devices_datatable(*, database, dt: Dict[str, Any]) -> Dict[str, 
     ]
     # searchable can be the same list; trim later if performance dictates
     return await _datatable_select_all(
-        database=database,
         schema="public",
         table="devices",
         dt=dt,
