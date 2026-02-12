@@ -50,3 +50,7 @@ services:
     App\Service\FastApi\FastApiClient:
         arguments:
             $baseUrl: '%fastapi.base_url%'
+
+    App\Service\FastApi\FrontendTrackingClient:
+        arguments:
+            $baseUrl: '%fastapi.base_url%'

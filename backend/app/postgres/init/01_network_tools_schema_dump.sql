@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict PgnND6oPVDesow4alXchQinGgLW5rOMPsHf7s12vdE2Ejw3fpyV7RXm5FiQC14t
+\restrict hWw9bqiVAygRT3P2ZUGePNR5fyd60DsYkLqdC8ZYAHa6SXVlORz2Gjt4T0X01pu
 
 -- Dumped from database version 18.1 (Debian 18.1-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1 (Debian 18.1-1.pgdg13+2)
@@ -164,7 +164,7 @@ CREATE TABLE public.app_frontend_tracking (
     id bigint NOT NULL,
     username character varying(255),
     route text,
-    information text,
+    information jsonb DEFAULT '{}'::jsonb NOT NULL,
     datetimestamp timestamp without time zone
 );
 
@@ -1747,14 +1747,6 @@ ALTER TABLE ONLY public.app_backend_tracking
 
 
 --
--- Name: app_frontend_tracking app_frontend_tracking__pk; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.app_frontend_tracking
-    ADD CONSTRAINT app_frontend_tracking__pk PRIMARY KEY (id);
-
-
---
 -- Name: app_tracking_celery app_tracking_celery_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1859,11 +1851,11 @@ ALTER TABLE ONLY public.department_names
 
 
 --
--- Name: device_backup_locations device_backup_locations__pk; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: device_backup_locations device_backup_locations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.device_backup_locations
-    ADD CONSTRAINT device_backup_locations__pk PRIMARY KEY (id);
+    ADD CONSTRAINT device_backup_locations_pkey PRIMARY KEY (id);
 
 
 --
@@ -2453,27 +2445,6 @@ CREATE INDEX idx_app_backend_tracking__route ON public.app_backend_tracking USIN
 
 
 --
--- Name: idx_app_frontend_tracking__datetimestamp; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_app_frontend_tracking__datetimestamp ON public.app_frontend_tracking USING btree (datetimestamp);
-
-
---
--- Name: idx_app_frontend_tracking__route; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_app_frontend_tracking__route ON public.app_frontend_tracking USING btree (route);
-
-
---
--- Name: idx_app_frontend_tracking__username; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_app_frontend_tracking__username ON public.app_frontend_tracking USING btree (username);
-
-
---
 -- Name: idx_app_tracking_celery__request_target_ip; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2649,38 +2620,17 @@ CREATE INDEX idx_department_names__department_name ON public.department_names US
 
 
 --
--- Name: idx_device_backup_locations__datetimestamp; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_device_backup_locations_ipv4_dt; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_device_backup_locations__datetimestamp ON public.device_backup_locations USING btree (datetimestamp);
-
-
---
--- Name: idx_device_backup_locations__device_name; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_device_backup_locations__device_name ON public.device_backup_locations USING btree (device_name);
+CREATE INDEX idx_device_backup_locations_ipv4_dt ON public.device_backup_locations USING btree (ipv4_loopback, datetimestamp DESC);
 
 
 --
--- Name: idx_device_backup_locations__device_type; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_device_backup_locations_name_dt; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_device_backup_locations__device_type ON public.device_backup_locations USING btree (device_type);
-
-
---
--- Name: idx_device_backup_locations__ipv4_loopback; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_device_backup_locations__ipv4_loopback ON public.device_backup_locations USING btree (ipv4_loopback);
-
-
---
--- Name: idx_device_backup_locations__ipv6_loopback; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_device_backup_locations__ipv6_loopback ON public.device_backup_locations USING btree (ipv6_loopback);
+CREATE INDEX idx_device_backup_locations_name_dt ON public.device_backup_locations USING btree (device_name, datetimestamp DESC);
 
 
 --
@@ -4116,5 +4066,5 @@ ALTER TABLE ONLY public.app_tracking_celery
 -- PostgreSQL database dump complete
 --
 
-\unrestrict PgnND6oPVDesow4alXchQinGgLW5rOMPsHf7s12vdE2Ejw3fpyV7RXm5FiQC14t
+\unrestrict hWw9bqiVAygRT3P2ZUGePNR5fyd60DsYkLqdC8ZYAHa6SXVlORz2Gjt4T0X01pu
 

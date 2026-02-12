@@ -247,7 +247,7 @@ Recommended keys to render into that file (minimum):
 {
   "KEYCLOAK_BASE_URL": "https://auth.networkengineertools.com",
   "KEYCLOAK_REALM": "network_tools",
-  "FASTAPI_ALLOWED_AZP": "networktools-web,networktools-cli,networktools-automation"
+  "FASTAPI_ALLOWED_AZP": "fastapi-client, symfony_frontend"
 }
 ```
 

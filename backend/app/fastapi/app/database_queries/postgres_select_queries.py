@@ -666,7 +666,6 @@ async def fetch_devices_datatable(*, database, dt: Dict[str, Any]) -> Dict[str, 
     ]
     # searchable can be the same list; trim later if performance dictates
     return await _datatable_select_all(
-        database=database,
         schema="public",
         table="devices",
         dt=dt,
@@ -764,3 +763,51 @@ async def fetch_reporting_cisco_api_eox_datatable(*, dt: Dict[str, Any]) -> Dict
         default_order=("datetimestamp", "desc"),
         max_length=500,
     )
+
+async def select_app_frontend_tracking_latest(
+    *,
+    limit: int = 100,
+    username: str | None = None,
+    route: str | None = None,
+) -> Dict[str, Any]:
+    """
+    Notes / How to run:
+      - res = await select_app_frontend_tracking_latest(database=database, limit=50)
+      - res = await select_app_frontend_tracking_latest(database=database, username="bob")
+      - res = await select_app_frontend_tracking_latest(database=database, route="/main")
+
+    Returns newest rows by datetimestamp DESC, id DESC.
+    """
+    lim = 100
+    try:
+        lim = int(limit or 100)
+    except Exception:
+        lim = 100
+    lim = max(1, min(lim, 1000))
+
+    where = []
+    values: Dict[str, Any] = {"limit": lim}
+
+    if username and str(username).strip():
+        where.append("username = :username")
+        values["username"] = str(username).strip()
+
+    if route and str(route).strip():
+        where.append("route = :route")
+        values["route"] = str(route).strip()
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    sql = f"""
+    SELECT id, username, route, information, datetimestamp
+    FROM public.app_frontend_tracking
+    {where_sql}
+    ORDER BY datetimestamp DESC NULLS LAST, id DESC
+    LIMIT :limit
+    """
+
+    try:
+        rows = await database.fetch_all(query=sql, values=values)
+        return {"detail": {"ok": True, "rows": [dict(r._mapping) for r in (rows or [])]}}
+    except Exception as e:
+        return {"error": "database_error", "detail": {"message": str(e), "values": values}}

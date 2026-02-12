@@ -27,6 +27,7 @@ from app.routers.cisco_api_reporting import router as cisco_api_reporting_router
 from app.routers.device_backups import router as device_backups_router
 from app.routers.device_discovery import router as device_discovery_router
 from app.routers.device_reporting import router as device_reporting_router
+from app.routers.frontend_tracking import router as frontend_tracking_router
 from app.routers.celery_jobs import router as celery_jobs_router
 
 from app.shared_functions.helpers.helpers_logging_config import setup_logging, load_env_from_vault_json
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(device_backups_router)
     app.include_router(device_discovery_router)
     app.include_router(device_reporting_router)
+    app.include_router(frontend_tracking_router)
 
     @app.on_event("startup")
     async def on_startup():

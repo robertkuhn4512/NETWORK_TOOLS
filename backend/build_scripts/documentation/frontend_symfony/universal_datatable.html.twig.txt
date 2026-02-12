@@ -1,0 +1,44 @@
+# This is a reference file on how to use the universal twig file.
+# The goal of that file is to have it be re used for any datatables related
+# displays without needing to duplicate code. The php controller will
+# pass in any options needed to have it render correctly.
+
+How you use the modal flags from PHP
+
+[
+  'data' => 'information',
+  'label' => 'Information',
+  'modal' => true,
+  'modal_data' => 'information',
+]
+
+Show multiple fields from the row
+
+[
+  'data' => 'information',
+  'label' => 'Info',
+  'modal' => true,
+  'modal_data' => ['device_ip', 'vendor', 'information'],
+]
+
+Show a labeled map (nice for users)
+
+[
+  'data' => 'information',
+  'label' => 'Info',
+  'modal' => true,
+  'modal_data' => [
+    'IP Address' => 'device_ip',
+    'Vendor' => 'vendor',
+    'Raw Info' => 'information',
+  ],
+]
+
+Show the entire row
+
+[
+  'data' => 'device_name',
+  'label' => 'Device Name',
+  'modal' => true,
+  'modal_data' => '__row__', // or '*'
+]

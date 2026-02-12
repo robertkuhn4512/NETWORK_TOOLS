@@ -18,7 +18,6 @@ def get_keycloak_settings() -> KeycloakSettings:
     realm = os.environ["KEYCLOAK_REALM"]
 
     allowed_azp = _csv(os.getenv("FASTAPI_ALLOWED_AZP", ""))
-
     verify_audience = os.getenv("FASTAPI_VERIFY_AUDIENCE", "false").lower() in ("1", "true", "yes")
 
     oidc_ca_bundle = (

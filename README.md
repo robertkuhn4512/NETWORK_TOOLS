@@ -1120,6 +1120,7 @@ back through the API without writing anything to disk.
 
   "KEYCLOAK_BASE_URL": "https://auth.networkengineertools.com:8443",
   "KEYCLOAK_REALM": "network_tools",
+  "KEYCLOAK_ISSUER": "https://auth.networkengineertools.com:8443/realms/network_tools",
   "KEYCLOAK_INTROSPECTION_CLIENT_ID": "<OPTIONAL_IF_USING_INTROSPECTION>",
   "KEYCLOAK_INTROSPECTION_CLIENT_SECRET": "<OPTIONAL_IF_USING_INTROSPECTION>",
 
@@ -1476,3 +1477,18 @@ docker exec -it frontend_php_fpm sh -lc 'php bin/console debug:router --env=prod
 ```bash
 docker exec -it frontend_php_fpm sh -lc 'printenv | egrep "^(APP_ENV|APP_DEBUG|SYMFONY_ENV|SYMFONY_DEBUG)="'
 ```
+
+## Appendix F - Backend / Frontend Roles and what they do. 
+> This is a Role Based Access setup. Each user can be assigned specific roles
+> in order to see and use specific features. This allows seamless integration between the frontend and backend and
+> users who write scripts against the api. This will ensure users are limited to information they're entitled to. 
+> Below is a list of groups and roles assigned to each group and what they're allowed to do. These are all managed in the keycloak
+> instance. 
+
+Individual Roles 
+  -   :
+ 
+ | Column 1 | Column 2                                                                                                 |
+|---------|----------------------------------------------------------------------------------------------------------|
+| ROLE_SYMFONY_SUPER_ADMIN | Frontend Tasks Only, Grants a user ALL privileges to everything on the frontend. There are no limits<br/> |
+ | ROLE_DEVICE_REPORTING_VIEW_ONLY | Frontnd Taks Only, Allows a user to view any reports under the /device_reporting endpoint.|

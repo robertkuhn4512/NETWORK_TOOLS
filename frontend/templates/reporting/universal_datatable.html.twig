@@ -1,0 +1,598 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}{{ table.title|default('Reporting Table') }}{% endblock %}
+
+{% block stylesheets %}
+    {{ parent() }}
+    {% set tableId = table.id|default('dt_table') %}
+    <link rel="stylesheet" href="{{ asset('vendor/DataTables/css/datatables.css') }}">
+    <style>
+        /* Critical for Bootstrap grid/flex layouts: allow the main area to shrink */
+        .app-main { min-width: 0; }
+
+        /* DataTables container should not overflow the content column */
+        .dt-wrap {
+            width: 100%;
+            min-width: 0;
+            overflow-x: auto;
+        }
+
+        .dataTables_wrapper {
+            width: 100% !important;
+            max-width: 100% !important;
+            min-width: 0;
+        }
+
+        .dt-wrap { width: 100%; }
+        .dt-header { display:flex; align-items:center; justify-content:space-between; gap: 1rem; margin-bottom: 1rem; }
+        .dt-title { margin: 0; }
+        .dt-error { display:none; padding: .75rem 1rem; border: 1px solid #cc0000; border-radius: .5rem; margin: 1rem 0; }
+        .dt-error pre { margin: .5rem 0 0; white-space: pre-wrap; word-break: break-word; }
+        table.dataTable { width: 100% !important; }
+
+
+        .dt-modal-btn{
+            border-color: var(--bs-border-color, #555);
+            background: transparent;
+            color: var(--bs-body-color, inherit);
+        }
+
+        /* Make DataTables inherit Bootstrap dark theme variables */
+        .dataTables_wrapper,
+        table.dataTable {
+            color: var(--bs-body-color);
+        }
+
+        /* Table header */
+        table.dataTable thead th,
+        table.dataTable thead td {
+            background: var(--bs-tertiary-bg);
+            color: var(--bs-body-color);
+            border-bottom: 1px solid var(--bs-border-color);
+        }
+
+        /* Body cells + row separators */
+        table.dataTable tbody td {
+            background: transparent;
+            border-top: 1px solid var(--bs-border-color);
+        }
+
+        /* Hover */
+        table.dataTable.hover tbody tr:hover,
+        table.dataTable.display tbody tr:hover {
+            background: rgba(var(--bs-body-color-rgb, 255,255,255), 0.06);
+        }
+
+        /* Search input + length select */
+        .dataTables_wrapper .dataTables_filter input,
+        .dataTables_wrapper .dataTables_length select {
+            color: var(--bs-body-color);
+            background-color: var(--bs-body-bg);
+            border: 1px solid var(--bs-border-color);
+            border-radius: .375rem;
+            padding: .25rem .5rem;
+        }
+
+        /* Pagination buttons */
+        .dataTables_wrapper .dataTables_paginate .paginate_button {
+            color: var(--bs-body-color) !important;
+            border: 1px solid var(--bs-border-color) !important;
+            background: var(--bs-body-bg) !important;
+            border-radius: .375rem;
+            margin: 0 .125rem;
+        }
+
+        .dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+            background: var(--bs-tertiary-bg) !important;
+            color: var(--bs-body-color) !important;
+        }
+
+        .dataTables_wrapper .dataTables_paginate .paginate_button.current {
+            background: var(--bs-primary) !important;
+            border-color: var(--bs-primary) !important;
+            color: #fff !important;
+        }
+
+        /* Buttons extension (if enabled) */
+        div.dt-buttons button.dt-button,
+        div.dt-buttons a.dt-button {
+            color: var(--bs-body-color) !important;
+            background: var(--bs-body-bg) !important;
+            border: 1px solid var(--bs-border-color) !important;
+            border-radius: .375rem;
+        }
+
+        div.dt-buttons button.dt-button:hover,
+        div.dt-buttons a.dt-button:hover {
+            background: var(--bs-tertiary-bg) !important;
+        }
+
+        /* Card-like shell around the whole DataTables widget */
+        #{{ tableId }}_wrapper {
+            border: 1px solid var(--bs-border-color);
+            border-radius: 1rem;
+            padding: 1rem;
+            box-shadow: 0 .75rem 1.75rem rgba(0,0,0,.35);
+            background: var(--bs-body-bg);
+        }
+
+        /* Space the controls nicely */
+        #{{ tableId }}_wrapper .dt-buttons { margin-bottom: .75rem; }
+        #{{ tableId }}_wrapper .dataTables_length,
+        #{{ tableId }}_wrapper .dataTables_filter { margin-bottom: .75rem; }
+        #{{ tableId }}_wrapper .dataTables_info,
+        #{{ tableId }}_wrapper .dataTables_paginate { margin-top: .75rem; }
+
+        /* Make search input a bit nicer sized */
+        #{{ tableId }}_wrapper .dataTables_filter input { width: 16rem; }
+
+        /* Stronger table border + rounded corners */
+        #{{ tableId }} {
+            border-collapse: separate !important;
+            border-spacing: 0 !important;
+            border: 1px solid var(--bs-border-color) !important;
+            border-radius: .75rem;
+            overflow: hidden;
+        }
+
+        #{{ tableId }} thead th:first-child { border-top-left-radius: .75rem; }
+        #{{ tableId }} thead th:last-child  { border-top-right-radius: .75rem; }
+        #{{ tableId }} tbody tr:last-child td:first-child { border-bottom-left-radius: .75rem; }
+        #{{ tableId }} tbody tr:last-child td:last-child  { border-bottom-right-radius: .75rem; }
+
+        /* Subtle vertical separators (optional but “pro”) */
+        #{{ tableId }} thead th,
+        #{{ tableId }} tbody td {
+                           border-right: 1px solid var(--bs-border-color);
+                       }
+        #{{ tableId }} thead th:last-child,
+        #{{ tableId }} tbody td:last-child {
+                           border-right: none;
+                       }
+
+        /* Selected row highlight that looks good in dark mode */
+        table.dataTable tbody tr.selected > * {
+            box-shadow: inset 0 0 0 9999px rgba(var(--bs-primary-rgb), .18) !important;
+            color: var(--bs-body-color) !important;
+        }
+
+        /* Make modal JSON look like a “code panel” */
+        .dt-modal-pre {
+            font-family: var(--bs-font-monospace);
+            font-size: .85rem;
+            line-height: 1.35;
+            padding: 1rem;
+            border-radius: .75rem;
+            border: 1px solid var(--bs-border-color);
+            background: var(--bs-tertiary-bg);
+            color: var(--bs-body-color);
+            max-height: 65vh;
+            overflow: auto;
+        }
+
+        .dt-modal__dialog {
+            position:relative;
+            max-width: 900px;
+            width: calc(100% - 2rem);
+            margin: 5vh auto;
+            background: var(--bs-body-bg);
+            color: var(--bs-body-color);
+            border: 1px solid var(--bs-border-color);
+            border-radius: .75rem;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0,0,0,.35);
+        }
+
+        .dt-modal__header {
+            background: var(--bs-tertiary-bg);
+            border-bottom: 1px solid var(--bs-border-color);
+        }
+
+        .dt-modal__close { color: var(--bs-body-color); }
+
+        .dt-modal__body pre {
+            background: transparent;
+            color: var(--bs-body-color);
+        }
+
+
+        #{{ tableId }} thead th,
+        #{{ tableId }} tbody td {
+            padding: .65rem .85rem !important;
+        }
+
+        #{{ tableId }} thead th:first-child,
+        #{{ tableId }} tbody td:first-child {
+            padding-left: 1rem !important;
+        }
+
+        #{{ tableId }} thead th:last-child,
+        #{{ tableId }} tbody td:last-child {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+    </style>
+{% endblock %}
+
+{% block body %}
+    {% set tableId = table.id|default('dt_table') %}
+
+    <div class="dt-wrap">
+        <div class="dt-header">
+            <h1 class="dt-title">{{ table.title|default('Reporting Table') }}</h1>
+        </div>
+
+        <div id="{{ tableId }}_error" class="dt-error">
+            <strong>DataTables error</strong>
+            <div id="{{ tableId }}_error_msg"></div>
+            <pre id="{{ tableId }}_error_detail"></pre>
+        </div>
+
+        <table id="{{ tableId }}" class="display nowrap" style="width:100%">
+            <thead>
+            <tr>
+                {% for col in table.columns %}
+                    <th>{{ col.label|default(col.data) }}</th>
+                {% endfor %}
+            </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+
+        {# Bootstrap modal (inherits dark mode automatically) #}
+        <div class="modal fade" id="{{ tableId }}_modal" tabindex="-1"
+             aria-labelledby="{{ tableId }}_modal_title" aria-hidden="true">
+            <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="{{ tableId }}_modal_title">Details</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <pre id="{{ tableId }}_modal_body" class="dt-modal-pre mb-0"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {% if table.debug|default(false) %}
+            <details style="margin-top:1rem;">
+                <summary>Debug: table config</summary>
+                <pre>{{ table|json_encode(constant('JSON_PRETTY_PRINT')) }}</pre>
+            </details>
+        {% endif %}
+    </div>
+{% endblock %}
+
+{% block javascripts %}
+    {{ parent() }}
+    <script src="{{ asset('vendor/DataTables/js/datatables.js') }}"></script>
+
+    <script>
+        (function () {
+            const tableSpec = {{ table|json_encode(constant('JSON_UNESCAPED_SLASHES'))|raw }};
+            const tableId = tableSpec.id || 'dt_table';
+
+            const $errBox = document.getElementById(tableId + '_error');
+            const $errMsg = document.getElementById(tableId + '_error_msg');
+            const $errDetail = document.getElementById(tableId + '_error_detail');
+
+            const $modal = document.getElementById(tableId + '_modal');
+            const $modalTitle = document.getElementById(tableId + '_modal_title');
+            const $modalBody = document.getElementById(tableId + '_modal_body');
+
+            let bsModal = null;
+
+            function openModal(title, payload) {
+                if (!$modal || !$modalTitle || !$modalBody) return;
+
+                $modalTitle.textContent = title || 'Details';
+
+                const normalized = normalizePayload(payload);
+                if (typeof normalized === 'string') {
+                    $modalBody.textContent = normalized;
+                } else {
+                    try {
+                        $modalBody.textContent = JSON.stringify(normalized, null, 2);
+                    } catch (e) {
+                        $modalBody.textContent = String(payload);
+                    }
+                }
+
+                if (!bsModal) {
+                    if (!window.bootstrap || !bootstrap.Modal) {
+                        showError('Bootstrap Modal not available.', 'bootstrap.bundle.min.js must load before modal use.');
+                        return;
+                    }
+                    bsModal = new bootstrap.Modal($modal, { backdrop: true, keyboard: true });
+                }
+
+                bsModal.show();
+            }
+
+            function showError(msg, detail) {
+                if ($errMsg) $errMsg.textContent = msg || 'Unknown error';
+                if ($errDetail) $errDetail.textContent = detail || '';
+                if ($errBox) $errBox.style.display = 'block';
+            }
+
+            function normalizePayload(raw) {
+                if (raw === null || raw === undefined) return raw;
+
+                // If backend sent JSON as a string, attempt to parse
+                if (typeof raw === 'string') {
+                    const s = raw.trim();
+                    if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
+                        try { return JSON.parse(s); } catch (e) { /* ignore */ }
+                    }
+                    return raw;
+                }
+
+                return raw;
+            }
+
+            // Base64 safe encode/decode for attribute transport
+            function encodeB64Json(obj) {
+                const json = JSON.stringify(obj);
+                return btoa(unescape(encodeURIComponent(json)));
+            }
+            function decodeB64Json(b64) {
+                const json = decodeURIComponent(escape(atob(b64)));
+                return JSON.parse(json);
+            }
+
+            if (!window.jQuery) {
+                showError('jQuery is not available. DataTables requires jQuery in this bundle.', 'Load jQuery before datatables.js.');
+                return;
+            }
+            const $ = window.jQuery;
+
+            if (!$.fn || !$.fn.dataTable) {
+                showError('DataTables plugin is not available.', 'Check vendor/DataTables/js/datatables.js.');
+                return;
+            }
+
+            $.fn.dataTable.ext.errMode = 'none';
+
+            const features = tableSpec.features || {};
+            const ajaxSpec = tableSpec.ajax || {};
+            const extraPayload = ajaxSpec.payload || {};
+            const headers = ajaxSpec.headers || {};
+            const method = (ajaxSpec.method || 'POST').toUpperCase();
+            const sendJson = !!ajaxSpec.send_json;
+
+            const sendDtParams = (ajaxSpec.send_dt_params !== undefined) ? !!ajaxSpec.send_dt_params : true;
+            const paramMap = ajaxSpec.param_map || {};
+
+            const dataSrc = (ajaxSpec.dataSrc !== undefined) ? ajaxSpec.dataSrc : 'data';
+
+            // Build columns with optional modal renderers
+            const columns = (tableSpec.columns || []).map(function (c) {
+                const col = {
+                    data: c.data,
+                    name: c.name || c.data,
+                    orderable: (c.orderable !== undefined) ? !!c.orderable : true,
+                    searchable: (c.searchable !== undefined) ? !!c.searchable : true,
+                    className: c.className || ''
+                };
+
+                if (c.visible !== undefined) col.visible = !!c.visible;
+
+                // Modal column support
+                if (c.modal) {
+                    const modalDataSpec = c.modal_data;
+                    const modalTitle = c.modal_title || (c.label ? (c.label + ' Details') : 'Details');
+                    const btnText = c.modal_button_text || 'View';
+
+                    col.orderable = false;
+                    col.searchable = false;
+
+                    col.render = function (cell, type, row) {
+                        // Only render button for display; for sort/filter return raw cell
+                        if (type !== 'display') return cell;
+
+                        let payload;
+
+                        if (modalDataSpec === '*' || modalDataSpec === '__row__') {
+                            payload = row;
+                        } else if (typeof modalDataSpec === 'string' && modalDataSpec.length > 0) {
+                            payload = row ? row[modalDataSpec] : null;
+                        } else if (Array.isArray(modalDataSpec)) {
+                            payload = {};
+                            modalDataSpec.forEach(function (k) { payload[k] = row ? row[k] : null; });
+                        } else if (modalDataSpec && typeof modalDataSpec === 'object') {
+                            // map: { "Nice Label": "field_key" }
+                            payload = {};
+                            Object.keys(modalDataSpec).forEach(function (label) {
+                                const key = modalDataSpec[label];
+                                payload[label] = row ? row[key] : null;
+                            });
+                        } else {
+                            // fallback: entire row
+                            payload = row;
+                        }
+
+                        const encoded = encodeB64Json(payload);
+
+                        return (
+                            '<button type="button" class="btn btn-sm btn-primary dt-modal-btn js-dt-row-details" ' +
+                            'data-dt-modal="1" ' +
+                            'data-modal-title="' + String(modalTitle).replace(/"/g, '&quot;') + '" ' +
+                            'data-modal-payload="' + encoded + '">' +
+                            btnText +
+                            '</button>'
+                        );
+                    };
+                }
+
+                return col;
+            });
+
+            const hasButtons = !!features.buttons && Array.isArray(tableSpec.buttons) && tableSpec.buttons.length > 0;
+
+            const dtOptions = {
+                serverSide: (tableSpec.serverSide !== undefined) ? !!tableSpec.serverSide : true,
+                processing: (tableSpec.processing !== undefined) ? !!tableSpec.processing : true,
+
+                paging: (features.paging !== undefined) ? !!features.paging : true,
+                searching: (features.searching !== undefined) ? !!features.searching : true,
+                ordering: (features.ordering !== undefined) ? !!features.ordering : true,
+                info: (features.info !== undefined) ? !!features.info : true,
+                responsive: (features.responsive !== undefined) ? !!features.responsive : true,
+
+                select: !!features.select,
+
+                pageLength: tableSpec.pageLength || 25,
+                lengthMenu: tableSpec.lengthMenu || [10, 25, 50, 100],
+
+                order: tableSpec.order || [],
+                columns: columns,
+
+                dom: tableSpec.dom || (hasButtons ? 'Bfrtip' : 'frtip'),
+                buttons: hasButtons ? tableSpec.buttons : undefined,
+
+                ajax: {
+                    url: ajaxSpec.url,
+                    type: method,
+                    dataType: 'json',
+                    contentType: sendJson ? 'application/json; charset=utf-8' : 'application/x-www-form-urlencoded; charset=UTF-8',
+                    beforeSend: function (xhr) {
+                        try {
+                            Object.keys(headers).forEach(function (k) {
+                                xhr.setRequestHeader(k, String(headers[k]));
+                            });
+                        } catch (e) { /* ignore */ }
+                    },
+                    data: function (d) {
+                        // start with DT params (or not)
+                        const base = sendDtParams ? Object.assign({}, d) : {};
+
+                        // merge static payload
+                        Object.assign(base, extraPayload);
+
+                        // apply param mappings (e.g., limit <- length)
+                        Object.keys(paramMap).forEach(function (targetParam) {
+                            const src = paramMap[targetParam];
+                            if (typeof src === 'string' && d && d[src] !== undefined) {
+                                base[targetParam] = d[src];
+                            }
+                        });
+
+                        return sendJson ? JSON.stringify(base) : base;
+                    },
+                    dataSrc: dataSrc
+                }
+            };
+
+            // DataTables error handling
+            $('#' + tableId).on('error.dt', function (e, settings, techNote, message) {
+                showError('DataTables failed to load data.', message || ('TechNote: ' + techNote));
+            });
+
+
+            dtOptions.autoWidth = false;
+            dtOptions.scrollX = true;
+
+            let dt;
+            try {
+                dt = $('#' + tableId).DataTable(dtOptions);
+            } catch (e) {
+                showError('Failed to initialize DataTables.', String(e && e.message ? e.message : e));
+                return;
+            }
+
+            function adjustTable() {
+                try {
+                    dt.columns.adjust();
+                    if (dt.responsive) dt.responsive.recalc();
+                } catch (e) {}
+            }
+
+            requestAnimationFrame(adjustTable);
+            setTimeout(adjustTable, 150);
+            setTimeout(adjustTable, 400);
+
+            window.addEventListener('resize', () => setTimeout(adjustTable, 100));
+
+            const sidebar = document.querySelector('aside');
+            if (sidebar) {
+                sidebar.addEventListener('transitionend', () => setTimeout(adjustTable, 50));
+            }
+
+            // ---- Modal Details handler (delegated; survives DataTables redraw/paging) ----
+
+            // Base64 JSON decode helper (must match your encodeB64Json)
+            function decodeB64Json(b64) {
+                const json = decodeURIComponent(
+                    Array.from(atob(b64), (c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
+                );
+                return JSON.parse(json);
+            }
+
+            const modalEl = document.getElementById(`${tableId}_modal`);
+            const titleEl = document.getElementById(`${tableId}_modal_title`);
+            const bodyEl  = document.getElementById(`${tableId}_modal_body`);
+
+            let lastModalTrigger = null;
+
+            // ARIA/focus fix: ensure focus is not trapped inside when aria-hidden is applied
+            if (modalEl) {
+                modalEl.addEventListener('hide.bs.modal', () => {
+                    if (document.activeElement && modalEl.contains(document.activeElement)) {
+                        document.activeElement.blur();
+                    }
+                });
+
+                modalEl.addEventListener('hidden.bs.modal', () => {
+                    if (lastModalTrigger && typeof lastModalTrigger.focus === 'function') {
+                        lastModalTrigger.focus();
+                    }
+                    lastModalTrigger = null;
+                });
+            }
+
+            document.addEventListener('click', (e) => {
+                const btn = e.target.closest('.dt-modal-btn, .js-dt-row-details');
+                if (!btn) return;
+
+                // Scope to THIS table instance (important if multiple tables exist)
+                const tableEl = document.getElementById(tableId);
+                if (!tableEl || !tableEl.contains(btn)) return;
+
+                if (!modalEl || !bodyEl) return;
+
+                lastModalTrigger = btn;
+
+                // Title
+                const modalTitle = btn.getAttribute('data-modal-title') || 'Details';
+                if (titleEl) titleEl.textContent = modalTitle;
+
+                // Payload
+                let payload = null;
+
+                const b64 = btn.getAttribute('data-modal-payload');
+                if (b64) {
+                    try {
+                        payload = decodeB64Json(b64);
+                    } catch (err) {
+                        payload = { error: 'Failed to decode modal payload', detail: String(err && err.message ? err.message : err) };
+                    }
+                } else {
+                    // Fallback: pull live row data from DataTables (handles redraw/paging)
+                    try {
+                        const $tr = $(btn).closest('tr');
+                        const tr = $tr.hasClass('child') ? $tr.prev() : $tr; // responsive child row support
+                        const rowData = dt.row(tr).data();
+                        payload = rowData || {};
+                    } catch (err) {
+                        payload = { error: 'Failed to resolve row data', detail: String(err && err.message ? err.message : err) };
+                    }
+                }
+
+                openModal(modalTitle, payload);
+            });
+        })();
+    </script>
+{% endblock %}

@@ -121,7 +121,15 @@ async def datatable_devices(
     request: Request,
     user: UserContext = Depends(get_current_user),
 ):
-    required = {"fastapi_client", "device_listing_user"}
+    # Roles required for the users account to be able to view this endpoint.
+
+    required = {
+        "fastapi_client",
+        "ROLE_SYMFONY_SUPER_ADMIN",
+        "ROLE_DEVICE_REPORTING_VIEW_ONLY",
+    }
+
+
     if not required.intersection(set(user.roles or [])):
         raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Insufficient role")
 
@@ -156,7 +164,11 @@ async def datatable_device_backup_locations(
     request: Request,
     user: UserContext = Depends(get_current_user),
 ):
-    required = {"fastapi_client", "device_listing_user"}
+    required = {
+        "fastapi_client",
+        "ROLE_SYMFONY_SUPER_ADMIN",
+        "ROLE_DEVICE_REPORTING_VIEW_ONLY"
+    }
     if not required.intersection(set(user.roles or [])):
         raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Insufficient role")
 
