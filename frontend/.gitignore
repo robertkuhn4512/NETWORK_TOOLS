@@ -7,6 +7,13 @@
 /public/bundles/
 /var/
 /vendor/
+# Ignore vendor everywhere (root + any subdirs like frontend/vendor)
+vendor/
+**/vendor/
+
+# ...but keep the frontend public vendor assets
+!frontend/public/vendor/
+!frontend/public/vendor/**
 ###< symfony/framework-bundle ###
 
 ###> phpunit/phpunit ###
