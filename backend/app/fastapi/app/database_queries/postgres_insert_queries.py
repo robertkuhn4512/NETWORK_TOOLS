@@ -1135,3 +1135,39 @@ async def upsert_jobs_tracking_information(
     except Exception as e:
         return {"error": "database_error", "detail": {"message": str(e), "job_id": job_id}}
 
+async def insert_app_frontend_tracking(
+    *,
+    username: str | None,
+    route: str | None,
+    information: Any,
+) -> dict:
+    """
+    Notes / How to run:
+      - from app.database_queries.postgres_insert_queries import insert_app_frontend_tracking
+      - await insert_app_frontend_tracking(database=database, username="bob", route="/main", information={"k":"v"})
+
+    Inserts a new row into public.app_frontend_tracking (no upsert; every call is a new row).
+
+    Returns:
+      {"detail": {"ok": True, "id": <int|None>}} on success
+      {"error": "<message>"} on failure
+    """
+    sql = """
+    INSERT INTO public.app_frontend_tracking (username, route, information, datetimestamp)
+    VALUES (:username, :route, CAST(:information AS jsonb), NOW())
+    RETURNING id
+    """
+
+    params = {
+        "username": (username or None),
+        "route": (route or None),
+        "information": _jsonb_dump(information) or "{}",
+    }
+
+    try:
+        row = await database.fetch_one(sql, params)
+        new_id = None if row is None else row[0]
+        return {"detail": {"ok": True, "id": new_id}}
+    except Exception as e:
+        logger.exception("insert_app_frontend_tracking failed route=%s username=%s", route, username)
+        return {"error": f"insert_app_frontend_tracking failed: {e}"}

@@ -17,3 +17,4 @@ pysnmp==7.1.22
 pyasn1==0.6.2
 pysmi==1.6.3
 pysnmp-mibs==0.1.6
+PyJWT[crypto]==2.11.0

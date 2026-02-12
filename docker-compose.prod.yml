@@ -755,6 +755,10 @@ services:
 
   # docker compose -f docker-compose.prod.yml up -d --no-deps --build --force-recreate frontend_php_fpm
 
+  # NOTE
+  # If there are permissions issues for directory creation, you may need to turn this up once on it's own with
+  # the following command.
+  # docker compose -f docker-compose.prod.yml up -d --build --force-recreate frontend_var_init
   frontend_var_init:
     image: alpine:3.21
     container_name: frontend_var_init
@@ -766,6 +770,8 @@ services:
         target: /var/www/html/var
         volume:
           nocopy: true
+
+      - ./container_data/logs/symfony:/var/www/html/var/log
     command:
       - /bin/sh
       - -lc
@@ -773,18 +779,27 @@ services:
         set -eux
         umask 0002
 
-        mkdir -p /var/www/html/var/cache/prod /var/www/html/var/cache/dev /var/www/html/var/log
+        mkdir -p /var/www/html/var/cache 
+        mkdir -p /var/www/html/var/cache/prod 
+        mkdir -p /var/www/html/var/cache/dev 
+        mkdir -p /var/www/html/var/log
 
         # Take ownership every startup (repairs root-owned dirs)
         chown -R 82:82 /var/www/html/var
 
         # Owner/group writable; no "other" access
         chmod -R u+rwX,g+rwX /var/www/html/var
+        
         find /var/www/html/var -type d -exec chmod 2770 {} +
         find /var/www/html/var -type f -exec chmod 0660 {} + || true
-
-        # Log the important bits so we can see it worked
-        ls -ld /var/www/html/var /var/www/html/var/cache /var/www/html/var/cache/prod
+        
+        find /var/www/html/var/log -type d -exec chmod 2770 {} +
+        find /var/www/html/var/log -type f -exec chmod 0660 {} + || true
+        
+        ls -ld /var/www/html/var 
+        ls -ld /var/www/html/var/log 
+        ls -ld /var/www/html/var/cache 
+        ls -ld /var/www/html/var/cache/prod
 
 
   # These need to be set to toggle your container from prod <-> dev
@@ -836,6 +851,8 @@ services:
         target: /var/www/html/var
         volume:
           nocopy: true
+
+      - ./container_data/logs/symfony:/var/www/html/var/log
 
       - type: volume
         source: frontend_vault_rendered
